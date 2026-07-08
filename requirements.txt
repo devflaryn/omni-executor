@@ -1,4 +1,5 @@
 pywebview>=5.0
+websockify>=0.11   # WebSocket->TCP bridge so the noVNC viewer can reach the instances' VNC ports
 # Linux only — pywebview needs a webview backend. Either install the GTK one:
 #   sudo apt install python3-gi gir1.2-webkit2-4.1
 # or uncomment the Qt extra below:

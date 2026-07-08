@@ -1,3 +1,18 @@
 __pycache__/
 .claude/
 .git/
+
+# frontend (React/Vite)
+frontend/node_modules/
+frontend/dist/
+
+# omnidroid engine binary + everything it creates/manages next to itself
+omnidroid.exe
+omnidroid
+accounts/
+configs/
+qemu/
+instances/
+runtime/
+*.qcow2
+*.log
