@@ -4,9 +4,12 @@ import {
   UsersIcon, RocketIcon, PlayIcon, StopIcon, MonitorIcon, TrashIcon, PlusIcon, AlertIcon,
 } from "./icons.jsx";
 
-// Engine contract (omnidroid.md): account names are [A-Za-z0-9_-]+.
+// Engine contract (omnidroid-api.md): account names are [A-Za-z0-9_-]+.
 const NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const NAME_HINT = "Only letters, digits, '_' and '-' — no spaces.";
+
+// The frozen contract version this app was built against (omnidroid-api.md v1).
+const EXPECTED_CONTRACT = "1.0";
 
 const MODES = [
   { id: "playable", label: "Playable — 4 GB RAM · 4 CPUs (default)" },
@@ -25,6 +28,7 @@ const errText = (res) => res?.message || res?.error || "Engine error";
 export default function AccountsView({ active, showToast, launchOpts, onLaunchOpts }) {
   const [backend, setBackend] = useState(null); // null = probing
   const [doctor, setDoctor] = useState(null);
+  const [version, setVersion] = useState(null); // engine handshake (contract §4)
   const [accounts, setAccounts] = useState([]);
   const [selected, setSelected] = useState(null);
   const [busy, setBusy] = useState({}); // name -> label
@@ -59,11 +63,12 @@ export default function AccountsView({ active, showToast, launchOpts, onLaunchOp
     setDoctor(await api("engine_doctor"));
   }, []);
 
-  // Initial probe: backend? -> doctor + list.
+  // Initial probe: backend? -> handshake (version) + doctor + list.
   useEffect(() => {
     hasBackend().then((ok) => {
       setBackend(ok);
       if (ok) {
+        api("engine_version").then(setVersion); // contract handshake, gated below
         refreshDoctor();
         refreshList();
       }
@@ -196,10 +201,20 @@ export default function AccountsView({ active, showToast, launchOpts, onLaunchOp
   // ---- banner ----
 
   let banner = null;
+  const contractMismatch =
+    version && (!version.ok || version.contract !== EXPECTED_CONTRACT || version.arch_aware !== true);
   if (backend === false) {
     banner = { tone: "info", text: "Browser preview — engine features need the desktop app (python main.py)." };
   } else if (doctor && doctor.error === "engine_missing") {
     banner = { tone: "error", text: doctor.message };
+  } else if (contractMismatch) {
+    banner = {
+      tone: "warn",
+      text: version.ok
+        ? `This engine reports contract ${version.contract || "?"} (arch-aware: ${version.arch_aware ? "yes" : "no"}); ` +
+          `this app expects ${EXPECTED_CONTRACT}. Some features may not work — update omnidroid.`
+        : `Couldn't read the engine contract (omni version) — the engine may be too old. ${version.message || ""}`,
+    };
   } else if (doctor && !doctor.ready) {
     const problems = [];
     if (Array.isArray(doctor.missing_files) && doctor.missing_files.length) {
@@ -497,6 +512,18 @@ function AccountRow({ account, selected, busyLabel, progressLine, onSelect, onSt
                          tracking-wider text-slate-400 uppercase dark:border-white/10 dark:text-slate-500"
             >
               {account.base}
+            </span>
+          )}
+          {account.arch && (
+            <span
+              title={`Architecture: ${account.arch}`}
+              className={`shrink-0 rounded-full px-1.5 py-px text-[9.5px] font-semibold tracking-wider uppercase ${
+                account.arch === "arm"
+                  ? "bg-teal-500/15 text-teal-600 dark:text-teal-300"
+                  : "bg-slate-500/10 text-slate-500 dark:text-slate-400"
+              }`}
+            >
+              {account.arch}
             </span>
           )}
           {account.mode && running && (

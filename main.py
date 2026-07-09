@@ -77,13 +77,34 @@ ACCOUNT_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 
-def find_engine():
-    """Locate the engine executable next to this file (omnidroid.exe / omnidroid)."""
+def engine_prefix():
+    """Command prefix used to invoke the omnidroid engine.
+
+    Priority:
+      1. OMNIDROID_ENGINE env var — a path to omnidroid(.exe), OR a `.py`
+         (e.g. the engine's manager/omni.py) which is run with the current
+         Python. Lets a build point at a specific engine, and lets dev drive
+         the source checkout without building an exe.
+      2. The bundled omnidroid(.exe) sitting next to main.py (the product).
+    Returns a subprocess argv prefix (list), or None if nothing is found.
+    """
+    override = os.environ.get("OMNIDROID_ENGINE")
+    if override:
+        p = Path(override)
+        if p.is_file():
+            return [sys.executable, str(p)] if p.suffix == ".py" else [str(p)]
     for suffix in (".exe", ""):
         candidate = PROJECT_DIR / f"omnidroid{suffix}"
         if candidate.is_file():
-            return candidate
+            return [str(candidate)]
     return None
+
+
+def find_engine():
+    """Back-compat truthiness probe: is an engine resolvable? Returns the
+    prefix's first element (a path) or None."""
+    prefix = engine_prefix()
+    return prefix[-1] if prefix else None
 
 
 def _parse_engine_stdout(stdout, code):
@@ -110,8 +131,8 @@ def run_engine(args, progress=None, timeout=None):
     stderr progress lines are forwarded to `progress`. List results are
     wrapped as {"ok": ..., "accounts": [...]}.
     """
-    exe = find_engine()
-    if exe is None:
+    prefix = engine_prefix()
+    if prefix is None:
         return {
             "ok": False,
             "error": "engine_missing",
@@ -120,7 +141,7 @@ def run_engine(args, progress=None, timeout=None):
 
     try:
         proc = subprocess.Popen(
-            [str(exe), *args],
+            [*prefix, *args],
             cwd=str(PROJECT_DIR),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -271,9 +292,20 @@ class Api:
             "message": "Account names may only contain letters, digits, '_' and '-' (no spaces).",
         }
 
+    def engine_version(self):
+        """Contract handshake (omnidroid-api.md §4). The UI calls this first
+        and gates on `contract`/`arch_aware`, warning on a mismatch."""
+        if engine_prefix() is None:
+            return {
+                "ok": False,
+                "error": "engine_missing",
+                "message": "omnidroid engine not found next to main.py.",
+            }
+        return run_engine(["version", "--json"], timeout=30)
+
     def engine_doctor(self):
         """Readiness check: engine present, base images registered, QEMU/adb OK."""
-        if find_engine() is None:
+        if engine_prefix() is None:
             return {
                 "ok": False,
                 "ready": False,
@@ -281,6 +313,23 @@ class Api:
                 "message": "omnidroid.exe not found next to main.py.",
             }
         return run_engine(["doctor", "--json"], timeout=120)
+
+    def engine_bases(self):
+        """Registered bases with arch/type (contract §6.5) — lets the UI show
+        which architecture (x86 vs arm) each base is."""
+        return run_engine(["bases", "--json"], timeout=30)
+
+    def engine_use_base(self, tag):
+        """Set the default base for NEW accounts (contract §6.5). `use-base`
+        is text-only in the engine, so success is conveyed by exit code 0."""
+        if not isinstance(tag, str) or not tag:
+            return {"ok": False, "error": "bad_base", "message": "A base tag is required."}
+        res = run_engine(["use-base", tag])
+        return {
+            "ok": res.get("exit_code") == 0,
+            "message": (res.get("message") if res.get("exit_code") != 0
+                        else f"Default base for new accounts set to {tag}."),
+        }
 
     def engine_setup(self):
         """First-run setup (idempotent): folders + portable QEMU download."""
