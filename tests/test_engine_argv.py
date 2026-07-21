@@ -45,3 +45,31 @@ def test_login_token_rejects_empty(captured):
 
 def test_engine_create_is_gone():
     assert not hasattr(main.Api, "engine_create")
+
+
+def test_start_with_mode_and_place(captured):
+    main.Api().engine_start("alice", mode="farming", place="8737899170")
+    start = next(c for c in captured if c and c[0] == "start")
+    assert "alice" in start
+    assert "--mode" in start and "farming" in start
+    assert "--place" in start and "8737899170" in start
+
+
+def test_start_bare_has_no_mode_or_place(captured):
+    main.Api().engine_start("alice")
+    start = next(c for c in captured if c and c[0] == "start")
+    assert "--mode" not in start
+    assert "--place" not in start
+
+
+def test_engine_modes_from_version(monkeypatch):
+    monkeypatch.setattr(main, "run_engine",
+                        lambda *a, **k: {"ok": True,
+                                         "modes": ["playable", "farming"]})
+    assert main.Api().engine_modes() == ["playable", "farming"]
+
+
+def test_engine_modes_fallback_includes_farming(monkeypatch):
+    monkeypatch.setattr(main, "run_engine", lambda *a, **k: {"ok": True})  # no modes
+    modes = main.Api().engine_modes()
+    assert "farming" in modes

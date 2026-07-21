@@ -282,6 +282,8 @@ class Api:
     def _progress(self, scope):
         return lambda line: self._push("engine-progress", {"scope": scope, "line": line})
 
+    _FALLBACK_MODES = ["playable", "hard", "brutal", "farming"]
+
     @staticmethod
     def _bad_name(name):
         if isinstance(name, str) and ACCOUNT_NAME_RE.match(name):
@@ -363,14 +365,23 @@ class Api:
             except OSError:
                 pass
 
-    def engine_start(self, name, mode=None):
+    def engine_modes(self):
+        """Mode list DERIVED from the engine's version report; falls back to a
+        constant (incl. farming) on an older engine that doesn't report modes."""
+        rep = run_engine(["version", "--json"], timeout=30)
+        modes = rep.get("modes") if isinstance(rep, dict) else None
+        return modes if isinstance(modes, list) and modes else list(self._FALLBACK_MODES)
+
+    def engine_start(self, name, mode=None, place=None):
         """Cold-boot an instance headless and detached (returns pid + ports)."""
         error = self._bad_name(name)
         if error:
             return error
         args = ["start", name, "--json"]
-        if mode in ("playable", "hard", "brutal"):
-            args += ["--mode", mode]
+        if isinstance(mode, str) and mode.strip():
+            args += ["--mode", mode.strip()]
+        if place is not None and str(place).strip():
+            args += ["--place", str(place).strip()]
         result = run_engine(args, progress=self._progress(name), timeout=300)
         self._push("accounts-changed", {})
         return result
