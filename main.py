@@ -84,7 +84,14 @@ def engine_prefix():
          (e.g. the engine's manager/omni.py) which is run with the current
          Python. Lets a build point at a specific engine, and lets dev drive
          the source checkout without building an exe.
-      2. The bundled omnidroid(.exe) sitting next to main.py (the product).
+      2. The platform-appropriate NATIVE binary sitting next to main.py (the
+         product, installed by the CDN installer): omnidroid.exe on Windows,
+         extensionless omnidroid on macOS/Linux. Never cross platforms —
+         an omnidroid.exe next to main.py on macOS/Linux is not executable
+         and must never be returned there, and vice versa.
+      3. Python-source fallback (dev/test, e.g. this Mac where no native
+         binary is bundled): a sibling omnidroid source checkout's
+         self-contained shim, run with the current Python.
     Returns a subprocess argv prefix (list), or None if nothing is found.
     """
     override = os.environ.get("OMNIDROID_ENGINE")
@@ -92,10 +99,16 @@ def engine_prefix():
         p = Path(override)
         if p.is_file():
             return [sys.executable, str(p)] if p.suffix == ".py" else [str(p)]
-    for suffix in (".exe", ""):
-        candidate = PROJECT_DIR / f"omnidroid{suffix}"
-        if candidate.is_file():
-            return [str(candidate)]
+
+    native_name = "omnidroid.exe" if sys.platform == "win32" else "omnidroid"
+    candidate = PROJECT_DIR / native_name
+    if candidate.is_file():
+        return [str(candidate)]
+
+    manager_py = PROJECT_DIR.parent / "omnidroid" / "manager.py"
+    if manager_py.is_file():
+        return [sys.executable, str(manager_py)]
+
     return None
 
 

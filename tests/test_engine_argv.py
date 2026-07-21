@@ -84,3 +84,65 @@ def test_websockify_machinery_removed():
     assert not hasattr(main.Api, "_ensure_proxy")
     assert not hasattr(main.Api, "open_viewer")
     assert not hasattr(main.Api, "viewer_close")
+
+
+# ------------------------------------------------------- engine_prefix()
+
+def test_windows_uses_exe(tmp_path, monkeypatch):
+    monkeypatch.delenv("OMNIDROID_ENGINE", raising=False)
+    monkeypatch.setattr(main.sys, "platform", "win32")
+    monkeypatch.setattr(main, "PROJECT_DIR", tmp_path)
+    exe = tmp_path / "omnidroid.exe"
+    exe.write_text("")
+    assert main.engine_prefix() == [str(exe)]
+
+
+def test_mac_ignores_exe_falls_to_source(tmp_path, monkeypatch):
+    monkeypatch.delenv("OMNIDROID_ENGINE", raising=False)
+    monkeypatch.setattr(main.sys, "platform", "darwin")
+    monkeypatch.setattr(main, "PROJECT_DIR", tmp_path)
+    exe = tmp_path / "omnidroid.exe"
+    exe.write_text("")
+    # no extensionless binary, no sibling checkout yet -> nothing resolvable
+    assert main.engine_prefix() is None
+    prefix = main.engine_prefix()
+    assert prefix is None or str(exe) not in prefix
+
+    # now add the sibling source checkout -> falls to source
+    manager_py = tmp_path.parent / "omnidroid" / "manager.py"
+    manager_py.parent.mkdir(parents=True, exist_ok=True)
+    manager_py.write_text("")
+    assert main.engine_prefix() == [main.sys.executable, str(manager_py)]
+
+
+def test_mac_uses_native_binary(tmp_path, monkeypatch):
+    monkeypatch.delenv("OMNIDROID_ENGINE", raising=False)
+    monkeypatch.setattr(main.sys, "platform", "darwin")
+    monkeypatch.setattr(main, "PROJECT_DIR", tmp_path)
+    binary = tmp_path / "omnidroid"
+    binary.write_text("")
+    assert main.engine_prefix() == [str(binary)]
+
+
+def test_source_fallback_when_no_binary(tmp_path, monkeypatch):
+    monkeypatch.delenv("OMNIDROID_ENGINE", raising=False)
+    monkeypatch.setattr(main.sys, "platform", "darwin")
+    monkeypatch.setattr(main, "PROJECT_DIR", tmp_path)
+    manager_py = tmp_path.parent / "omnidroid" / "manager.py"
+    manager_py.parent.mkdir(parents=True, exist_ok=True)
+    manager_py.write_text("")
+    assert main.engine_prefix() == [main.sys.executable, str(manager_py)]
+
+
+def test_env_override_wins(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "PROJECT_DIR", tmp_path)
+
+    py_engine = tmp_path / "custom_manager.py"
+    py_engine.write_text("")
+    monkeypatch.setenv("OMNIDROID_ENGINE", str(py_engine))
+    assert main.engine_prefix() == [main.sys.executable, str(py_engine)]
+
+    bin_engine = tmp_path / "custom_omnidroid"
+    bin_engine.write_text("")
+    monkeypatch.setenv("OMNIDROID_ENGINE", str(bin_engine))
+    assert main.engine_prefix() == [str(bin_engine)]
