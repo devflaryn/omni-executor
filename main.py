@@ -339,15 +339,29 @@ class Api:
         """All accounts with base, ports and running state."""
         return run_engine(["list", "--json"], timeout=60)
 
-    def engine_create(self, name):
-        """Create an account and provision it (first boot: ~3-15 min).
-        Progress is streamed to the UI as 'engine-progress' events."""
-        error = self._bad_name(name)
-        if error:
-            return error
-        result = run_engine(["create", name, "--json"], progress=self._progress(name))
-        self._push("accounts-changed", {})
-        return result
+    def engine_login_browser(self):
+        """Add an account by interactive Roblox sign-in (omnidroid opens its
+        own browser). The account is saved under its Roblox username."""
+        return run_engine(["login"], progress=self._progress("login"), timeout=360)
+
+    def engine_login_token(self, token):
+        """Add an account from a pasted Roblox cookie/token. Written to a
+        private temp file (never the argv/ps) and passed via --token-file."""
+        if not isinstance(token, str) or not token.strip():
+            return {"ok": False, "error": "bad_token",
+                    "message": "A Roblox cookie/token is required."}
+        import tempfile
+        fd, path = tempfile.mkstemp(prefix="omniexec-tok-", suffix=".txt")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(token.strip())
+            return run_engine(["login", "--token-file", path, "--json"],
+                              progress=self._progress("login"), timeout=120)
+        finally:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
     def engine_start(self, name, mode=None):
         """Cold-boot an instance headless and detached (returns pid + ports)."""
