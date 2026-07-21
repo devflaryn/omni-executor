@@ -18,9 +18,10 @@ Engine:
     ./omnidroid on Linux) sitting next to this file. Every account is an
     isolated headless Android instance; all interaction goes through the
     engine CLI with --json (one JSON line on stdout, progress on stderr).
-    Viewing an instance uses noVNC over a local websockify bridge to the
-    instance's localhost-only VNC port; disconnecting a viewer never stops
-    the instance — only an explicit `stop` powers it off.
+    Viewing an instance opens the omnidroid engine's own native viewer
+    window (`omnidroid view <name> --start`); the executor does not embed
+    a VNC client. Disconnecting a viewer never stops the instance — only
+    an explicit `stop` powers it off.
 """
 
 import atexit
@@ -28,11 +29,9 @@ import json
 import mimetypes
 import os
 import re
-import socket
 import subprocess
 import sys
 import threading
-import time
 from pathlib import Path
 
 import webview
@@ -73,7 +72,7 @@ SETTINGS_FILE = config_dir() / "settings.json"
 # Engine contract (see omnidroid.md): account names are [A-Za-z0-9_-]+.
 ACCOUNT_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
-# Hide console windows spawned on Windows (engine, websockify).
+# Hide console windows spawned on Windows (engine).
 CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 
@@ -198,29 +197,12 @@ def run_engine(args, progress=None, timeout=None):
     return result
 
 
-def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-def _terminate(proc):
-    try:
-        if proc.poll() is None:
-            proc.terminate()
-    except OSError:
-        pass
-
-
 class Api:
     """Methods exposed to JavaScript as window.pywebview.api.*"""
 
     def __init__(self):
         self._window = None  # set in main() after the window is created
         self._maximized = False
-        self._viewers = {}  # account name -> {"window": Window, "allow_close": bool}
-        self._proxies = {}  # account name -> {"proc": Popen, "ws_port": int, "vnc_port": int}
-        self._proxy_lock = threading.Lock()
 
     # ---- window controls (used by the custom title bar) ----
 
@@ -405,150 +387,23 @@ class Api:
         self._push("accounts-changed", {})
         return result
 
-    # ---- VNC viewer ----
+    # ---- viewer ----
 
-    def _ensure_proxy(self, name, vnc_port):
-        """Start (or reuse) a websockify bridge ws://127.0.0.1:<ws> -> VNC port.
-        The webview cannot speak raw RFB/TCP, so noVNC connects through this."""
-        with self._proxy_lock:
-            rec = self._proxies.get(name)
-            if rec and rec["vnc_port"] == vnc_port and rec["proc"].poll() is None:
-                return rec["ws_port"]
-            if rec:
-                _terminate(rec["proc"])
-
-            ws_port = _free_port()
-            try:
-                proc = subprocess.Popen(
-                    [sys.executable, "-m", "websockify",
-                     f"127.0.0.1:{ws_port}", f"127.0.0.1:{vnc_port}"],
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    creationflags=CREATE_NO_WINDOW,
-                )
-            except OSError as err:
-                raise RuntimeError(f"Could not start websockify: {err}") from err
-
-            deadline = time.time() + 5
-            while time.time() < deadline:
-                if proc.poll() is not None:
-                    raise RuntimeError(
-                        "websockify exited immediately — is it installed? (pip install websockify)"
-                    )
-                try:
-                    socket.create_connection(("127.0.0.1", ws_port), timeout=0.2).close()
-                    break
-                except OSError:
-                    time.sleep(0.1)
-            else:
-                _terminate(proc)
-                raise RuntimeError("websockify did not start listening in time")
-
-            self._proxies[name] = {"proc": proc, "ws_port": ws_port, "vnc_port": vnc_port}
-            return ws_port
-
-    def open_viewer(self, name):
-        """Open (or focus) a popup window with a live, controllable VNC view."""
-        error = self._bad_name(name)
-        if error:
-            return error
-
-        rec = self._viewers.get(name)
-        if rec:
-            try:
-                rec["window"].show()
-                return {"ok": True, "already_open": True}
-            except Exception:
-                self._viewers.pop(name, None)  # stale record, reopen below
-
-        listing = run_engine(["list", "--json"], timeout=60)
-        entry = next(
-            (a for a in listing.get("accounts", []) if isinstance(a, dict) and a.get("name") == name),
-            None,
-        )
-        if entry is None:
-            return {"ok": False, "error": "unknown_account", "message": f"'{name}' does not exist."}
-        if not entry.get("running"):
-            return {"ok": False, "error": "not_running",
-                    "message": f"'{name}' is not running — start it first."}
-        vnc_port = entry.get("vnc_port")
-        if not isinstance(vnc_port, int):
-            return {"ok": False, "error": "no_vnc_port",
-                    "message": "The engine did not report a VNC port for this account."}
-
-        try:
-            ws_port = self._ensure_proxy(name, vnc_port)
-        except RuntimeError as err:
-            return {"ok": False, "error": "proxy_failed", "message": str(err)}
-
-        viewer_html = FRONTEND_DIST / "viewer.html"
-        if not viewer_html.is_file():
-            return {"ok": False, "error": "frontend_missing",
-                    "message": "viewer.html missing — run `npm run build` in frontend/."}
-
-        window = webview.create_window(
-            name,  # popup title = account name
-            url=str(viewer_html),
-            js_api=self,
-            width=960,
-            height=600,
-            min_size=(480, 320),
-            background_color="#14151d",
-        )
-        rec = {"window": window, "allow_close": False}
-        self._viewers[name] = rec
-
-        cfg = json.dumps({"session": name, "ws_port": ws_port})
-        window.events.loaded += lambda *a: window.evaluate_js(
-            f"window.initViewer && window.initViewer({cfg})"
-        )
-
-        def on_closing(*a):
-            # Native close: ask keep-running (default) vs stop, instead of closing.
-            if rec["allow_close"]:
-                return True
-            try:
-                window.evaluate_js("window.showCloseDialog && window.showCloseDialog()")
-            except Exception:
-                return True  # can't ask — fall back to plain disconnect (keeps running)
-            return False
-
-        window.events.closing += on_closing
-        window.events.closed += lambda *a: self._viewers.pop(name, None)
-        return {"ok": True, "ws_port": ws_port}
-
-    def viewer_close(self, name, stop_instance=False):
-        """Called from the viewer popup: disconnect, optionally stopping the
-        instance. Plain disconnect is the default — the instance keeps running."""
-        result = {"ok": True}
-        if stop_instance:
-            result = self.engine_stop(name)
-        rec = self._viewers.pop(name, None)
-        if rec:
-            rec["allow_close"] = True
-            try:
-                rec["window"].destroy()
-            except Exception:
-                pass
-        return result
+    def engine_view(self, name):
+        """Open omnidroid's own native viewer window (--start boots if stopped).
+        Fire-and-forget; the engine owns the window. Report only a launch failure."""
+        res = run_engine(["view", name, "--start"], timeout=60)
+        if isinstance(res, dict) and res.get("ok") is False:
+            return res
+        return {"ok": True}
 
     # ---- shutdown ----
 
     def _shutdown(self):
-        """Close viewer popups and websockify bridges. Instances keep running —
-        only an explicit stop powers them off (engine contract)."""
-        for rec in list(self._viewers.values()):
-            rec["allow_close"] = True
-            try:
-                rec["window"].destroy()
-            except Exception:
-                pass
-        self._viewers.clear()
-        with self._proxy_lock:
-            for rec in self._proxies.values():
-                _terminate(rec["proc"])
-            self._proxies.clear()
+        """No embedded viewer/proxy state to tear down — the engine owns its
+        own viewer windows. Instances keep running regardless; only an
+        explicit stop powers them off (engine contract)."""
+        pass
 
 
 def main():

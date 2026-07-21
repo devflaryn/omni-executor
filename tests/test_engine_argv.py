@@ -73,3 +73,14 @@ def test_engine_modes_fallback_includes_farming(monkeypatch):
     monkeypatch.setattr(main, "run_engine", lambda *a, **k: {"ok": True})  # no modes
     modes = main.Api().engine_modes()
     assert "farming" in modes
+
+
+def test_engine_view_argv(captured):
+    main.Api().engine_view("alice")
+    assert ["view", "alice", "--start"] in captured
+
+
+def test_websockify_machinery_removed():
+    assert not hasattr(main.Api, "_ensure_proxy")
+    assert not hasattr(main.Api, "open_viewer")
+    assert not hasattr(main.Api, "viewer_close")
