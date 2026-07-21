@@ -6,7 +6,7 @@ import AccountsView from "./components/AccountsView.jsx";
 import SettingsView from "./components/SettingsView.jsx";
 import Toast from "./components/Toast.jsx";
 
-const DEFAULT_LAUNCH = { mode: "playable", multiInstance: false, minimizeOnLaunch: false };
+const DEFAULT_LAUNCH = { mode: "playable", place: "", multiInstance: false };
 
 export default function App() {
   const [tab, setTab] = useState("editor");

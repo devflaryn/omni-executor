@@ -4,18 +4,33 @@ import {
   UsersIcon, RocketIcon, PlayIcon, StopIcon, MonitorIcon, TrashIcon, PlusIcon, AlertIcon,
 } from "./icons.jsx";
 
-// Engine contract (omnidroid-api.md): account names are [A-Za-z0-9_-]+.
-const NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
-const NAME_HINT = "Only letters, digits, '_' and '-' — no spaces.";
-
 // The frozen contract version this app was built against (omnidroid-api.md v1).
 const EXPECTED_CONTRACT = "1.0";
 
-const MODES = [
-  { id: "playable", label: "Playable — 4 GB RAM · 4 CPUs (default)" },
-  { id: "hard", label: "Hard — 3 GB RAM · 4 CPUs" },
-  { id: "brutal", label: "Brutal — 2 GB RAM · 2 CPUs" },
-];
+// Display labels for known modes; engine_modes() is the source of truth for
+// which ids exist (so a new engine build can surface e.g. "farming" without
+// a frontend change), this just prettifies known ones.
+const MODE_LABELS = {
+  playable: "Playable — 4 GB RAM · 4 CPUs (default)",
+  hard: "Hard — 3 GB RAM · 4 CPUs",
+  brutal: "Brutal — 2 GB RAM · 2 CPUs",
+  farming: "Farming — optimized for automation",
+};
+
+// Used before the engine_modes() fetch resolves (or in browser preview).
+const FALLBACK_MODES = Object.entries(MODE_LABELS).map(([id, label]) => ({ id, label }));
+
+function normalizeModes(list) {
+  return list
+    .map((m) =>
+      typeof m === "string"
+        ? { id: m, label: MODE_LABELS[m] || m }
+        : m && typeof m.id === "string"
+          ? { id: m.id, label: m.label || MODE_LABELS[m.id] || m.id }
+          : null
+    )
+    .filter(Boolean);
+}
 
 function initials(name) {
   const parts = String(name).trim().split(/[\s_-]+/).filter(Boolean);
@@ -33,8 +48,11 @@ export default function AccountsView({ active, showToast, launchOpts, onLaunchOp
   const [selected, setSelected] = useState(null);
   const [busy, setBusy] = useState({}); // name -> label
   const [progress, setProgress] = useState({}); // scope -> latest stderr line
+  const [modes, setModes] = useState(FALLBACK_MODES);
   const [formOpen, setFormOpen] = useState(false);
-  const [formName, setFormName] = useState("");
+  const [addMethod, setAddMethod] = useState("browser"); // "browser" | "paste"
+  const [tokenValue, setTokenValue] = useState("");
+  const [addBusy, setAddBusy] = useState(false);
   const [formError, setFormError] = useState("");
   const [removeTarget, setRemoveTarget] = useState(null);
   const [removeInput, setRemoveInput] = useState("");
@@ -69,6 +87,9 @@ export default function AccountsView({ active, showToast, launchOpts, onLaunchOp
       setBackend(ok);
       if (ok) {
         api("engine_version").then(setVersion); // contract handshake, gated below
+        api("engine_modes").then((res) => {
+          if (Array.isArray(res) && res.length) setModes(normalizeModes(res));
+        });
         refreshDoctor();
         refreshList();
       }
@@ -108,40 +129,46 @@ export default function AccountsView({ active, showToast, launchOpts, onLaunchOp
     refreshList();
   };
 
-  const submitCreate = async (e) => {
-    e.preventDefault();
-    const name = formName.trim();
-    if (!NAME_RE.test(name)) {
-      setFormError(NAME_HINT);
-      return;
-    }
-    if (accounts.some((a) => a.name === name)) {
-      setFormError("That account already exists.");
-      return;
-    }
-    setFormOpen(false);
-    setFormName("");
+  const submitLoginBrowser = async () => {
+    setAddBusy(true);
     setFormError("");
-    setBusyFor(name, "Creating — first provisioning can take 3–15 min");
-    // Optimistic placeholder row so the long create is visible immediately.
-    setAccounts((prev) => [...prev, { name, running: false, creating: true }]);
-    const res = await api("engine_create", name);
-    setBusyFor(name, null);
-    setProgress((prev) => ({ ...prev, [name]: undefined }));
+    const res = await api("engine_login_browser");
+    setAddBusy(false);
     if (res.ok) {
-      showToast(`Created ${name}`);
-      setSelected(name);
+      showToast(res.name ? `Signed in as ${res.name}` : "Signed in");
+      setFormOpen(false);
+      if (res.name) setSelected(res.name);
     } else {
-      showToast(errText(res));
-      setAccounts((prev) => prev.filter((a) => !(a.name === name && a.creating)));
+      setFormError(errText(res));
+    }
+    refreshList();
+  };
+
+  const submitLoginToken = async (e) => {
+    e.preventDefault();
+    const token = tokenValue.trim();
+    if (!token) {
+      setFormError("Paste a Roblox cookie/token first.");
+      return;
+    }
+    setAddBusy(true);
+    setFormError("");
+    const res = await api("engine_login_token", token);
+    setAddBusy(false);
+    setTokenValue("");
+    if (res.ok) {
+      showToast(res.name ? `Signed in as ${res.name}` : "Signed in");
+      setFormOpen(false);
+      if (res.name) setSelected(res.name);
+    } else {
+      setFormError(errText(res));
     }
     refreshList();
   };
 
   const openViewer = async (name) => {
-    const res = await api("open_viewer", name);
+    const res = await api("engine_view", name);
     if (!res.ok) showToast(errText(res));
-    else if (launchOpts.minimizeOnLaunch) api("minimize");
   };
 
   const start = async (name) => {
@@ -152,7 +179,7 @@ export default function AccountsView({ active, showToast, launchOpts, onLaunchOp
       return;
     }
     setBusyFor(name, "Starting…");
-    const res = await api("engine_start", name, launchOpts.mode);
+    const res = await api("engine_start", name, launchOpts.mode, launchOpts.place);
     setBusyFor(name, null);
     setProgress((prev) => ({ ...prev, [name]: undefined }));
     if (res.ok) {
@@ -276,7 +303,8 @@ export default function AccountsView({ active, showToast, launchOpts, onLaunchOp
             <button
               onClick={() => {
                 setFormOpen((open) => !open);
-                setFormName("");
+                setAddMethod("browser");
+                setTokenValue("");
                 setFormError("");
               }}
               disabled={!anyBackend}
@@ -288,36 +316,85 @@ export default function AccountsView({ active, showToast, launchOpts, onLaunchOp
           </div>
 
           {formOpen && (
-            <form
-              onSubmit={submitCreate}
-              className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-slate-50/60 px-4 py-3
+            <div
+              className="flex flex-col gap-3 border-b border-slate-200 bg-slate-50/60 px-4 py-3
                          transition-colors duration-300 dark:border-white/[.06] dark:bg-white/[.02]"
             >
-              <input
-                autoFocus
-                value={formName}
-                onChange={(e) => {
-                  setFormName(e.target.value);
-                  setFormError("");
-                }}
-                onKeyDown={(e) => e.key === "Escape" && setFormOpen(false)}
-                className="input flex-1"
-                type="text"
-                placeholder="Account name (e.g. player_01)"
-                maxLength={64}
-                autoComplete="off"
-                spellCheck={false}
-              />
-              <button type="submit" className="btn-primary px-3 py-1.5">
-                Create
-              </button>
-              <button type="button" onClick={() => setFormOpen(false)} className="btn-ghost px-3 py-1.5">
-                Cancel
-              </button>
-              <p className={`w-full text-[11px] ${formError ? "text-red-400" : "text-slate-400 dark:text-slate-500"}`}>
-                {formError || `${NAME_HINT} Creating provisions a fresh Android instance (first time: ~3–15 min).`}
+              <div className="flex gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAddMethod("browser");
+                    setFormError("");
+                  }}
+                  className={`rounded-lg px-3 py-1.5 text-[12px] font-semibold transition-colors ${
+                    addMethod === "browser" ? "bg-indigo-500 text-white" : "btn-ghost"
+                  }`}
+                >
+                  Sign in with browser
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAddMethod("paste");
+                    setFormError("");
+                  }}
+                  className={`rounded-lg px-3 py-1.5 text-[12px] font-semibold transition-colors ${
+                    addMethod === "paste" ? "bg-indigo-500 text-white" : "btn-ghost"
+                  }`}
+                >
+                  Paste cookie
+                </button>
+              </div>
+
+              {addMethod === "browser" ? (
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={submitLoginBrowser}
+                    disabled={addBusy}
+                    className="btn-primary px-3 py-1.5 disabled:pointer-events-none disabled:opacity-50"
+                  >
+                    {addBusy ? "Opening browser…" : "Sign in with browser"}
+                  </button>
+                  <button type="button" onClick={() => setFormOpen(false)} className="btn-ghost px-3 py-1.5">
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <form onSubmit={submitLoginToken} className="flex flex-col gap-2">
+                  <textarea
+                    autoFocus
+                    value={tokenValue}
+                    onChange={(e) => {
+                      setTokenValue(e.target.value);
+                      setFormError("");
+                    }}
+                    onKeyDown={(e) => e.key === "Escape" && setFormOpen(false)}
+                    className="input min-h-[72px] resize-y font-mono text-[11.5px]"
+                    placeholder="Paste your Roblox .ROBLOSECURITY cookie"
+                    spellCheck={false}
+                  />
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="submit"
+                      disabled={addBusy}
+                      className="btn-primary px-3 py-1.5 disabled:pointer-events-none disabled:opacity-50"
+                    >
+                      {addBusy ? "Signing in…" : "Add account"}
+                    </button>
+                    <button type="button" onClick={() => setFormOpen(false)} className="btn-ghost px-3 py-1.5">
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              <p className={`text-[11px] ${formError ? "text-red-400" : "text-slate-400 dark:text-slate-500"}`}>
+                {formError ||
+                  "Signing in provisions a fresh Android instance for that Roblox account (auto-named from Roblox; first time: ~3–15 min)."}
               </p>
-            </form>
+            </div>
           )}
 
           <div className="divide-y divide-slate-100 dark:divide-white/[.04]">
@@ -371,12 +448,28 @@ export default function AccountsView({ active, showToast, launchOpts, onLaunchOp
                 onChange={(e) => onLaunchOpts({ ...launchOpts, mode: e.target.value })}
                 className="input cursor-pointer"
               >
-                {MODES.map((m) => (
+                {modes.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.label}
                   </option>
                 ))}
               </select>
+            </label>
+
+            <label className="flex flex-col gap-1.5">
+              <span className="text-[11px] font-medium tracking-wider text-slate-400 uppercase dark:text-slate-500">
+                Place ID (optional)
+              </span>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={launchOpts.place || ""}
+                onChange={(e) => onLaunchOpts({ ...launchOpts, place: e.target.value })}
+                className="input"
+                placeholder="e.g. 8737899170"
+                autoComplete="off"
+                spellCheck={false}
+              />
             </label>
 
             <label className="flex cursor-pointer items-center justify-between gap-3">
@@ -388,19 +481,6 @@ export default function AccountsView({ active, showToast, launchOpts, onLaunchOp
                 type="checkbox"
                 checked={launchOpts.multiInstance}
                 onChange={(e) => onLaunchOpts({ ...launchOpts, multiInstance: e.target.checked })}
-                className="h-4 w-4 shrink-0 cursor-pointer accent-indigo-500"
-              />
-            </label>
-
-            <label className="flex cursor-pointer items-center justify-between gap-3">
-              <span>
-                <span className="block text-[12.5px] font-medium">Minimize after launch</span>
-                <span className="text-[11px] text-slate-400 dark:text-slate-500">Hide this window once the viewer opens</span>
-              </span>
-              <input
-                type="checkbox"
-                checked={launchOpts.minimizeOnLaunch}
-                onChange={(e) => onLaunchOpts({ ...launchOpts, minimizeOnLaunch: e.target.checked })}
                 className="h-4 w-4 shrink-0 cursor-pointer accent-indigo-500"
               />
             </label>
