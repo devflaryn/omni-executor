@@ -1,677 +1,520 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { api, hasBackend, onEngineEvent } from "../api.js";
+/* Instances panel: one row per account, one launch bay on the right. */
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import { describeMode, errText, useEngine } from "../engine.jsx";
 import {
-  UsersIcon, RocketIcon, PlayIcon, StopIcon, MonitorIcon, TrashIcon, PlusIcon, AlertIcon,
+  Button,
+  Field,
+  IconButton,
+  Lamp,
+  Modal,
+  Notice,
+  Panel,
+  PanelHead,
+  Toggle,
+} from "./ui.jsx";
+import {
+  AlertIcon,
+  InfoIcon,
+  LayersIcon,
+  MonitorIcon,
+  PlayIcon,
+  PlusIcon,
+  RocketIcon,
+  SearchIcon,
+  StopIcon,
+  TrashIcon,
+  UsersIcon,
 } from "./icons.jsx";
 
-// The frozen contract version this app was built against (omnidroid-api.md v1).
-const EXPECTED_CONTRACT = "1.0";
-
-// Display labels for known modes; engine_modes() is the source of truth for
-// which ids exist (so a new engine build can surface e.g. "farming" without
-// a frontend change), this just prettifies known ones.
-const MODE_LABELS = {
-  playable: "Playable — 4 GB RAM · 4 CPUs (default)",
-  hard: "Hard — 3 GB RAM · 4 CPUs",
-  brutal: "Brutal — 2 GB RAM · 2 CPUs",
-  farming: "Farming — optimized for automation",
-};
-
-// Used before the engine_modes() fetch resolves (or in browser preview).
-const FALLBACK_MODES = Object.entries(MODE_LABELS).map(([id, label]) => ({ id, label }));
-
-function normalizeModes(list) {
-  return list
-    .map((m) =>
-      typeof m === "string"
-        ? { id: m, label: MODE_LABELS[m] || m }
-        : m && typeof m.id === "string"
-          ? { id: m.id, label: m.label || MODE_LABELS[m.id] || m.id }
-          : null
-    )
-    .filter(Boolean);
-}
-
+/** Two characters, always: one per word, or the first two letters of a single
+    run-together name like "admn1b12farm2". */
 function initials(name) {
   const parts = String(name).trim().split(/[\s_-]+/).filter(Boolean);
-  const chars = parts.slice(0, 2).map((p) => p[0]);
-  return (chars.join("") || "?").toUpperCase();
+  if (!parts.length) return "?";
+  const chars = parts.length > 1 ? parts.slice(0, 2).map((p) => p[0]) : [parts[0].slice(0, 2)];
+  return chars.join("").toUpperCase();
 }
 
-const errText = (res) => res?.message || res?.error || "Engine error";
+export default function AccountsView({ active, launch, onLaunch, showToast }) {
+  const engine = useEngine();
+  const { accounts, busy, progress, backend, issue, settingUp, modes } = engine;
 
-export default function AccountsView({ active, showToast, launchOpts, onLaunchOpts }) {
-  const [backend, setBackend] = useState(null); // null = probing
-  const [doctor, setDoctor] = useState(null);
-  const [version, setVersion] = useState(null); // engine handshake (contract §4)
-  const [accounts, setAccounts] = useState([]);
   const [selected, setSelected] = useState(null);
-  const [busy, setBusy] = useState({}); // name -> label
-  const [progress, setProgress] = useState({}); // scope -> latest stderr line
-  const [modes, setModes] = useState(FALLBACK_MODES);
-  const [formOpen, setFormOpen] = useState(false);
-  const [addMethod, setAddMethod] = useState("browser"); // "browser" | "paste"
-  const [tokenValue, setTokenValue] = useState("");
-  const [addBusy, setAddBusy] = useState(false);
-  const [formError, setFormError] = useState("");
+  const [query, setQuery] = useState("");
+  const [adding, setAdding] = useState(false);
   const [removeTarget, setRemoveTarget] = useState(null);
-  const [removeInput, setRemoveInput] = useState("");
-  const [setupRunning, setSetupRunning] = useState(false);
 
-  const busyRef = useRef(busy);
-  busyRef.current = busy;
+  const usable = backend === true;
 
-  const setBusyFor = useCallback((name, label) => {
-    setBusy((prev) => {
-      const next = { ...prev };
-      if (label) next[name] = label;
-      else delete next[name];
-      return next;
-    });
-  }, []);
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return q ? accounts.filter((a) => a.name.toLowerCase().includes(q)) : accounts;
+  }, [accounts, query]);
 
-  const refreshList = useCallback(async () => {
-    const res = await api("engine_list");
-    if (res.ok && Array.isArray(res.accounts)) {
-      setAccounts(res.accounts.filter((a) => a && typeof a.name === "string"));
-    }
-  }, []);
-
-  const refreshDoctor = useCallback(async () => {
-    setDoctor(await api("engine_doctor"));
-  }, []);
-
-  // Initial probe: backend? -> handshake (version) + doctor + list.
+  // Keep the selection pointing at something real.
   useEffect(() => {
-    hasBackend().then((ok) => {
-      setBackend(ok);
-      if (ok) {
-        api("engine_version").then(setVersion); // contract handshake, gated below
-        api("engine_modes").then((res) => {
-          if (Array.isArray(res) && res.length) setModes(normalizeModes(res));
-        });
-        refreshDoctor();
-        refreshList();
-      }
-    });
-  }, [refreshDoctor, refreshList]);
-
-  // Live state: poll `list` while the tab is visible.
-  useEffect(() => {
-    if (!active || !backend) return;
-    refreshList();
-    const timer = setInterval(refreshList, 4000);
-    return () => clearInterval(timer);
-  }, [active, backend, refreshList]);
-
-  // Engine events pushed from Python (stderr progress, lifecycle changes).
-  useEffect(
-    () =>
-      onEngineEvent((event, payload) => {
-        if (event === "engine-progress" && payload?.scope) {
-          setProgress((prev) => ({ ...prev, [payload.scope]: payload.line }));
-        } else if (event === "accounts-changed") {
-          refreshList();
-        }
-      }),
-    [refreshList]
-  );
-
-  // ---- actions ----
-
-  const runSetup = async () => {
-    setSetupRunning(true);
-    const res = await api("engine_setup");
-    setSetupRunning(false);
-    setProgress((prev) => ({ ...prev, setup: undefined }));
-    showToast(res.ok ? "Engine setup complete" : errText(res));
-    refreshDoctor();
-    refreshList();
-  };
-
-  const submitLoginBrowser = async () => {
-    setAddBusy(true);
-    setFormError("");
-    const res = await api("engine_login_browser");
-    setAddBusy(false);
-    if (res.ok) {
-      showToast(res.name ? `Signed in as ${res.name}` : "Signed in");
-      setFormOpen(false);
-      if (res.name) setSelected(res.name);
-    } else {
-      setFormError(errText(res));
-    }
-    refreshList();
-  };
-
-  const submitLoginToken = async (e) => {
-    e.preventDefault();
-    const token = tokenValue.trim();
-    if (!token) {
-      setFormError("Paste a Roblox cookie/token first.");
-      return;
-    }
-    setAddBusy(true);
-    setFormError("");
-    const res = await api("engine_login_token", token);
-    setAddBusy(false);
-    setTokenValue("");
-    if (res.ok) {
-      showToast(res.name ? `Signed in as ${res.name}` : "Signed in");
-      setFormOpen(false);
-      if (res.name) setSelected(res.name);
-    } else {
-      setFormError(errText(res));
-    }
-    refreshList();
-  };
-
-  const openViewer = async (name) => {
-    const res = await api("engine_view", name);
-    if (!res.ok) showToast(errText(res));
-  };
-
-  const start = async (name) => {
-    const account = accounts.find((a) => a.name === name);
-    if (account?.running) return openViewer(name);
-    if (!launchOpts.multiInstance && accounts.some((a) => a.running && a.name !== name)) {
-      showToast("Another account is running — enable Multi-instance to run several at once");
-      return;
-    }
-    setBusyFor(name, "Starting…");
-    const res = await api("engine_start", name, launchOpts.mode, launchOpts.place);
-    setBusyFor(name, null);
-    setProgress((prev) => ({ ...prev, [name]: undefined }));
-    if (res.ok) {
-      showToast(res.first_boot ? `${name} is booting (first boot takes longer)` : `${name} is running`);
-      await refreshList();
-      openViewer(name);
-    } else {
-      showToast(errText(res));
-      refreshList();
-    }
-  };
-
-  const stop = async (name) => {
-    setBusyFor(name, "Stopping…");
-    const res = await api("engine_stop", name);
-    setBusyFor(name, null);
-    setProgress((prev) => ({ ...prev, [name]: undefined }));
-    showToast(res.ok ? `Stopped ${name}` : errText(res));
-    refreshList();
-  };
-
-  const confirmRemove = async () => {
-    const name = removeTarget?.name;
-    setRemoveTarget(null);
-    setRemoveInput("");
-    if (!name) return;
-    setBusyFor(name, "Removing…");
-    const res = await api("engine_remove", name);
-    setBusyFor(name, null);
-    setProgress((prev) => ({ ...prev, [name]: undefined }));
-    if (res.ok) {
-      showToast(`Removed ${name} and deleted its data`);
-      if (selected === name) setSelected(null);
-    } else {
-      showToast(errText(res));
-    }
-    refreshList();
-  };
-
-  // ---- derived ----
+    if (selected && !accounts.some((a) => a.name === selected)) setSelected(null);
+    if (!selected && accounts.length === 1) setSelected(accounts[0].name);
+  }, [accounts, selected]);
 
   const selectedAccount = accounts.find((a) => a.name === selected) || null;
   const selectedBusy = selected ? busy[selected] : null;
-  const anyBackend = backend === true;
-
-  // ---- banner ----
-
-  let banner = null;
-  const contractMismatch =
-    version && (!version.ok || version.contract !== EXPECTED_CONTRACT || version.arch_aware !== true);
-  if (backend === false) {
-    banner = { tone: "info", text: "Browser preview — engine features need the desktop app (python main.py)." };
-  } else if (doctor && doctor.error === "engine_missing") {
-    banner = { tone: "error", text: doctor.message };
-  } else if (contractMismatch) {
-    banner = {
-      tone: "warn",
-      text: version.ok
-        ? `This engine reports contract ${version.contract || "?"} (arch-aware: ${version.arch_aware ? "yes" : "no"}); ` +
-          `this app expects ${EXPECTED_CONTRACT}. Some features may not work — update omnidroid.`
-        : `Couldn't read the engine contract (omni version) — the engine may be too old. ${version.message || ""}`,
-    };
-  } else if (doctor && !doctor.ready) {
-    const problems = [];
-    if (Array.isArray(doctor.missing_files) && doctor.missing_files.length) {
-      problems.push(`missing base files in ${doctor.images_dir}: ${doctor.missing_files.join(", ")}`);
-    }
-    if (doctor.qemu_present === false) problems.push("QEMU is not set up yet");
-    if (doctor.adb_present === false) problems.push("adb not found on PATH");
-    banner = {
-      tone: "warn",
-      text: `Engine is not ready — ${problems.join("; ") || doctor.message || "see doctor output"}.`,
-      setup: true,
-    };
-  }
-
-  const bannerTones = {
-    info: "border-slate-300 bg-slate-100 text-slate-600 dark:border-white/10 dark:bg-white/[.04] dark:text-slate-300",
-    warn: "border-amber-400/40 bg-amber-50 text-amber-700 dark:bg-amber-400/10 dark:text-amber-300",
-    error: "border-red-400/40 bg-red-50 text-red-600 dark:bg-red-400/10 dark:text-red-300",
-  };
 
   return (
-    <section className={`min-h-0 flex-1 overflow-y-auto ${active ? "" : "hidden"}`}>
-      {banner && (
-        <div className={`animate-rise mb-4 flex items-start gap-2.5 rounded-2xl border px-4 py-3 text-[12.5px] ${bannerTones[banner.tone]}`}>
-          <AlertIcon className="mt-px h-4 w-4 shrink-0" />
-          <div className="min-w-0 flex-1">
-            <p>{banner.text}</p>
-            {setupRunning && (
-              <p className="mt-1 truncate font-mono text-[11px] opacity-80">
-                {progress.setup || "Running setup…"}
+    <div className={`min-h-0 flex-1 overflow-y-auto px-5 py-5 ${active ? "" : "hidden"}`}>
+      <div className="mx-auto flex w-full max-w-[1180px] flex-col gap-4">
+        {issue && (
+          <Notice
+            tone={issue.tone}
+            icon={issue.tone === "info" ? InfoIcon : AlertIcon}
+            action={
+              issue.canSetup && (
+                <Button variant="solid" size="sm" onClick={engine.runSetup} disabled={settingUp}>
+                  {settingUp ? "Installing…" : "Run setup"}
+                </Button>
+              )
+            }
+          >
+            <p>{issue.text}</p>
+            {settingUp && (
+              <p className="mt-1 truncate font-mono text-[11px] opacity-70">
+                {progress.setup || "Working…"}
               </p>
             )}
-          </div>
-          {banner.setup && (
-            <button onClick={runSetup} disabled={setupRunning} className="btn-primary shrink-0">
-              {setupRunning ? "Setting up…" : "Run setup"}
-            </button>
-          )}
-        </div>
-      )}
+          </Notice>
+        )}
 
-      <div className="animate-rise grid items-start gap-4 md:grid-cols-[1fr_320px]">
-        {/* -------- Account list -------- */}
-        <div className="card overflow-hidden">
-          <div
-            className="flex items-center justify-between border-b border-slate-200 px-4 py-3
-                       transition-colors duration-300 dark:border-white/[.06]"
-          >
-            <div className="flex items-center gap-2">
-              <UsersIcon className="h-4 w-4 text-slate-400" />
-              <h2 className="text-[13px] font-semibold">Accounts</h2>
-              <span
-                className="rounded-full bg-slate-100 px-2 py-0.5 text-[10.5px] font-semibold text-slate-500
-                           dark:bg-white/[.06] dark:text-slate-400"
+        <div className="grid items-start gap-8 lg:grid-cols-[minmax(0,1fr)_308px]">
+          {/* ---- Instances ---- */}
+          <Panel className="animate-rise overflow-hidden">
+            <PanelHead
+              icon={UsersIcon}
+              title="Instances"
+              count={accounts.length}
+              right={
+                <>
+                  <div className="relative hidden sm:block">
+                    <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-ink-3" />
+                    <input
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      placeholder="Filter"
+                      aria-label="Filter instances by name"
+                      spellCheck={false}
+                      className="input h-7 w-[132px] py-0 pl-8 text-[12px]"
+                    />
+                  </div>
+                  <Button variant="solid" size="sm" onClick={() => setAdding(true)} disabled={!usable}>
+                    <PlusIcon className="h-3.5 w-3.5" />
+                    Add account
+                  </Button>
+                </>
+              }
+            />
+
+            {visible.length > 0 ? (
+              <ul>
+                {visible.map((account) => (
+                  <AccountRow
+                    key={account.name}
+                    account={account}
+                    selected={selected === account.name}
+                    busyLabel={busy[account.name]}
+                    progressLine={busy[account.name] ? progress[account.name] : null}
+                    onSelect={() => setSelected(account.name)}
+                    onStart={() => engine.start(account.name, launch)}
+                    onStop={() => engine.stop(account.name)}
+                    onOpen={() => engine.openViewer(account.name)}
+                    onRemove={() => setRemoveTarget(account)}
+                  />
+                ))}
+              </ul>
+            ) : (
+              <EmptyState
+                filtered={accounts.length > 0}
+                query={query}
+                usable={usable}
+                onAdd={() => setAdding(true)}
+                onClear={() => setQuery("")}
+              />
+            )}
+          </Panel>
+
+          {/* ---- Launch bay ---- */}
+          <Panel className="animate-rise overflow-hidden">
+            <PanelHead icon={RocketIcon} title="Launch" />
+            <div className="flex flex-col gap-4 p-3.5">
+              <Field label="Performance mode" htmlFor="launch-mode">
+                <select
+                  id="launch-mode"
+                  value={launch.mode}
+                  onChange={(e) => onLaunch({ ...launch, mode: e.target.value })}
+                  className="input cursor-pointer"
+                >
+                  {modes.map((id) => {
+                    const m = describeMode(id);
+                    return (
+                      <option key={id} value={id}>
+                        {m.spec ? `${m.label} — ${m.spec}` : m.label}
+                      </option>
+                    );
+                  })}
+                </select>
+                <p className="text-[11px] leading-snug text-ink-3">{describeMode(launch.mode).note}</p>
+              </Field>
+
+              <Field
+                label="Place ID"
+                htmlFor="launch-place"
+                hint="Leave empty to land on the Roblox home screen."
               >
-                {accounts.length}
-              </span>
-            </div>
-            <button
-              onClick={() => {
-                setFormOpen((open) => !open);
-                setAddMethod("browser");
-                setTokenValue("");
-                setFormError("");
-              }}
-              disabled={!anyBackend}
-              className="btn-primary"
-            >
-              <PlusIcon className="h-3.5 w-3.5" />
-              Add account
-            </button>
-          </div>
+                <input
+                  id="launch-place"
+                  type="text"
+                  inputMode="numeric"
+                  value={launch.place || ""}
+                  onChange={(e) => onLaunch({ ...launch, place: e.target.value })}
+                  className="input font-mono text-[12.5px]"
+                  placeholder="8737899170"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </Field>
 
-          {formOpen && (
-            <div
-              className="flex flex-col gap-3 border-b border-slate-200 bg-slate-50/60 px-4 py-3
-                         transition-colors duration-300 dark:border-white/[.06] dark:bg-white/[.02]"
-            >
-              <div className="flex gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAddMethod("browser");
-                    setFormError("");
-                  }}
-                  className={`rounded-lg px-3 py-1.5 text-[12px] font-semibold transition-colors ${
-                    addMethod === "browser" ? "bg-indigo-500 text-white" : "btn-ghost"
-                  }`}
-                >
-                  Sign in with browser
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAddMethod("paste");
-                    setFormError("");
-                  }}
-                  className={`rounded-lg px-3 py-1.5 text-[12px] font-semibold transition-colors ${
-                    addMethod === "paste" ? "bg-indigo-500 text-white" : "btn-ghost"
-                  }`}
-                >
-                  Paste cookie
-                </button>
+              <div className="rule-t pt-3.5">
+                <Toggle
+                  id="launch-multi"
+                  checked={launch.multiInstance}
+                  onChange={(v) => onLaunch({ ...launch, multiInstance: v })}
+                  label="Multi-instance"
+                  hint="Run more than one account at the same time."
+                />
               </div>
 
-              {addMethod === "browser" ? (
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={submitLoginBrowser}
-                    disabled={addBusy}
-                    className="btn-primary px-3 py-1.5 disabled:pointer-events-none disabled:opacity-50"
-                  >
-                    {addBusy ? "Opening browser…" : "Sign in with browser"}
-                  </button>
-                  <button type="button" onClick={() => setFormOpen(false)} className="btn-ghost px-3 py-1.5">
-                    Cancel
-                  </button>
-                </div>
-              ) : (
-                <form onSubmit={submitLoginToken} className="flex flex-col gap-2">
-                  <textarea
-                    autoFocus
-                    value={tokenValue}
-                    onChange={(e) => {
-                      setTokenValue(e.target.value);
-                      setFormError("");
-                    }}
-                    onKeyDown={(e) => e.key === "Escape" && setFormOpen(false)}
-                    className="input min-h-[72px] resize-y font-mono text-[11.5px]"
-                    placeholder="Paste your Roblox .ROBLOSECURITY cookie"
-                    spellCheck={false}
-                  />
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="submit"
-                      disabled={addBusy}
-                      className="btn-primary px-3 py-1.5 disabled:pointer-events-none disabled:opacity-50"
-                    >
-                      {addBusy ? "Signing in…" : "Add account"}
-                    </button>
-                    <button type="button" onClick={() => setFormOpen(false)} className="btn-ghost px-3 py-1.5">
-                      Cancel
-                    </button>
-                  </div>
-                </form>
-              )}
-
-              <p className={`text-[11px] ${formError ? "text-red-400" : "text-slate-400 dark:text-slate-500"}`}>
-                {formError ||
-                  "Signing in provisions a fresh Android instance for that Roblox account (auto-named from Roblox; first time: ~3–15 min)."}
-              </p>
+              <div className="flex flex-col gap-2">
+                <Button
+                  variant="solid"
+                  size="lg"
+                  className="w-full"
+                  onClick={() => selectedAccount && engine.start(selectedAccount.name, launch)}
+                  disabled={!selectedAccount || Boolean(selectedBusy)}
+                >
+                  {selectedAccount?.running ? (
+                    <>
+                      <MonitorIcon className="h-4 w-4" />
+                      Open viewer
+                    </>
+                  ) : (
+                    <>
+                      <PlayIcon className="h-3.5 w-3.5" />
+                      Launch
+                    </>
+                  )}
+                </Button>
+                <p className="text-center text-[11px] leading-snug text-ink-3">
+                  {selectedBusy
+                    ? `${selectedBusy} ${selectedAccount.name}…`
+                    : selectedAccount
+                      ? selectedAccount.running
+                        ? `${selectedAccount.name} is running`
+                        : `${selectedAccount.name} is selected`
+                      : "Pick an instance from the list"}
+                </p>
+              </div>
             </div>
-          )}
-
-          <div className="divide-y divide-slate-100 dark:divide-white/[.04]">
-            {accounts.map((account) => (
-              <AccountRow
-                key={account.name}
-                account={account}
-                selected={selected === account.name}
-                busyLabel={busy[account.name]}
-                progressLine={busy[account.name] ? progress[account.name] : null}
-                onSelect={() => setSelected(account.name)}
-                onStart={() => start(account.name)}
-                onStop={() => stop(account.name)}
-                onOpen={() => openViewer(account.name)}
-                onRemove={() => {
-                  setRemoveTarget(account);
-                  setRemoveInput("");
-                }}
-              />
-            ))}
-          </div>
-
-          {accounts.length === 0 && (
-            <div className="flex flex-col items-center gap-2 px-4 py-12 text-center">
-              <UsersIcon className="h-8 w-8 text-slate-300 dark:text-slate-600" strokeWidth={1.6} />
-              <p className="text-[13px] font-medium text-slate-500 dark:text-slate-400">No accounts yet</p>
-              <p className="text-[11.5px] text-slate-400 dark:text-slate-500">
-                "Add account" creates an isolated Android instance for one game.
-              </p>
-            </div>
-          )}
-        </div>
-
-        {/* -------- Launch options -------- */}
-        <div className="card overflow-hidden">
-          <div
-            className="flex items-center gap-2 border-b border-slate-200 px-4 py-3
-                       transition-colors duration-300 dark:border-white/[.06]"
-          >
-            <RocketIcon className="h-4 w-4 text-slate-400" />
-            <h2 className="text-[13px] font-semibold">Launch options</h2>
-          </div>
-
-          <div className="flex flex-col gap-4 p-4">
-            <label className="flex flex-col gap-1.5">
-              <span className="text-[11px] font-medium tracking-wider text-slate-400 uppercase dark:text-slate-500">
-                Performance mode
-              </span>
-              <select
-                value={launchOpts.mode}
-                onChange={(e) => onLaunchOpts({ ...launchOpts, mode: e.target.value })}
-                className="input cursor-pointer"
-              >
-                {modes.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="flex flex-col gap-1.5">
-              <span className="text-[11px] font-medium tracking-wider text-slate-400 uppercase dark:text-slate-500">
-                Place ID (optional)
-              </span>
-              <input
-                type="text"
-                inputMode="numeric"
-                value={launchOpts.place || ""}
-                onChange={(e) => onLaunchOpts({ ...launchOpts, place: e.target.value })}
-                className="input"
-                placeholder="e.g. 8737899170"
-                autoComplete="off"
-                spellCheck={false}
-              />
-            </label>
-
-            <label className="flex cursor-pointer items-center justify-between gap-3">
-              <span>
-                <span className="block text-[12.5px] font-medium">Multi-instance</span>
-                <span className="text-[11px] text-slate-400 dark:text-slate-500">Allow several accounts at once</span>
-              </span>
-              <input
-                type="checkbox"
-                checked={launchOpts.multiInstance}
-                onChange={(e) => onLaunchOpts({ ...launchOpts, multiInstance: e.target.checked })}
-                className="h-4 w-4 shrink-0 cursor-pointer accent-indigo-500"
-              />
-            </label>
-
-            <button
-              onClick={() => selectedAccount && start(selectedAccount.name)}
-              disabled={!selectedAccount || Boolean(selectedBusy)}
-              className="mt-1 flex items-center justify-center gap-2 rounded-xl bg-indigo-500 px-4 py-2.5
-                         text-[13px] font-semibold text-white shadow-sm transition-all duration-150 outline-none
-                         hover:bg-indigo-600 focus-visible:ring-2 focus-visible:ring-indigo-400/60
-                         active:scale-[.98] disabled:pointer-events-none disabled:opacity-50
-                         dark:hover:bg-indigo-400"
-            >
-              <PlayIcon className="h-4 w-4" />
-              {selectedAccount?.running ? "Open viewer" : "Launch"}
-            </button>
-            <p className="-mt-1 text-center text-[11px] text-slate-400 dark:text-slate-500">
-              {selectedBusy ||
-                (selectedAccount
-                  ? selectedAccount.running
-                    ? `${selectedAccount.name} is running`
-                    : `Ready to launch ${selectedAccount.name}`
-                  : "Select an account to launch")}
-            </p>
-          </div>
+          </Panel>
         </div>
       </div>
 
-      {/* -------- Remove confirmation (DESTRUCTIVE) -------- */}
+      {adding && <AddAccountModal onClose={() => setAdding(false)} onAdded={setSelected} />}
+
       {removeTarget && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 p-4">
-          <div className="card animate-rise w-full max-w-sm p-5">
-            <h2 className="text-[14px] font-semibold text-red-500">Remove account</h2>
-            <p className="mt-1.5 text-[12px] leading-relaxed text-slate-500 dark:text-slate-400">
-              This permanently deletes <span className="font-semibold">{removeTarget.name}</span>
-              {removeTarget.running ? " (currently running — it will be stopped first)" : ""} — its Android
-              instance, game data and saves are gone forever. Type the account name to confirm.
-            </p>
-            <input
-              autoFocus
-              value={removeInput}
-              onChange={(e) => setRemoveInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") setRemoveTarget(null);
-                if (e.key === "Enter" && removeInput === removeTarget.name) confirmRemove();
-              }}
-              className="input mt-3"
-              placeholder={removeTarget.name}
-              autoComplete="off"
-              spellCheck={false}
-            />
-            <div className="mt-4 flex justify-end gap-2">
-              <button onClick={() => setRemoveTarget(null)} className="btn-ghost px-3 py-1.5">
-                Cancel
-              </button>
-              <button
-                onClick={confirmRemove}
-                disabled={removeInput !== removeTarget.name}
-                className="rounded-lg bg-red-500 px-3 py-1.5 text-[12px] font-semibold text-white shadow-sm
-                           transition-all duration-150 outline-none hover:bg-red-600 active:scale-95
-                           focus-visible:ring-2 focus-visible:ring-red-400/60
-                           disabled:pointer-events-none disabled:opacity-50"
-              >
-                Remove &amp; delete data
-              </button>
-            </div>
-          </div>
-        </div>
+        <RemoveModal
+          account={removeTarget}
+          onClose={() => setRemoveTarget(null)}
+          onConfirm={async () => {
+            const name = removeTarget.name;
+            setRemoveTarget(null);
+            const ok = await engine.remove(name);
+            if (ok && selected === name) setSelected(null);
+          }}
+        />
       )}
-    </section>
+    </div>
   );
 }
 
-function AccountRow({ account, selected, busyLabel, progressLine, onSelect, onStart, onStop, onOpen, onRemove }) {
+/* -------------------------------------------------------------------------- */
+
+function AccountRow({
+  account,
+  selected,
+  busyLabel,
+  progressLine,
+  onSelect,
+  onStart,
+  onStop,
+  onOpen,
+  onRemove,
+}) {
   const running = Boolean(account.running);
 
-  let dot = "bg-slate-300 dark:bg-slate-600";
-  let statusText = "Stopped";
+  let tone = "off";
+  let status = "Stopped";
   if (busyLabel) {
-    dot = "animate-pulse bg-amber-400";
-    statusText = busyLabel;
+    tone = "busy";
+    status = `${busyLabel}…`;
   } else if (running) {
-    dot = "bg-emerald-400";
-    statusText = `Running · VNC ${account.vnc_port ?? "?"} · ADB ${account.adb_port ?? "?"}`;
+    tone = "live";
+    status = `VNC ${account.vnc_port ?? "—"} · ADB ${account.adb_port ?? "—"}`;
   }
 
   return (
-    <div
+    <li
+      role="button"
+      tabIndex={0}
+      aria-pressed={selected}
       onClick={onSelect}
       onDoubleClick={() => running && !busyLabel && onOpen()}
-      className={`group flex cursor-pointer items-center gap-3 px-4 py-2.5 transition-colors duration-150
-                  hover:bg-slate-50 dark:hover:bg-white/[.03]
-                  ${selected ? "bg-indigo-500/[.05] dark:bg-indigo-400/[.08]" : ""}`}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+      className={`ring-focus rule-b flex cursor-pointer items-center gap-3 rounded-lg px-3.5 py-3
+                  transition-colors duration-150 last:after:hidden hover:bg-raised/70
+                  ${selected ? "bg-accent/8" : ""}`}
     >
       <span
-        className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br
-                    from-indigo-500 to-fuchsia-500 text-[11px] font-bold text-white
-                    ${selected ? "ring-2 ring-indigo-400 ring-offset-2 ring-offset-white dark:ring-offset-[#1c1e29]" : ""}`}
+        className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border font-mono
+                    text-[11px] font-bold transition-colors duration-150
+                    ${
+                      selected
+                        ? "border-accent/60 bg-accent/15 text-accent"
+                        : "border-line bg-raised text-ink-3"
+                    }`}
+        aria-hidden="true"
       >
         {initials(account.name)}
       </span>
 
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="truncate text-[13px] font-medium">{account.name}</span>
-          {account.base && (
-            <span
-              className="shrink-0 rounded-full border border-slate-200 px-1.5 py-px text-[9.5px] font-semibold
-                         tracking-wider text-slate-400 uppercase dark:border-white/10 dark:text-slate-500"
-            >
-              {account.base}
-            </span>
-          )}
+        <div className="flex items-center gap-1.5">
+          <span className="truncate text-[13px] font-medium text-ink">{account.name}</span>
           {account.arch && (
             <span
-              title={`Architecture: ${account.arch}`}
-              className={`shrink-0 rounded-full px-1.5 py-px text-[9.5px] font-semibold tracking-wider uppercase ${
-                account.arch === "arm"
-                  ? "bg-teal-500/15 text-teal-600 dark:text-teal-300"
-                  : "bg-slate-500/10 text-slate-500 dark:text-slate-400"
-              }`}
+              title={`CPU architecture: ${account.arch}`}
+              className={`chip ${account.arch === "arm" ? "border-accent/40 text-accent" : ""}`}
             >
               {account.arch}
             </span>
           )}
-          {account.mode && running && (
-            <span
-              className="shrink-0 rounded-full bg-indigo-500/10 px-1.5 py-px text-[9.5px] font-semibold
-                         tracking-wider text-indigo-500 uppercase dark:bg-indigo-400/15 dark:text-indigo-300"
-            >
-              {account.mode}
-            </span>
+          {account.base && <span className="chip hidden md:inline-block">{account.base}</span>}
+          {running && account.mode && (
+            <span className="chip border-live/40 text-live">{account.mode}</span>
           )}
         </div>
-        <div className="flex items-center gap-1.5 text-[11px] text-slate-400 dark:text-slate-500">
-          <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
-          <span className="truncate">{progressLine || statusText}</span>
+        <div className="mt-1 flex items-center gap-2">
+          <Lamp tone={tone} pulse={tone === "busy"} size={6} />
+          <span className="truncate font-mono text-[11px] text-ink-3">
+            {progressLine || status}
+          </span>
         </div>
       </div>
 
-      {running && !busyLabel && (
-        <>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onOpen();
-            }}
-            title="Open viewer"
-            className="row-icon-btn opacity-0 group-hover:opacity-100 focus-visible:opacity-100
-                       hover:bg-indigo-500/10 hover:text-indigo-500"
+      <div className="flex shrink-0 items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
+        {running ? (
+          <>
+            <IconButton label="Open viewer" tone="accent" onClick={onOpen} disabled={Boolean(busyLabel)}>
+              <MonitorIcon className="h-4 w-4" />
+            </IconButton>
+            <IconButton label="Stop instance" onClick={onStop} disabled={Boolean(busyLabel)}>
+              <StopIcon className="h-3.5 w-3.5" />
+            </IconButton>
+          </>
+        ) : (
+          <IconButton
+            label="Start instance"
+            tone="accent"
+            onClick={onStart}
+            disabled={Boolean(busyLabel) || Boolean(account.creating)}
           >
-            <MonitorIcon className="h-4 w-4" />
-          </button>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onStop();
-            }}
-            title="Stop instance"
-            className="row-icon-btn opacity-0 group-hover:opacity-100 focus-visible:opacity-100
-                       hover:bg-amber-500/10 hover:text-amber-500"
-          >
-            <StopIcon className="h-4 w-4" />
-          </button>
-        </>
-      )}
-      {!running && !busyLabel && !account.creating && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onStart();
-          }}
-          title="Start (headless)"
-          className="row-icon-btn opacity-0 group-hover:opacity-100 focus-visible:opacity-100
-                     hover:bg-indigo-500/10 hover:text-indigo-500"
+            <PlayIcon className="h-3.5 w-3.5" />
+          </IconButton>
+        )}
+        <IconButton
+          label="Remove account and delete its data"
+          tone="danger"
+          onClick={onRemove}
+          disabled={Boolean(busyLabel)}
         >
-          <PlayIcon className="h-4 w-4" />
-        </button>
-      )}
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          onRemove();
-        }}
-        disabled={Boolean(busyLabel)}
-        title="Remove account (deletes its data)"
-        className="row-icon-btn opacity-0 group-hover:opacity-100 focus-visible:opacity-100
-                   hover:bg-red-500/10 hover:text-red-500"
-      >
-        <TrashIcon className="h-4 w-4" />
-      </button>
+          <TrashIcon className="h-4 w-4" />
+        </IconButton>
+      </div>
+    </li>
+  );
+}
+
+function EmptyState({ filtered, query, usable, onAdd, onClear }) {
+  if (filtered) {
+    return (
+      <div className="flex flex-col items-center gap-2.5 px-4 py-14 text-center">
+        <SearchIcon className="h-6 w-6 text-ink-3" />
+        <p className="text-[13px] text-ink-2">
+          No instance matches “<span className="font-mono">{query}</span>”
+        </p>
+        <Button size="sm" onClick={onClear}>
+          Clear filter
+        </Button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col items-center gap-3 px-4 py-14 text-center">
+      <LayersIcon className="h-7 w-7 text-ink-3" strokeWidth={1.4} />
+      <div>
+        <p className="text-[13px] font-medium text-ink">No instances yet</p>
+        <p className="mx-auto mt-1 max-w-[36ch] text-[11.5px] leading-relaxed text-ink-3">
+          Each account gets its own Android instance with its own storage, ports and game data.
+        </p>
+      </div>
+      <Button variant="solid" size="sm" onClick={onAdd} disabled={!usable}>
+        <PlusIcon className="h-3.5 w-3.5" />
+        Add your first account
+      </Button>
     </div>
+  );
+}
+
+function AddAccountModal({ onClose, onAdded }) {
+  const engine = useEngine();
+  const [method, setMethod] = useState("browser");
+  const [token, setToken] = useState("");
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async (e) => {
+    e?.preventDefault();
+    if (method === "paste" && !token.trim()) {
+      setError("Paste your .ROBLOSECURITY cookie to continue.");
+      return;
+    }
+    setWorking(true);
+    setError("");
+    const res = method === "browser" ? await engine.loginBrowser() : await engine.loginToken(token.trim());
+    setWorking(false);
+    if (res.ok) {
+      if (res.name) onAdded(res.name);
+      onClose();
+    } else {
+      setError(errText(res));
+    }
+  };
+
+  return (
+    <Modal title="Add account" onClose={onClose}>
+      <div className="flex gap-1 rounded-lg border border-line bg-raised p-1">
+        {[
+          { id: "browser", label: "Sign in with browser" },
+          { id: "paste", label: "Paste cookie" },
+        ].map((option) => (
+          <button
+            key={option.id}
+            type="button"
+            onClick={() => {
+              setMethod(option.id);
+              setError("");
+            }}
+            className={`ring-focus flex-1 rounded-md px-3 py-1.5 text-[12px] font-semibold transition-colors
+                        duration-150 ${
+                          method === option.id
+                            ? "bg-accent text-accent-ink"
+                            : "text-ink-2 hover:text-ink"
+                        }`}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+
+      <form onSubmit={submit} className="mt-4 flex flex-col gap-3">
+        {method === "browser" ? (
+          <p className="text-[12.5px] leading-relaxed text-ink-2">
+            A browser window opens for Roblox sign-in. When it completes, the engine provisions a
+            fresh Android instance named after the account.
+          </p>
+        ) : (
+          <Field label="Roblox cookie" htmlFor="token">
+            <textarea
+              id="token"
+              value={token}
+              onChange={(e) => {
+                setToken(e.target.value);
+                setError("");
+              }}
+              className="input min-h-[86px] resize-y font-mono text-[11.5px]"
+              placeholder=".ROBLOSECURITY=…"
+              spellCheck={false}
+            />
+          </Field>
+        )}
+
+        <p className={`text-[11px] leading-relaxed ${error ? "text-danger" : "text-ink-3"}`}>
+          {error || "First-time provisioning takes roughly 3–15 minutes."}
+        </p>
+
+        <div className="mt-1 flex justify-end gap-2">
+          <Button onClick={onClose}>Cancel</Button>
+          <Button variant="solid" type="submit" disabled={working}>
+            {working ? (method === "browser" ? "Waiting for browser…" : "Adding…") : "Add account"}
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function RemoveModal({ account, onClose, onConfirm }) {
+  const [typed, setTyped] = useState("");
+  const inputRef = useRef(null);
+  const matches = typed === account.name;
+
+  return (
+    <Modal
+      title="Remove account"
+      tone="danger"
+      onClose={onClose}
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button variant="danger" onClick={onConfirm} disabled={!matches}>
+            Remove and delete data
+          </Button>
+        </>
+      }
+    >
+      <p className="text-[12.5px] leading-relaxed text-ink-2">
+        Removing <span className="font-mono font-semibold text-ink">{account.name}</span> deletes its
+        Android instance, storage and saves. This cannot be undone
+        {account.running ? "; the instance is running and will be stopped first" : ""}.
+      </p>
+      <div className="mt-3.5">
+        <Field label="Type the account name to confirm" htmlFor="confirm-name">
+          <input
+            id="confirm-name"
+            ref={inputRef}
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && matches && onConfirm()}
+            className="input font-mono"
+            placeholder={account.name}
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </Field>
+      </div>
+    </Modal>
   );
 }

@@ -16,3 +16,4 @@ instances/
 runtime/
 *.qcow2
 *.log
+.venv

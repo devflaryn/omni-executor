@@ -1,10 +1,10 @@
-/* Small inline SVG icon set (lucide outlines), shared across views. */
+/* Inline SVG icon set (lucide outlines), shared across views. */
 
 const base = {
   viewBox: "0 0 24 24",
   fill: "none",
   stroke: "currentColor",
-  strokeWidth: 2,
+  strokeWidth: 1.8,
   strokeLinecap: "round",
   strokeLinejoin: "round",
 };
@@ -54,13 +54,13 @@ export const RocketIcon = (props) => (
 
 export const PlayIcon = (props) => (
   <svg viewBox="0 0 24 24" fill="currentColor" {...props}>
-    <polygon points="6 4 20 12 6 20 6 4" />
+    <path d="M7 4.6c0-.8.87-1.29 1.55-.88l11.2 6.9a1 1 0 0 1 0 1.7l-11.2 6.9A1.03 1.03 0 0 1 7 18.34Z" />
   </svg>
 );
 
 export const StopIcon = (props) => (
   <svg viewBox="0 0 24 24" fill="currentColor" {...props}>
-    <rect x="6" y="6" width="12" height="12" rx="1.5" />
+    <rect x="6" y="6" width="12" height="12" rx="2" />
   </svg>
 );
 
@@ -80,7 +80,7 @@ export const TrashIcon = (props) => (
 );
 
 export const PlusIcon = (props) => (
-  <svg {...base} strokeWidth={2.2} {...props}>
+  <svg {...base} strokeWidth={2.1} {...props}>
     <path d="M12 5v14M5 12h14" />
   </svg>
 );
@@ -111,7 +111,7 @@ export const CloseIcon = (props) => (
 );
 
 export const SunIcon = (props) => (
-  <svg {...base} strokeWidth={2.2} {...props}>
+  <svg {...base} strokeWidth={2} {...props}>
     <circle cx="12" cy="12" r="4.2" />
     <path d="M12 2.5v2.4M12 19.1v2.4M2.5 12h2.4M19.1 12h2.4M5 5l1.7 1.7M17.3 17.3 19 19M19 5l-1.7 1.7M6.7 17.3 5 19" />
   </svg>
@@ -127,5 +127,72 @@ export const AlertIcon = (props) => (
   <svg {...base} {...props}>
     <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
     <path d="M12 9v4M12 17h.01" />
+  </svg>
+);
+
+export const InfoIcon = (props) => (
+  <svg {...base} {...props}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 16v-4.5M12 8h.01" />
+  </svg>
+);
+
+export const SearchIcon = (props) => (
+  <svg {...base} {...props}>
+    <circle cx="11" cy="11" r="7" />
+    <path d="m20 20-3.6-3.6" />
+  </svg>
+);
+
+export const ChevronLeftIcon = (props) => (
+  <svg {...base} {...props}>
+    <path d="m14 6-6 6 6 6" />
+  </svg>
+);
+
+export const ChevronRightIcon = (props) => (
+  <svg {...base} {...props}>
+    <path d="m10 6 6 6-6 6" />
+  </svg>
+);
+
+export const CheckIcon = (props) => (
+  <svg {...base} strokeWidth={2.2} {...props}>
+    <path d="m4 12.5 5.2 5.2L20 7" />
+  </svg>
+);
+
+export const CopyIcon = (props) => (
+  <svg {...base} {...props}>
+    <rect x="9" y="9" width="12" height="12" rx="2" />
+    <path d="M5 15a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2" />
+  </svg>
+);
+
+export const EraserIcon = (props) => (
+  <svg {...base} {...props}>
+    <path d="M8.5 20.5 3.9 15.9a2 2 0 0 1 0-2.83l8.4-8.4a2 2 0 0 1 2.83 0l4.6 4.6a2 2 0 0 1 0 2.83L11.3 20.5Z" />
+    <path d="M11 21h9M7.5 11.5 15 19" />
+  </svg>
+);
+
+export const CpuIcon = (props) => (
+  <svg {...base} {...props}>
+    <rect x="6" y="6" width="12" height="12" rx="2" />
+    <path d="M9.5 2.5v3.5M14.5 2.5v3.5M9.5 18v3.5M14.5 18v3.5M2.5 9.5H6M2.5 14.5H6M18 9.5h3.5M18 14.5h3.5" />
+  </svg>
+);
+
+export const PowerIcon = (props) => (
+  <svg {...base} {...props}>
+    <path d="M12 3v9" />
+    <path d="M18.4 6.6a9 9 0 1 1-12.8 0" />
+  </svg>
+);
+
+export const LayersIcon = (props) => (
+  <svg {...base} {...props}>
+    <path d="m12 2.5 9 5-9 5-9-5 9-5Z" />
+    <path d="m3 12.5 9 5 9-5M3 17l9 5 9-5" />
   </svg>
 );

@@ -1,9 +1,19 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
     <title>Omni Executor</title>
+    <style>
+      /* Paint the sheet before React mounts so there is no white flash. */
+      html {
+        background: #0a0a0a;
+      }
+      html.light {
+        background: #f7f7f7;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>

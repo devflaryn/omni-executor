@@ -1,24 +1,48 @@
+/* Settings: identity, appearance, and the engine's own facts. */
+
 import { useEffect, useRef, useState } from "react";
-import { UserIcon, SunIcon, MoonIcon } from "./icons.jsx";
+import { api } from "../api.js";
+import { useEngine } from "../engine.jsx";
+import { Button, Field, Lamp, Panel, PanelHead, Toggle } from "./ui.jsx";
+import { CpuIcon, GearIcon, MoonIcon, SunIcon, UserIcon } from "./icons.jsx";
 
 function initials(name) {
   const parts = String(name).trim().split(/\s+/).filter(Boolean);
-  const chars = parts.slice(0, 2).map((p) => p[0]);
-  return (chars.join("") || "?").toUpperCase();
+  return (parts.slice(0, 2).map((p) => p[0]).join("") || "?").toUpperCase();
 }
 
-export default function SettingsView({ active, theme, onToggleTheme, profile, onProfile }) {
+export default function SettingsView({
+  active,
+  theme,
+  onTheme,
+  compact,
+  onCompact,
+  profile,
+  onProfile,
+  showToast,
+}) {
+  const engine = useEngine();
   const [name, setName] = useState(profile.name);
   const [tag, setTag] = useState(profile.tag);
   const [saved, setSaved] = useState(false);
   const saveTimer = useRef(null);
   const savedTimer = useRef(null);
 
-  // Keep local fields in sync when settings finish loading.
+  const [bases, setBases] = useState(null);
+  const [baseBusy, setBaseBusy] = useState(false);
+
   useEffect(() => {
     setName(profile.name);
     setTag(profile.tag);
   }, [profile.name, profile.tag]);
+
+  // Base images only exist once the engine is present; ask once.
+  useEffect(() => {
+    if (engine.backend !== true) return;
+    api("engine_bases").then((res) => {
+      setBases(Array.isArray(res?.bases) ? res.bases : Array.isArray(res) ? res : []);
+    });
+  }, [engine.backend]);
 
   const scheduleSave = (nextName, nextTag) => {
     clearTimeout(saveTimer.current);
@@ -30,100 +54,204 @@ export default function SettingsView({ active, theme, onToggleTheme, profile, on
     }, 500);
   };
 
+  const chooseBase = async (tagValue) => {
+    setBaseBusy(true);
+    const res = await api("engine_use_base", tagValue);
+    setBaseBusy(false);
+    showToast(res.message || (res.ok ? "Default base updated" : "Couldn't change the base"), res.ok ? "success" : "error");
+  };
+
   return (
-    <section className={`min-h-0 flex-1 overflow-y-auto ${active ? "" : "hidden"}`}>
-      <div className="animate-rise mx-auto flex w-full max-w-2xl flex-col gap-4">
+    <div className={`min-h-0 flex-1 overflow-y-auto px-5 py-5 ${active ? "" : "hidden"}`}>
+      <div className="animate-rise mx-auto flex w-full max-w-[640px] flex-col gap-4">
         {/* Profile */}
-        <div className="card overflow-hidden">
-          <div
-            className="flex items-center gap-2 border-b border-slate-200 px-4 py-3
-                       transition-colors duration-300 dark:border-white/[.06]"
-          >
-            <UserIcon className="h-4 w-4 text-slate-400" />
-            <h2 className="text-[13px] font-semibold">Profile</h2>
+        <Panel className="overflow-hidden">
+          <PanelHead
+            icon={UserIcon}
+            title="Profile"
+            right={
+              <span
+                className={`silk text-live transition-opacity duration-300 ${saved ? "opacity-100" : "opacity-0"}`}
+              >
+                Saved
+              </span>
+            }
+          />
+          <div className="flex items-start gap-4 p-4">
             <span
-              className={`ml-auto text-[11px] font-medium text-emerald-500 transition-opacity duration-300 ${saved ? "opacity-100" : "opacity-0"}`}
-            >
-              Saved ✓
-            </span>
-          </div>
-          <div className="flex items-start gap-5 p-5">
-            <span
-              className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br
-                         from-indigo-500 to-fuchsia-500 text-xl font-bold text-white shadow-md"
+              className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl border border-accent/40
+                         bg-accent/12 font-mono text-lg font-bold text-accent"
+              aria-hidden="true"
             >
               {initials(name || "?")}
             </span>
             <div className="flex min-w-0 flex-1 flex-col gap-3">
-              <label className="flex flex-col gap-1">
-                <span className="text-[11px] font-medium tracking-wider text-slate-400 uppercase dark:text-slate-500">
-                  Display name
-                </span>
+              <Field label="Display name" htmlFor="profile-name">
                 <input
+                  id="profile-name"
                   value={name}
                   onChange={(e) => {
                     setName(e.target.value);
                     scheduleSave(e.target.value, tag);
                   }}
                   className="input"
-                  type="text"
                   maxLength={40}
                   autoComplete="off"
                   spellCheck={false}
                 />
-              </label>
-              <label className="flex flex-col gap-1">
-                <span className="text-[11px] font-medium tracking-wider text-slate-400 uppercase dark:text-slate-500">
-                  Status
-                </span>
+              </Field>
+              <Field label="Status" htmlFor="profile-tag">
                 <input
+                  id="profile-tag"
                   value={tag}
                   onChange={(e) => {
                     setTag(e.target.value);
                     scheduleSave(name, e.target.value);
                   }}
                   className="input"
-                  type="text"
                   maxLength={60}
                   autoComplete="off"
                   spellCheck={false}
-                  placeholder="e.g. Scripting away…"
+                  placeholder="Scripting away…"
                 />
-              </label>
+              </Field>
             </div>
           </div>
-        </div>
+        </Panel>
 
         {/* Appearance */}
-        <div className="card flex items-center justify-between p-4">
-          <div>
-            <div className="text-[13px] font-semibold">Theme</div>
-            <div className="text-[11.5px] text-slate-400 dark:text-slate-500">
-              Switch between light and dark mode
+        <Panel className="overflow-hidden">
+          <PanelHead icon={GearIcon} title="Appearance" />
+          <div className="flex flex-col gap-4 p-4">
+            <div className="flex items-center justify-between gap-4">
+              <span>
+                <span className="block text-[12.5px] font-medium text-ink">Theme</span>
+                <span className="block text-[11px] text-ink-3">
+                  Dark is the default sheet; light is the daylight version.
+                </span>
+              </span>
+              <div
+                role="radiogroup"
+                aria-label="Theme"
+                className="flex shrink-0 gap-1 rounded-lg border border-line bg-raised p-1"
+              >
+                {[
+                  { id: "dark", label: "Dark", Icon: MoonIcon },
+                  { id: "light", label: "Light", Icon: SunIcon },
+                ].map(({ id, label, Icon }) => (
+                  <button
+                    key={id}
+                    type="button"
+                    role="radio"
+                    aria-checked={theme === id}
+                    onClick={() => onTheme(id)}
+                    className={`ring-focus flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[11.5px]
+                                font-semibold transition-colors duration-150 ${
+                                  theme === id
+                                    ? "bg-accent text-accent-ink"
+                                    : "text-ink-2 hover:text-ink"
+                                }`}
+                  >
+                    <Icon className="h-3.5 w-3.5" />
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="rule-t pt-4">
+              <Toggle
+                id="compact-sidebar"
+                checked={compact}
+                onChange={onCompact}
+                label="Compact sidebar"
+                hint="Collapse the rail to icons and give the panels more room."
+              />
             </div>
           </div>
+        </Panel>
 
-          <button
-            onClick={onToggleTheme}
-            aria-label="Toggle dark / light mode"
-            title="Toggle theme"
-            className="relative h-8 w-[60px] shrink-0 rounded-full border border-slate-300 bg-white
-                       transition-colors duration-300 outline-none focus-visible:ring-2
-                       focus-visible:ring-indigo-400/60 dark:border-white/10 dark:bg-[#232636]"
-          >
-            <span
-              key={theme} // re-mount to replay the pop animation on toggle
-              className={`animate-pop absolute top-1 left-1 flex h-6 w-6 items-center justify-center
-                          rounded-full bg-indigo-500 text-white shadow-md transition-transform
-                          duration-300 ease-out ${theme === "dark" ? "translate-x-[28px]" : "translate-x-0"}`}
-            >
-              {theme === "dark" ? <MoonIcon className="h-3.5 w-3.5" /> : <SunIcon className="h-3.5 w-3.5" />}
-            </span>
-          </button>
-        </div>
+        {/* Engine */}
+        <Panel className="overflow-hidden">
+          <PanelHead
+            icon={CpuIcon}
+            title="Engine"
+            right={
+              <span className="flex items-center gap-2 text-[11.5px] text-ink-2">
+                <Lamp tone={engine.health.tone} pulse={engine.health.tone === "busy"} size={6} />
+                {engine.health.label}
+              </span>
+            }
+          />
+          <div className="flex flex-col gap-4 p-4">
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-2.5 font-mono text-[11.5px]">
+              <Row label="Contract" value={engine.version?.contract ?? "—"} />
+              <Row
+                label="Arch aware"
+                value={engine.version?.arch_aware == null ? "—" : engine.version.arch_aware ? "yes" : "no"}
+              />
+              <Row label="QEMU" value={fmtFlag(engine.doctor?.qemu_present)} />
+              <Row label="adb" value={fmtFlag(engine.doctor?.adb_present)} />
+            </dl>
 
-        <p className="text-center text-[11px] text-slate-400 dark:text-slate-600">Omni Executor · v2.0</p>
+            {bases?.length > 0 && (
+              <div className="rule-t pt-4">
+                <Field
+                  label="Base image for new accounts"
+                  htmlFor="base-select"
+                  hint="Existing instances keep the base they were created with."
+                >
+                  <select
+                    id="base-select"
+                    defaultValue=""
+                    disabled={baseBusy}
+                    onChange={(e) => e.target.value && chooseBase(e.target.value)}
+                    className="input cursor-pointer"
+                  >
+                    <option value="">Choose a base…</option>
+                    {bases.map((b) => {
+                      const tagValue = typeof b === "string" ? b : b.tag;
+                      const arch = typeof b === "string" ? null : b.arch;
+                      return (
+                        <option key={tagValue} value={tagValue}>
+                          {arch ? `${tagValue} (${arch})` : tagValue}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </Field>
+              </div>
+            )}
+
+            <div className="rule-t flex gap-2 pt-4">
+              <Button size="sm" onClick={engine.refreshDoctor} disabled={engine.backend !== true}>
+                Re-check engine
+              </Button>
+              <Button
+                variant="solid"
+                size="sm"
+                onClick={engine.runSetup}
+                disabled={engine.backend !== true || engine.settingUp}
+              >
+                {engine.settingUp ? "Installing…" : "Run setup"}
+              </Button>
+            </div>
+          </div>
+        </Panel>
+
+        <p className="silk pb-2 text-center text-ink-3">Omni Executor · v2.0</p>
       </div>
-    </section>
+    </div>
   );
 }
+
+function Row({ label, value }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3 border-b border-line-soft pb-2">
+      <dt className="silk text-ink-3">{label}</dt>
+      <dd className="truncate text-ink-2">{value}</dd>
+    </div>
+  );
+}
+
+const fmtFlag = (v) => (v == null ? "—" : v ? "present" : "missing");

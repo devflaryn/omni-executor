@@ -39,6 +39,7 @@ import webview
 APP_NAME = "omni-executor"
 PROJECT_DIR = Path(__file__).resolve().parent
 FRONTEND_DIST = PROJECT_DIR / "frontend" / "dist"
+IS_MAC = sys.platform == "darwin"
 
 # Some Windows installs register .js as text/plain, which makes the webview
 # refuse to load ES modules.
@@ -47,6 +48,7 @@ mimetypes.add_type("text/javascript", ".js")
 DEFAULT_SETTINGS = {
     "theme": "dark",
     "activeTab": "editor",
+    "sidebar": "expanded",
     "launch": {"mode": "playable", "multiInstance": False, "minimizeOnLaunch": False},
     "profile": {"name": "Guest", "tag": ""},
 }
@@ -137,6 +139,28 @@ def _parse_engine_stdout(stdout, code):
     return None
 
 
+# How long the ENGINE may spend booting an instance, passed to it explicitly
+# as `start --timeout` so both sides agree on one number instead of racing.
+#
+# They used to disagree, and the executor always lost: its watchdog fired at
+# 300 s while the engine's own budget was 360 s. Any boot slower than five
+# minutes was therefore killed by this process BEFORE the engine could report
+# anything — and because the engine spawns QEMU detached, killing it orphans a
+# live instance: the UI says the start failed while the VM is running happily.
+# (Observed: a boot that took just over five minutes.)
+#
+# WATCHDOG_GRACE keeps this process's own kill strictly LAST, so the engine
+# always gets to finish and emit its JSON verdict. The subprocess watchdog is
+# a backstop against a wedged engine, not the normal path.
+BOOT_TIMEOUT = 600
+# Graceful in-guest power-off budget, passed to `stop --timeout`. The engine
+# escalates on its own (adb shutdown -> QMP quit -> kill), so this bounds only
+# the polite first step; the same "engine decides, we only backstop" rule
+# applies.
+STOP_TIMEOUT = 120
+WATCHDOG_GRACE = 60
+
+
 def run_engine(args, progress=None, timeout=None):
     """Run an engine subcommand; return its stdout JSON normalized to a dict.
 
@@ -219,6 +243,11 @@ class Api:
 
     # ---- window controls (used by the custom title bar) ----
 
+    def get_platform(self):
+        """'darwin' | 'win32' | 'linux' — the frontend picks its window chrome
+        from this: native traffic lights on macOS, custom buttons elsewhere."""
+        return sys.platform
+
     def minimize(self):
         if self._window:
             self._window.minimize()
@@ -290,15 +319,44 @@ class Api:
         }
 
     def engine_version(self):
-        """Contract handshake (omnidroid-api.md §4). The UI calls this first
-        and gates on `contract`/`arch_aware`, warning on a mismatch."""
+        """Contract handshake (omnidroid-api.md §4). The UI gates on
+        `contract`/`arch_aware`, and on the commands this app actually calls.
+
+        The contract version alone is NOT enough, and that gap is the bug this
+        check exists to close: an engine can speak contract 1.0 and still lack
+        `login`, `view` or `setup`. A stale bundled engine therefore sailed
+        through the handshake and only failed later, when the user clicked
+        "Add account" and got an argparse error from a subprocess. Now the
+        mismatch is named up front, in terms of what will not work."""
         if engine_prefix() is None:
             return {
                 "ok": False,
                 "error": "engine_missing",
                 "message": "omnidroid engine not found next to main.py.",
             }
-        return run_engine(["version", "--json"], timeout=30)
+        rep = run_engine(["version", "--json"], timeout=30)
+        if isinstance(rep, dict):
+            rep["missing_commands"] = self._missing_commands(rep)
+        return rep
+
+    # Engine subcommands this app invokes. Checked against the engine's own
+    # advertised list at handshake time. Kept next to the calls it describes:
+    # adding a run_engine() call for a command not listed here is the mistake
+    # this is meant to catch.
+    _REQUIRED_COMMANDS = ("version", "doctor", "bases", "use-base", "setup",
+                          "list", "login", "start", "stop", "remove", "view")
+
+    def _missing_commands(self, report):
+        """Required commands this engine does NOT advertise.
+
+        Returns [] when the engine reports no command list at all — an engine
+        that predates the field is not evidence of a missing command, and
+        guessing would put a false alarm in front of a working install."""
+        advertised = report.get("commands")
+        if not isinstance(advertised, list) or not advertised:
+            return []
+        have = {c for c in advertised if isinstance(c, str)}
+        return [c for c in self._REQUIRED_COMMANDS if c not in have]
 
     def engine_doctor(self):
         """Readiness check: engine present, base images registered, QEMU/adb OK."""
@@ -372,12 +430,13 @@ class Api:
         error = self._bad_name(name)
         if error:
             return error
-        args = ["start", name, "--json"]
+        args = ["start", name, "--json", "--timeout", str(BOOT_TIMEOUT)]
         if isinstance(mode, str) and mode.strip():
             args += ["--mode", mode.strip()]
         if place is not None and str(place).strip():
             args += ["--place", str(place).strip()]
-        result = run_engine(args, progress=self._progress(name), timeout=300)
+        result = run_engine(args, progress=self._progress(name),
+                            timeout=BOOT_TIMEOUT + WATCHDOG_GRACE)
         self._push("accounts-changed", {})
         return result
 
@@ -386,7 +445,9 @@ class Api:
         error = self._bad_name(name)
         if error:
             return error
-        result = run_engine(["stop", name, "--json"], progress=self._progress(name), timeout=180)
+        result = run_engine(["stop", name, "--json", "--timeout", str(STOP_TIMEOUT)],
+                            progress=self._progress(name),
+                            timeout=STOP_TIMEOUT + WATCHDOG_GRACE)
         self._push("accounts-changed", {})
         return result
 
@@ -419,6 +480,34 @@ class Api:
         pass
 
 
+def _show_macos_traffic_lights(window):
+    """pywebview's frameless mode gives exactly the blended titlebar we want
+    (transparent, hidden title, content underneath — applied at creation,
+    which matters: macOS builds the titlebar backdrop at first show and
+    ignores later transparency flips). It also hides the traffic lights,
+    so bring just those back."""
+    try:
+        import AppKit
+
+        def apply():
+            try:
+                ns_window = window.native
+                for kind in (
+                    AppKit.NSWindowCloseButton,
+                    AppKit.NSWindowMiniaturizeButton,
+                    AppKit.NSWindowZoomButton,
+                ):
+                    button = ns_window.standardWindowButton_(kind)
+                    if button is not None:
+                        button.setHidden_(False)
+            except Exception:
+                pass
+
+        AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(apply)
+    except Exception:
+        pass
+
+
 def main():
     index = FRONTEND_DIST / "index.html"
     if not index.exists():
@@ -435,11 +524,16 @@ def main():
         width=1024,
         height=720,
         min_size=(680, 460),
-        background_color="#14151d",  # matches the dark theme, prevents a white flash on startup
-        frameless=True,   # the frontend renders its own title bar
+        background_color="#0a0a0a",  # matches the dark sheet, prevents a white flash on startup
+        # Frameless everywhere: Windows/Linux get the frontend's own controls
+        # on the right; macOS re-shows the native traffic lights on the left.
+        frameless=True,
         easy_drag=False,  # dragging is limited to .pywebview-drag-region elements
     )
     api._window = window
+
+    if IS_MAC:
+        window.events.shown += lambda *a: _show_macos_traffic_lights(window)
 
     # Keep the maximize state in sync when the OS changes it (e.g. Win+Up snap).
     try:
