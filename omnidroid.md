@@ -161,7 +161,7 @@ code 1. This is the GUI contract — parse stdout, ignore stderr, check
 
 ### Lifecycle
 
-#### `omni create <name> [--no-provision] [--json]`
+#### `omnidroid create <name> [--no-provision] [--json]`
 Creates the account (overlay + data disk from the ext4 template + port
 allocation), then boots once to provision: lock screen off, kiosk set as
 HOME + device owner (Lock Task lockdown), unneeded packages disabled
@@ -172,7 +172,7 @@ Android's one-time dexopt — allow **~3–15 min**. Ends powered off.
 - JSON: `{"name", "base", "adb_port", "qmp_port", "vnc_port",
   "vnc_host": "127.0.0.1", "provisioned": true|false, "ok": true}`
 
-#### `omni start <name> [--mode M] [--mem MB] [--accel A] [--wait] [--timeout S] [--dev] [--json]`
+#### `omnidroid start <name> [--mode M] [--mem MB] [--accel A] [--wait] [--timeout S] [--dev] [--json]`
 Cold-boots the instance **headless and detached** — the command returns
 immediately; the VM is not tied to the calling process (PID recorded in
 `accounts/<name>/run.json`). Boot to game ≈ 35 s.
@@ -189,7 +189,7 @@ immediately; the VM is not tied to the calling process (PID recorded in
   With `--wait` adds `"booted": true|false, "native_bridge_ok": true|false`.
 - Starting an already-running account is an error (exit 1).
 
-#### `omni stop <name> [--timeout S] [--json]`
+#### `omnidroid stop <name> [--timeout S] [--json]`
 **Explicit power-off** (this is NOT what a viewer disconnect should call —
 see §6). Graceful chain, every step hard-bounded: in-guest
 `svc power shutdown` (10 s adb timeout) → wait up to `--timeout` (default
@@ -198,7 +198,7 @@ see §6). Graceful chain, every step hard-bounded: in-guest
   "not-running"|"powerdown"|"qmp-quit"|"killed"|"kill-failed", "ok"}`
 - Stopping a stopped instance is fine: `method: "not-running", ok: true`.
 
-#### `omni remove <name> [--timeout S] [--json]`  — DESTRUCTIVE
+#### `omnidroid remove <name> [--timeout S] [--json]`  — DESTRUCTIVE
 Deletes the account: stop if running (same bounded chain as `stop`; if it
 somehow cannot be stopped, remove **refuses** and deletes nothing) →
 delete `accounts/<name>/` (system overlay + **data.qcow2** + state) →
@@ -211,7 +211,7 @@ ports are freed (the index is reused by the next `create`).
 - JSON: `{"name", "removed": true, "was_running",
   "freed_ports": {"adb", "qmp", "vnc"}, "ok": true}`
 
-#### `omni list [--stats] [--json]`
+#### `omnidroid list [--stats] [--json]`
 All accounts with base, ports, and state. `--stats` adds host RSS MB,
 guest-used MB (via adb, 8 s timeout per instance), and on Linux
 KSM-merged MB.
@@ -220,44 +220,44 @@ KSM-merged MB.
   "game_package"}` (+ `"started"` epoch when running; + `"host_rss_mb"`,
   `"guest_used_mb"` with `--stats`).
 
-#### `omni resume <name>`
+#### `omnidroid resume <name>`
 Attach to an already-running instance: wait for boot, run the post-boot
 checks. Useful to track a first boot started detached.
 
 ### Game / in-guest control
 
-#### `omni install <name> <apk>`
+#### `omnidroid install <name> <apk>`
 `adb install` a game into the account's `/data` (dev workflow), record it,
 and set it as the kiosk's launch target — the kiosk launches it the moment
 the install completes.
 
-#### `omni run-app <name> <package>` / `omni adb <name> -- <args...>`
+#### `omnidroid run-app <name> <package>` / `omnidroid adb <name> -- <args...>`
 Launch a package / run any adb command against that instance
-(e.g. `omni adb alice -- shell getprop ro.dalvik.vm.native.bridge`).
+(e.g. `omnidroid adb alice -- shell getprop ro.dalvik.vm.native.bridge`).
 
-#### `omni watch <name> [--grace N] [--package P]`
+#### `omnidroid watch <name> [--grace N] [--package P]`
 The host-side shutdown watchdog: polls the game's **process** (never
 foreground state — ads/dialogs/loading don't kill it) and powers the
 instance off after the process is gone `--grace` s (default 20). This is
 the production "game closed → machine off" path.
 
-#### `omni screenshot <name> [--out path]` / `omni logcat <name> [--tag T] [--clear]`
+#### `omnidroid screenshot <name> [--out path]` / `omnidroid logcat <name> [--tag T] [--clear]`
 True-color framebuffer PNG (works headless; JSON `{ok, path}`) / guest
 logcat.
 
-#### `omni test-apk <name> --apk <apk> [--mode M] [--reuse]`
+#### `omnidroid test-apk <name> --apk <apk> [--mode M] [--reuse]`
 Dev harness: fresh session → headless boot → install → kiosk launches →
 one JSON line with the outcome (`installed/launched/foreground/ok`, ports,
 serial).
 
 ### Bases / updates
 
-#### `omni bases` / `omni use-base <tag>`
+#### `omnidroid bases` / `omnidroid use-base <tag>`
 List registered bases (current marked, pre-installed game shown) / set the
 default base for **new** accounts (dev base = no game, install per
 account; production base = game baked in).
 
-#### `omni update-base <name> [--to vN]` / `omni update-all [--to vN] [--fast|--full] [--skip-current]`
+#### `omnidroid update-base <name> [--to vN]` / `omnidroid update-all [--to vN] [--fast|--full] [--skip-current]`
 Migrate one/all accounts to a base **keeping their data**. `update-all`
 auto-picks per account:
 - **FAST** (base game unchanged for that account): recreate the overlay
@@ -266,19 +266,19 @@ auto-picks per account:
   idempotent re-provision — needed whenever provisioned `/data` state
   must change (kiosk target, lockdown policies, package-trim updates).
 
-#### `omni rebuild-base --game <apk>` / `omni update-kiosk [--apk ...]`
+#### `omnidroid rebuild-base --game <apk>` / `omnidroid update-kiosk [--apk ...]`
 Build a NEW immutable base version with the game baked as a `/system/app`
 (native libs extracted) / with a new kiosk build. Then `update-all` rolls
 it out. Bases are never edited in place.
 
 ### Platform
 
-#### `omni setup` / `omni doctor [--json]` / `omni qemu-info [--install]`
+#### `omnidroid setup` / `omnidroid doctor [--json]` / `omnidroid qemu-info [--install]`
 First-run setup (see §2) / readiness check — what's present/missing in
 images_dir, QEMU/adb resolution, `ready` verdict, exit 0/1 (see §2) /
 show or repair QEMU resolution.
 
-#### `omni ksm [status|on|off] [--aggressive]` / `omni bench-ksm ...`
+#### `omnidroid ksm [status|on|off] [--aggressive]` / `omnidroid bench-ksm ...`
 Linux only (clean no-op on Windows): control kernel samepage merging /
 measure real instances-per-GB with KSM.
 
@@ -299,12 +299,12 @@ For viewers that take a display number instead of a port, the display is
 - **Disconnect ≠ shutdown (the GUI contract).** Closing a viewer merely
   closes a socket: the instance keeps running headless — that is the
   default, expected state. Powering an instance OFF is only ever an
-  explicit act: `omni stop` (or the `watch` watchdog when the game
+  explicit act: `omnidroid stop` (or the `watch` watchdog when the game
   closes). A GUI must never call `stop` on viewer close.
 - Input works over VNC (QEMU exposes usb-kbd/usb-tablet); the guest kiosk
   lockdown still applies — you see and control exactly what the locked
   kiosk allows.
-- `omni screenshot` remains the scriptable no-viewer alternative.
+- `omnidroid screenshot` remains the scriptable no-viewer alternative.
 
 ### SECURITY — hard rule
 
@@ -377,23 +377,23 @@ qemu-manager remove p1 --json                  # explicit delete only
   the full images_dir path; copy them in and re-run (they register
   automatically). `qemu-manager doctor` shows what's still missing.
 - **First boot seems stuck** — it is dexopt: allow up to 15 min once per
-  account. `omni resume <name>` shows progress phases. Dev boots write
+  account. `omnidroid resume <name>` shows progress phases. Dev boots write
   `accounts/<name>/serial.log`; every boot writes `qemu.log`.
 - **`start` fails immediately / PID dies at once** — read
   `accounts/<name>/qemu.log`. Common: another process took one of the
   account's three ports; WHPX not enabled (Windows Hypervisor Platform
   feature); `/dev/kvm` missing (Linux — `setup` prints the fix).
-- **adb can't connect** — `adb kill-server`, then any omni command
+- **adb can't connect** — `adb kill-server`, then any omnidroid command
   (they auto-`adb connect 127.0.0.1:<port>`).
-- **VNC viewer can't connect** — instance running? (`omni list`.) Viewer
+- **VNC viewer can't connect** — instance running? (`omnidroid list`.) Viewer
   must target `127.0.0.1` (it is never reachable from other machines —
   that is intentional; see §6).
-- **Instance won't die** — `omni stop` escalates automatically and
+- **Instance won't die** — `omnidroid stop` escalates automatically and
   reports `method`; `kill-failed` (never observed) means investigate the
   QEMU process manually.
 - **Game doesn't launch on boot** — dev base with no game installed shows
-  "no apk found" on black: `omni install <name> <apk>`. Check
-  `omni logcat <name> --tag OmniKiosk`.
+  "no apk found" on black: `omnidroid install <name> <apk>`. Check
+  `omnidroid logcat <name> --tag OmniKiosk`.
 - **Never do these:** edit a base file in place (corrupts every overlay
   on it); touch `/system` libs or the ARM bridge props
   (`ro.dalvik.vm.native.bridge`); commit `*.qcow2`; bind VNC beyond

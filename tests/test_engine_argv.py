@@ -77,7 +77,10 @@ def test_engine_modes_fallback_includes_farming(monkeypatch):
 
 def test_engine_view_argv(captured):
     main.Api().engine_view("alice")
-    assert ["view", "alice", "--start"] in captured
+    view = next(c for c in captured if c and c[0] == "view")
+    assert view[:2] == ["view", "alice"]
+    assert "--start" in view
+    assert "--json" in view  # the pid it returns is how we know a window opened
 
 
 def test_websockify_machinery_removed():

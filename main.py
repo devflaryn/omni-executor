@@ -18,10 +18,11 @@ Engine:
     ./omnidroid on Linux) sitting next to this file. Every account is an
     isolated headless Android instance; all interaction goes through the
     engine CLI with --json (one JSON line on stdout, progress on stderr).
-    Viewing an instance opens the omnidroid engine's own native viewer
-    window (`omnidroid view <name> --start`); the executor does not embed
-    a VNC client. Disconnecting a viewer never stops the instance — only
-    an explicit `stop` powers it off.
+    Viewing an instance opens the omnidroid engine's own viewer window
+    (`omnidroid view <name> --start`); the executor neither embeds a VNC
+    client nor hands the screen to the OS one (macOS Screen Sharing).
+    Disconnecting a viewer never stops the instance — only an explicit
+    `stop` powers it off.
 """
 
 import atexit
@@ -159,6 +160,12 @@ BOOT_TIMEOUT = 600
 # applies.
 STOP_TIMEOUT = 120
 WATCHDOG_GRACE = 60
+
+# Engine-side budget for `view`: it waits for QEMU's VNC port to accept
+# connections (with --start, after spawning the instance). QEMU binds VNC at
+# process start, so this is normally seconds; the same "engine decides, we only
+# backstop" rule as start/stop applies.
+VIEW_TIMEOUT = 90
 
 
 def run_engine(args, progress=None, timeout=None):
@@ -464,12 +471,21 @@ class Api:
     # ---- viewer ----
 
     def engine_view(self, name):
-        """Open omnidroid's own native viewer window (--start boots if stopped).
-        Fire-and-forget; the engine owns the window. Report only a launch failure."""
-        res = run_engine(["view", name, "--start"], timeout=60)
-        if isinstance(res, dict) and res.get("ok") is False:
-            return res
-        return {"ok": True}
+        """Open omnidroid's own viewer window on an instance (--start boots it
+        if stopped). Disconnecting a viewer never stops the instance.
+
+        One engine call, the same shape as start/stop: the engine owns the
+        viewer, this button only asks for it. Deliberately no `--native` —
+        that flag hands the screen to the OS client (macOS Screen Sharing),
+        which is the one thing the View button must not do.
+        """
+        error = self._bad_name(name)
+        if error:
+            return error
+        return run_engine(
+            ["view", name, "--start", "--json", "--timeout", str(VIEW_TIMEOUT)],
+            progress=self._progress(name),
+            timeout=VIEW_TIMEOUT + WATCHDOG_GRACE)
 
     # ---- shutdown ----
 
