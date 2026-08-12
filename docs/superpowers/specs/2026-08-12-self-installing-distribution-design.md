@@ -219,10 +219,19 @@ pass through. A tiny fixture blob (few KB) exercises the path without real GBs.
 2. **Portable QEMU on macOS** — a relocatable `qemu-system-aarch64` bundle (dylib rpaths + edk2
    firmware) is fiddly. v1 fallback: detect/require Homebrew qemu and only download base+offset;
    promote to a bundled portable qemu once built. Decide in the plan.
-3. **Gatekeeper/notarization** — unsigned `.app` needs a right-click→Open; real notarization is a
-   follow-up (needs an Apple Developer ID).
+   **Does NOT carry to Windows:** the official NSIS QEMU installer is self-contained and omnidroid
+   already downloads + silent-installs it (`ensure_qemu()`); on Windows QEMU is just another
+   named-blob URL — the easy case.
+3. **Code-signing** — both OSes warn on unsigned downloaded apps; both clear it with a paid cert,
+   but as *separate* mechanisms. macOS: Gatekeeper → Apple Developer ID + notarization (v1 ships
+   ad-hoc-signed, right-click→Open). Windows (slice C): SmartScreen → Authenticode cert (EV clears
+   it instantly; OV earns reputation). Independent follow-ups on each platform.
 4. **VPS bandwidth** — multi-GB × users on one box; acceptable for now by explicit choice, and the
    named-blob `302` indirection is the pre-built escape hatch to a CDN.
+5. **(Windows, later) WHPX host enablement** — accelerated x86 needs BIOS virtualization + the
+   "Windows Hypervisor Platform" feature (admin + reboot). Fresh boxes may have it off, so the
+   Windows first-boot must detect it and enable (`DISM /Online /Enable-Feature
+   /FeatureName:HypervisorPlatform /All`) or guide the user. No macOS analog (HVF is always on).
 
 ## Build order
 
