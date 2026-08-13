@@ -174,6 +174,12 @@ export default function UpdatePanel({ updates, showToast }) {
           </p>
         )}
 
+        {runtime?.managed === false && (
+          <p className="text-[11px] leading-snug text-ink-3">
+            Base images are not managed here — {runtime.reason}
+          </p>
+        )}
+
         {runtime?.update && (
           <div className="rule-t pt-4">
             <p className="mb-2 text-[12.5px] text-ink">

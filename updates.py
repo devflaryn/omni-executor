@@ -105,6 +105,31 @@ def can_apply_app():
     return True, None
 
 
+def manages_runtime():
+    """(bool, reason) — whether the engine actually boots the images we install.
+
+    The updater owns exactly one image directory: the one inside the runtime
+    dir it installed. A checkout pointed somewhere else — OMNI_IMAGES_DIR, or a
+    hand-written paths.json, which is how every dev machine here is set up —
+    boots images this code has never touched. Offering an update there is worse
+    than useless: it would download gigabytes into a directory the engine does
+    not read, and report success while changing nothing the user can see.
+    """
+    configured = os.environ.get("OMNI_IMAGES_DIR")
+    if not configured:
+        return True, None
+    try:
+        images = Path(configured).resolve()
+        expected = (bootstrap.runtime_dir() / "images").resolve()
+    except OSError:
+        return True, None
+    if images == expected:
+        return True, None
+    return False, (f"This install boots images from {images}, which it did not "
+                   f"download and does not manage. Update them where they are "
+                   f"built.")
+
+
 # ----------------------------------------------------------------- check
 
 def _app_artifact(manifest):
@@ -135,13 +160,16 @@ def check(base_url=None):
         result["error"] = str(e)
         return result
 
+    manages, why = manages_runtime()
     installed = bootstrap.installed_state(bootstrap.runtime_dir())
-    plan = bootstrap.plan_downloads(manifest, installed)
+    plan = bootstrap.plan_downloads(manifest, installed) if manages else []
     result["runtime"] = {
         "update": bool(plan),
         "artifacts": [{"name": a["name"], "version": a.get("version"),
                        "bytes": a.get("bytes") or 0} for a in plan],
         "bytes": sum(int(a.get("bytes") or 0) for a in plan),
+        "managed": manages,
+        "reason": why,
     }
 
     app_art = _app_artifact(manifest)

@@ -60,6 +60,11 @@ def _manifest(app_version=None, app_artifact=True, runtime_artifacts=()):
 @pytest.fixture
 def offline_runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(bootstrap, "runtime_dir", lambda: tmp_path)
+    # bootstrap.configure_engine() sets OMNI_IMAGES_DIR on os.environ for the
+    # whole PROCESS, not through monkeypatch — so any earlier test that called
+    # it leaves the variable set, and manages_runtime() then reads a foreign
+    # image dir. Start every test here from a known state.
+    monkeypatch.delenv("OMNI_IMAGES_DIR", raising=False)
     return tmp_path
 
 
@@ -213,3 +218,33 @@ def test_discarding_a_staged_build_removes_it(offline_runtime, monkeypatch):
     updates.discard_staged()
     assert updates.staged_info() is None
     assert not root.exists()
+
+
+# ------------------------------------------------- images we do not manage
+
+def test_a_checkout_with_its_own_images_is_not_offered_a_runtime_update(
+        offline_runtime, monkeypatch):
+    """Every dev machine here points the engine at its own image directory.
+    Downloading gigabytes into the runtime dir would not change a single byte
+    the engine boots, while reporting success."""
+    monkeypatch.setenv("OMNI_IMAGES_DIR", str(offline_runtime / "elsewhere"))
+    (offline_runtime / "elsewhere").mkdir()
+    monkeypatch.setattr(updates, "APP_VERSION", "1.0.1")
+    monkeypatch.setattr(bootstrap, "read_manifest", lambda *a, **k: _manifest(
+        "1.0.1", runtime_artifacts=[{"name": "base-x86", "sha256": "d" * 64,
+                                     "url": "/x", "dest": "images/x86"}]))
+    r = updates.check()
+    assert r["runtime"]["update"] is False
+    assert r["runtime"]["managed"] is False
+    assert "does not manage" in r["runtime"]["reason"]
+
+
+def test_the_managed_runtime_dir_is_still_offered(offline_runtime, monkeypatch):
+    monkeypatch.setenv("OMNI_IMAGES_DIR", str(offline_runtime / "images"))
+    monkeypatch.setattr(updates, "APP_VERSION", "1.0.1")
+    monkeypatch.setattr(bootstrap, "read_manifest", lambda *a, **k: _manifest(
+        "1.0.1", runtime_artifacts=[{"name": "base-x86", "sha256": "d" * 64,
+                                     "url": "/x", "dest": "images/x86"}]))
+    r = updates.check()
+    assert r["runtime"]["managed"] is True
+    assert r["runtime"]["update"] is True
