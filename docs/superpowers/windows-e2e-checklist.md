@@ -17,7 +17,7 @@ observed, not what should happen.
 | 7 | Run the arm64-only arceus on x86 | ✅ **verified** — libndk bridge |
 | 8 | Build `omni-exec.exe` | ✅ **verified** — engine dispatch smoke-tested |
 | 9 | Inject the Roblox session / play | ❌ **BLOCKED** — see below |
-| 10 | Publish the offset to the VPS | ⛔ not done — needs credentials |
+| 10 | Publish the offset to the VPS | ✅ **done + verified live** |
 
 ## Verified in detail
 
@@ -84,28 +84,36 @@ The instance is also **unrooted** (`base is not rooted (no su)`), so
 DenyList/prop hiding, cpuset pinning and the Roblox-settings CPU tune are all
 skipped. Not a blocker; it is the documented unrooted-deployment behaviour.
 
-## 10 — publishing the offset (not done)
+## 10 — publishing the offset (DONE, 2026-08-13)
 
-`offset-arceus-x86` is already registered in `omni-backend/dist/registry.json`
-with the **real** hash of the artifact built here:
+Uploaded to the VPS and serving live. The upload took **11m20s** (~1.1 MB/s
+to that host) and the blob was verified on the far end **byte-for-byte and by
+sha256** before anything was registered:
 
 ```
-bytes  783745024
-sha256 814a1029ba67ca4fb28d3afc1b9c331ebbaf430604169ba485f8fffe652b19a6
-dest   images/x86
-dest_name base_x86_data_offset_arceusremote.qcow2
+bytes  783745024                                                    (match)
+sha256 814a1029ba67ca4fb28d3afc1b9c331ebbaf430604169ba485f8fffe652b19a6  (match)
 ```
 
-Remaining (needs VPS root credentials, which are not on this box —
-`omni-backend/.env*.local` is absent here):
+The live `registry.json` was diffed against the local one BEFORE overwriting
+(the VPS deploys by file-copy, so a server-side-only edit would have been
+destroyed): it was a strict subset, and a timestamped `.bak` was taken anyway.
 
-```bash
-scp base_x86_data_offset_arceusremote.qcow2 \
-    root@72.62.59.232:/root/omni-backend/dist/blobs/offset-arceus-x86.qcow2
-scp dist/registry.json root@72.62.59.232:/root/omni-backend/dist/registry.json
-ssh root@72.62.59.232 'pm2 restart omni-backend'
-curl -s 'http://72.62.59.232/omni/dist/manifest?os=win' | jq '.artifacts[].name'
-curl -s 'http://72.62.59.232/omni/dist/health' | jq
+Live verification after `pm2 restart omni-backend`:
+
+```
+GET /omni/dist/manifest?os=win
+  base-x86           dest=images/x86  bytes=3028269056
+  offset-arceus-x86  dest=images/x86  dest_name=base_x86_data_offset_arceusremote.qcow2
+                                      bytes=783745024
+  qemu-win           dest=qemu        (302)
+
+GET /omni/dist/manifest?os=mac   → base-arm, offset-arceus-arm   (unchanged)
+GET /omni/dist/health            → all four blobs present, every bytes==expected
+GET /omni/dist/blob/qemu-win     → 302 https://qemu.weilnetz.de/w64/qemu-w64-setup-20260811.exe
+GET /omni/dist/blob/offset-arceus-x86  (Range: bytes=0-15)
+  → 206, Content-Range: bytes 0-15/783745024
+  → 51 46 49 fb …  = "QFI\xfb", the qcow2 magic — a real qcow2 from byte 0
 ```
 
 `dest_name` must stay exactly `base_x86_data_offset_arceusremote.qcow2`: the
