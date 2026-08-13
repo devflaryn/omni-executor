@@ -3,3 +3,7 @@ pywebview>=5.0
 #   sudo apt install python3-gi gir1.2-webkit2-4.1
 # or uncomment the Qt extra below:
 # pywebview[qt]>=5.0
+
+# macOS packaging (build-macos.sh -> OmniExecutor.spec -> dist/Omni Executor.app).
+# create-dmg is a brew dependency, not pip: brew install create-dmg
+pyinstaller>=6.0

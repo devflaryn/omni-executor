@@ -26,6 +26,7 @@ Engine:
 """
 
 import atexit
+import bootstrap
 import json
 import mimetypes
 import os
@@ -33,6 +34,8 @@ import re
 import subprocess
 import sys
 import threading
+import time
+import urllib.request
 from pathlib import Path
 
 import webview
@@ -41,6 +44,10 @@ APP_NAME = "omni-executor"
 PROJECT_DIR = Path(__file__).resolve().parent
 FRONTEND_DIST = PROJECT_DIR / "frontend" / "dist"
 IS_MAC = sys.platform == "darwin"
+
+# OMNI-EXEC remote-execute bridge base (serves the in-game UI + the exec queue).
+# Override with the OMNI_EXEC_BASE env var or a settings.json "execBase" value.
+OMNI_EXEC_BASE = os.environ.get("OMNI_EXEC_BASE", "http://72.62.59.232")
 
 # Some Windows installs register .js as text/plain, which makes the webview
 # refuse to load ES modules.
@@ -87,14 +94,18 @@ def engine_prefix():
          (e.g. the engine's manager/omni.py) which is run with the current
          Python. Lets a build point at a specific engine, and lets dev drive
          the source checkout without building an exe.
-      2. The platform-appropriate NATIVE binary sitting next to main.py (the
+      2. Frozen build: the app re-invokes ITSELF with `--omnidroid` — the
+         engine is dispatched in-process (see the top of main()), so no
+         separate binary needs to be found or shipped next to the app.
+      3. The platform-appropriate NATIVE binary sitting next to main.py (the
          product, installed by the CDN installer): omnidroid.exe on Windows,
          extensionless omnidroid on macOS/Linux. Never cross platforms —
          an omnidroid.exe next to main.py on macOS/Linux is not executable
          and must never be returned there, and vice versa.
-      3. Python-source fallback (dev/test, e.g. this Mac where no native
-         binary is bundled): a sibling omnidroid source checkout's
-         self-contained shim, run with the current Python.
+      4. Python-source fallback (dev/test, e.g. this Mac where no native
+         binary is bundled): a sibling omnidroid source checkout, run as
+         `python -m omnidroid` with the current Python (the checkout's own
+         console-script shim, `omnidroid.cli:main`).
     Returns a subprocess argv prefix (list), or None if nothing is found.
     """
     override = os.environ.get("OMNIDROID_ENGINE")
@@ -103,14 +114,17 @@ def engine_prefix():
         if p.is_file():
             return [sys.executable, str(p)] if p.suffix == ".py" else [str(p)]
 
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--omnidroid"]  # in-binary engine dispatch
+
     native_name = "omnidroid.exe" if sys.platform == "win32" else "omnidroid"
     candidate = PROJECT_DIR / native_name
     if candidate.is_file():
         return [str(candidate)]
 
-    manager_py = PROJECT_DIR.parent / "omnidroid" / "manager.py"
-    if manager_py.is_file():
-        return [sys.executable, str(manager_py)]
+    sibling = PROJECT_DIR.parent / "omnidroid"  # sibling checkout root
+    if (sibling / "omnidroid" / "__main__.py").is_file():
+        return [sys.executable, "-m", "omnidroid"]  # was: manager.py (stale)
 
     return None
 
@@ -120,6 +134,40 @@ def find_engine():
     prefix's first element (a path) or None."""
     prefix = engine_prefix()
     return prefix[-1] if prefix else None
+
+
+def _configure_engine_on_launch():
+    """Set the engine env vars (OMNIDROID_CONFIG_PATH / OMNI_DATA_DIR /
+    OMNI_IMAGES_DIR) + write rt/paths.json for THIS GUI process, on every
+    launch -- not just first-boot.
+
+    bootstrap.bootstrap_start() (the first-boot install flow) already calls
+    bootstrap.configure_engine() once the runtime download completes. But on
+    a SUBSEQUENT launch of an already-installed app, bootstrap_status()
+    returns ready=true, the frontend skips BootstrapView entirely, and
+    bootstrap_start() is never called again -- so without this, engine
+    subprocesses spawned later (engine_start/engine_view/etc., via
+    run_engine()'s env=None inherit) would carry NONE of those vars, and the
+    frozen --omnidroid engine would fall back to the read-only app bundle's
+    own configs/paths.json and never find the installed arm base.
+
+    Calling configure_engine() here, unconditionally, in the GUI parent
+    process before any window/engine subprocess exists, makes every launch
+    (first-boot or relaunch) set the same env for every engine subprocess
+    this session spawns. Safe on a genuinely fresh runtime dir (nothing
+    downloaded yet): configure_engine() just writes a base-less paths.json
+    and sets the env vars anyway (no arm/ dir to scan yet is not an error);
+    bootstrap_start() overwrites it correctly once the download finishes.
+
+    Must run only in the GUI parent process, never inside the --omnidroid
+    child dispatch branch (that subprocess IS the engine; it doesn't spawn
+    further engine subprocesses of its own).
+    """
+    try:
+        import bootstrap
+        bootstrap.configure_engine(bootstrap.runtime_dir())
+    except Exception as e:  # noqa: BLE001 — engine config must never crash the app launch
+        print(f"[omni-exec] engine pre-config skipped: {e}", file=sys.stderr)
 
 
 def _parse_engine_stdout(stdout, code):
@@ -182,10 +230,19 @@ def run_engine(args, progress=None, timeout=None):
             "message": "Engine not found — omnidroid.exe must sit next to main.py.",
         }
 
+    env = None
+    if len(prefix) == 3 and prefix[1:] == ["-m", "omnidroid"]:
+        # Source-fallback `-m omnidroid` form: the sibling checkout root must
+        # be importable as a package search path for `python -m omnidroid`
+        # to resolve, since it isn't installed/on sys.path otherwise.
+        sibling = PROJECT_DIR.parent / "omnidroid"
+        env = {**os.environ, "PYTHONPATH": str(sibling)}
+
     try:
         proc = subprocess.Popen(
             [*prefix, *args],
             cwd=str(PROJECT_DIR),
+            env=env,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -241,12 +298,27 @@ def run_engine(args, progress=None, timeout=None):
     return result
 
 
+def _exec_http(url, payload=None, timeout=10):
+    """Minimal JSON HTTP for the exec bridge (stdlib only). POST when payload given."""
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"} if data is not None else {},
+        method="POST" if data is not None else "GET",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        body = resp.read().decode("utf-8", "replace")
+    return json.loads(body) if body.strip() else {}
+
+
 class Api:
     """Methods exposed to JavaScript as window.pywebview.api.*"""
 
     def __init__(self):
         self._window = None  # set in main() after the window is created
         self._maximized = False
+        self._bootstrapping = False
 
     # ---- window controls (used by the custom title bar) ----
 
@@ -297,6 +369,54 @@ class Api:
         tmp.replace(SETTINGS_FILE)
         return current
 
+    # ---- remote execute (Editor tab) ----
+
+    def _exec_base(self):
+        base = OMNI_EXEC_BASE
+        try:
+            saved = self.get_settings()
+            if isinstance(saved.get("execBase"), str) and saved["execBase"].strip():
+                base = saved["execBase"].strip()
+        except Exception:
+            pass
+        return base.rstrip("/")
+
+    def execute_script(self, name, script):
+        """Run a Luau script in the LIVE game session for `name` — MANUAL only,
+        fired when the user clicks Run. Submits to the OMNI-EXEC bridge; the
+        in-game UI polls it, loadstring()s it, and reports the result, which we
+        wait briefly for and return so the editor can show ok/output."""
+        bad = self._bad_name(name)
+        if bad:
+            return bad
+        if not isinstance(script, str) or not script.strip():
+            return {"ok": False, "error": "empty_script", "message": "Nothing to run — the editor is empty."}
+        base = self._exec_base()
+        try:
+            sub = _exec_http(f"{base}/omni/exec/submit", {"channel": name, "script": script}, timeout=10)
+        except Exception as exc:
+            return {"ok": False, "error": "unreachable",
+                    "message": f"Couldn't reach the exec server at {base}: {exc}"}
+        if not sub.get("ok"):
+            return {"ok": False, "error": "submit_failed", "message": sub.get("error", "submit failed")}
+        job_id = sub.get("id")
+        if not sub.get("connected"):
+            return {"ok": False, "error": "no_session", "id": job_id,
+                    "message": f"No live session for '{name}'. Launch the game and let Arceus + the "
+                               "OMNI-EXEC UI load, then Run again."}
+        deadline = time.time() + 8.0
+        while time.time() < deadline:
+            try:
+                res = _exec_http(f"{base}/omni/exec/result?id={job_id}", timeout=4)
+            except Exception:
+                res = {}
+            if res.get("done"):
+                return {"ok": True, "ran": bool(res.get("ok")), "output": res.get("output", ""),
+                        "id": job_id, "connected": True}
+            time.sleep(0.4)
+        return {"ok": True, "ran": None, "pending": True, "id": job_id, "connected": True,
+                "output": "Submitted — no result yet (the script may still be running)."}
+
     # ---- engine ----
 
     def _push(self, event, payload=None):
@@ -312,6 +432,43 @@ class Api:
 
     def _progress(self, scope):
         return lambda line: self._push("engine-progress", {"scope": scope, "line": line})
+
+    # ---- bootstrap (first-boot runtime install) ----
+
+    def bootstrap_status(self):
+        rt = bootstrap.runtime_dir()
+        installed = bootstrap.installed_state(rt)
+        eng = bootstrap.engine_ready(rt)
+        error = None
+        ready = False
+        try:
+            manifest = bootstrap.read_manifest(bootstrap.dist_base())
+            have = installed.get("artifacts", {})
+            ready = all(have.get(a["name"], {}).get("sha256") == a["sha256"]
+                        for a in manifest.get("artifacts", []))
+        except bootstrap.BootstrapError as e:
+            error = str(e)
+            ready = bool(installed.get("artifacts"))  # offline-tolerant
+        ready = ready and eng.get("qemu_ok", False)
+        return {"ok": True, "ready": ready, "installed": installed.get("artifacts", {}),
+                "qemu_ok": eng.get("qemu_ok", False), "qemu_hint": eng.get("qemu_hint"),
+                "error": error}
+
+    def bootstrap_start(self):
+        if self._bootstrapping:
+            return {"ok": False, "error": "already running"}
+        self._bootstrapping = True
+        def _run():
+            try:
+                res = bootstrap.ensure_runtime(progress=lambda p: self._push("bootstrap-progress", p))
+                bootstrap.configure_engine(bootstrap.runtime_dir())
+                self._push("bootstrap-done", res)
+            except Exception as e:  # noqa: BLE001 — surface any failure to the UI
+                self._push("bootstrap-error", {"error": str(e)})
+            finally:
+                self._bootstrapping = False
+        threading.Thread(target=_run, daemon=True).start()
+        return {"ok": True, "started": True}
 
     _FALLBACK_MODES = ["playable", "hard", "brutal", "farming"]
 
@@ -525,6 +682,23 @@ def _show_macos_traffic_lights(window):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--omnidroid":
+        # In-binary engine dispatch (frozen build's engine_prefix() returns
+        # [sys.executable, "--omnidroid"]): re-exec the frozen app's own
+        # Python with the omnidroid CLI's own argv shape and run the engine
+        # in-process instead of shelling out to a separate binary.
+        sys.argv = ["omnidroid", *sys.argv[2:]]
+        from omnidroid.cli import main as engine_main
+        engine_main()
+        return
+
+    # GUI parent process: set the engine env for THIS session on every
+    # launch (first-boot AND relaunch of an already-installed runtime), so
+    # every engine subprocess spawned below inherits it. See
+    # _configure_engine_on_launch's docstring for why this can't be left to
+    # bootstrap_start() alone.
+    _configure_engine_on_launch()
+
     index = FRONTEND_DIST / "index.html"
     if not index.exists():
         sys.exit(

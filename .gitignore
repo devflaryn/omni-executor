@@ -17,3 +17,7 @@ runtime/
 *.qcow2
 *.log
 .venv
+
+# PyInstaller build output (build-macos.sh)
+build/
+dist/
