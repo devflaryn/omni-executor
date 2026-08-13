@@ -75,11 +75,22 @@ export function EngineProvider({ activeTab, showToast, children }) {
     });
   }, []);
 
+  const [presence, setPresence] = useState({});
+
   const refreshList = useCallback(async () => {
     const res = await api("engine_list");
     if (res.ok && Array.isArray(res.accounts)) {
       setAccounts(res.accounts.filter((a) => a && typeof a.name === "string"));
     }
+  }, []);
+
+  // Where each account is running ACROSS the user's machines. Kept separate
+  // from the engine's list because the two answer different questions: the
+  // engine knows only about this computer, and an account running on the Mac
+  // must not look stopped just because this PC is not running it.
+  const refreshPresence = useCallback(async () => {
+    const res = await api("cloud_presence");
+    if (res?.ok && res.presence) setPresence(res.presence);
   }, []);
 
   const refreshDoctor = useCallback(async () => setDoctor(await api("engine_doctor")), []);
@@ -95,8 +106,9 @@ export function EngineProvider({ activeTab, showToast, children }) {
       });
       refreshDoctor();
       refreshList();
+      refreshPresence();
     });
-  }, [refreshDoctor, refreshList]);
+  }, [refreshDoctor, refreshList, refreshPresence]);
 
   // Poll `list` — briskly while the accounts panel is open, lazily otherwise
   // (each poll spawns an engine process, so idle tabs stay cheap).
@@ -107,6 +119,15 @@ export function EngineProvider({ activeTab, showToast, children }) {
     return () => clearInterval(timer);
   }, [backend, activeTab, refreshList]);
 
+  // Presence is one cheap HTTP call, not a process spawn, but it is also
+  // remote — polling it as hard as the local list would be pointless traffic
+  // when the other machine only renews its lease every 25 s.
+  useEffect(() => {
+    if (!backend) return;
+    const timer = setInterval(refreshPresence, activeTab === "accounts" ? 10000 : 45000);
+    return () => clearInterval(timer);
+  }, [backend, activeTab, refreshPresence]);
+
   // Events pushed from Python: stderr progress lines and lifecycle changes.
   useEffect(
     () =>
@@ -115,9 +136,10 @@ export function EngineProvider({ activeTab, showToast, children }) {
           setProgress((prev) => ({ ...prev, [payload.scope]: payload.line }));
         } else if (event === "accounts-changed") {
           refreshList();
+          refreshPresence();
         }
       }),
-    [refreshList]
+    [refreshList, refreshPresence]
   );
 
   // ---- actions ----
@@ -134,6 +156,14 @@ export function EngineProvider({ activeTab, showToast, children }) {
     async (name, launch) => {
       const account = accounts.find((a) => a.name === name);
       if (account?.running) return openViewer(name);
+      const far = presence[name];
+      if (far?.state === "running" && !far.isLocal) {
+        // Same Roblox account in two places logs one of them out. Say where it
+        // already is rather than silently starting a session that will fight
+        // the other one.
+        showToast(`${name} is already ${far.label.toLowerCase()}. Stop it there first.`, "error");
+        return;
+      }
       if (!launch.multiInstance && accounts.some((a) => a.running && a.name !== name)) {
         showToast("Another instance is already running. Turn on Multi-instance to run several.", "error");
         return;
@@ -148,13 +178,14 @@ export function EngineProvider({ activeTab, showToast, children }) {
           "success"
         );
         await refreshList();
+        refreshPresence();
         openViewer(name);
       } else {
         showToast(errText(res), "error");
         refreshList();
       }
     },
-    [accounts, clearProgress, openViewer, refreshList, setBusyFor, showToast]
+    [accounts, clearProgress, openViewer, presence, refreshList, refreshPresence, setBusyFor, showToast]
   );
 
   const stop = useCallback(
@@ -165,8 +196,9 @@ export function EngineProvider({ activeTab, showToast, children }) {
       clearProgress(name);
       showToast(res.ok ? `Stopped ${name}` : errText(res), res.ok ? "success" : "error");
       refreshList();
+      refreshPresence();
     },
-    [clearProgress, refreshList, setBusyFor, showToast]
+    [clearProgress, refreshList, refreshPresence, setBusyFor, showToast]
   );
 
   const remove = useCallback(
@@ -212,6 +244,30 @@ export function EngineProvider({ activeTab, showToast, children }) {
   // ---- derived ----
 
   const running = useMemo(() => accounts.filter((a) => a.running), [accounts]);
+
+  /* One list the UI can render directly, with each account carrying where it
+     is running. The LOCAL engine wins when it says an account is up here — it
+     is the ground truth for this machine, and it is fresher than a lease that
+     is renewed every 25 s. The remote lease only fills in the rows this
+     machine is NOT running. */
+  const accountsWithPresence = useMemo(
+    () =>
+      accounts.map((a) => {
+        if (a.running) return { ...a, where: { state: "running", label: "Running", isLocal: true } };
+        const far = presence[a.name];
+        if (far?.state === "running" && !far.isLocal) return { ...a, where: far };
+        return { ...a, where: { state: "stopped", label: "Stopped", isLocal: false } };
+      }),
+    [accounts, presence]
+  );
+
+  /* Accounts running on ANOTHER machine. Starting one of these here would
+     boot a second copy of the same Roblox session, which Roblox itself
+     resolves by kicking one of them out — so the UI warns instead. */
+  const runningElsewhere = useMemo(
+    () => accountsWithPresence.filter((a) => a.where.state === "running" && !a.where.isLocal),
+    [accountsWithPresence]
+  );
 
   // The contract version alone does not tell you the engine can do what this
   // app asks of it: an engine can speak 1.0 and still lack `login`/`view`.
@@ -288,8 +344,11 @@ export function EngineProvider({ activeTab, showToast, children }) {
     version,
     doctor,
     modes,
-    accounts,
+    accounts: accountsWithPresence,
     running,
+    runningElsewhere,
+    presence,
+    refreshPresence,
     busy,
     progress,
     settingUp,

@@ -103,11 +103,29 @@ def test_configure_engine_config_matches_real_loader(tmp_path, monkeypatch):
         pytest.skip("omnidroid not importable in this environment")
 
     rt = tmp_path
-    arm_dir = rt / "images" / "arm"
-    arm_dir.mkdir(parents=True)
-    (arm_dir / "base_arm_system_rooted.qcow2").write_bytes(b"sys")
-    (arm_dir / "base_arm_data_rooted.qcow2").write_bytes(b"data")
-    (arm_dir / "base_arm_data_offset_arceusremote.qcow2").write_bytes(b"off")
+    # The fixture has to be built for THIS HOST'S architecture. omnidroid's
+    # effective_base_tag() selects the base by host arch (arm64 -> the arm
+    # base, x86 -> the current one), so an arm-only tree on a Windows/x86 box
+    # makes load_config() exit with "no base image is registered" — a fixture
+    # mismatch that says nothing about configure_engine. Windows downloads and
+    # registers the x86 base; macOS the arm one (see bootstrap.current_os).
+    images = rt / "images"
+    if bootstrap.current_os() == "win":
+        x86_dir = images / "x86"
+        x86_dir.mkdir(parents=True)
+        (x86_dir / "base_x86.qcow2").write_bytes(b"sys")
+        (x86_dir / "base_x86.kernel").write_bytes(b"kern")
+        (x86_dir / "base_x86.initrd.img").write_bytes(b"initrd")
+        (x86_dir / "data-template-8g.qcow2").write_bytes(b"tmpl")
+        (x86_dir / "base_x86_data_offset_arceusremote.qcow2").write_bytes(b"off")
+        expect_base = "x86"
+    else:
+        arm_dir = images / "arm"
+        arm_dir.mkdir(parents=True)
+        (arm_dir / "base_arm_system_rooted.qcow2").write_bytes(b"sys")
+        (arm_dir / "base_arm_data_rooted.qcow2").write_bytes(b"data")
+        (arm_dir / "base_arm_data_offset_arceusremote.qcow2").write_bytes(b"off")
+        expect_base = "arm"
 
     info = bootstrap.configure_engine(rt)
     assert info["images_dir"] == str(rt / "images")
@@ -124,8 +142,8 @@ def test_configure_engine_config_matches_real_loader(tmp_path, monkeypatch):
     monkeypatch.setenv("OMNI_IMAGES_DIR", str(rt / "images"))
 
     cfg = omni_engine.load_config()
-    assert "arm" in cfg["bases"]
-    assert cfg["_effective_base"] == "arm"
-    images = Path(cfg["images_dir"])
-    assert omni_bases.base_missing_files(images, cfg["bases"]["arm"]) == []
-    assert "arceusremote" in (cfg["bases"]["arm"].get("offsets") or {})
+    assert expect_base in cfg["bases"]
+    assert cfg["_effective_base"] == expect_base
+    images_out = Path(cfg["images_dir"])
+    assert omni_bases.base_missing_files(images_out, cfg["bases"][expect_base]) == []
+    assert "arceusremote" in (cfg["bases"][expect_base].get("offsets") or {})

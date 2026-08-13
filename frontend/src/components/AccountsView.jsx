@@ -259,6 +259,10 @@ function AccountRow({
   onRemove,
 }) {
   const running = Boolean(account.running);
+  // `where` is the cross-machine view (engine.jsx): running here, running on
+  // another of your devices, or stopped everywhere.
+  const where = account.where || { state: running ? "running" : "stopped", isLocal: running };
+  const remote = where.state === "running" && !where.isLocal;
 
   let tone = "off";
   let status = "Stopped";
@@ -268,6 +272,11 @@ function AccountRow({
   } else if (running) {
     tone = "live";
     status = `VNC ${account.vnc_port ?? "—"} · ADB ${account.adb_port ?? "—"}`;
+  } else if (remote) {
+    // Not "off": it IS running, just not here. Showing this row as stopped is
+    // what made people launch the same account twice.
+    tone = "busy";
+    status = where.label;
   }
 
   return (
@@ -315,6 +324,14 @@ function AccountRow({
           {running && account.mode && (
             <span className="chip border-live/40 text-live">{account.mode}</span>
           )}
+          {remote && (
+            <span
+              className="chip border-accent/40 text-accent"
+              title={`This account is running on ${where.device?.deviceName || "another device"}`}
+            >
+              {where.device?.deviceName || "elsewhere"}
+            </span>
+          )}
         </div>
         <div className="mt-1 flex items-center gap-2">
           <Lamp tone={tone} pulse={tone === "busy"} size={6} />
@@ -343,10 +360,14 @@ function AccountRow({
           </>
         ) : (
           <IconButton
-            label="Start instance"
+            label={
+              remote
+                ? `Already ${where.label.toLowerCase()} — stop it there first`
+                : "Start instance"
+            }
             tone="accent"
             onClick={onStart}
-            disabled={Boolean(busyLabel) || Boolean(account.creating)}
+            disabled={Boolean(busyLabel) || Boolean(account.creating) || remote}
           >
             <PlayIcon className="h-3.5 w-3.5" />
           </IconButton>

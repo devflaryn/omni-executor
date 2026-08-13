@@ -27,6 +27,7 @@ Engine:
 
 import atexit
 import bootstrap
+import cloud
 import json
 import mimetypes
 import os
@@ -35,7 +36,6 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.request
 from pathlib import Path
 
 import webview
@@ -298,27 +298,34 @@ def run_engine(args, progress=None, timeout=None):
     return result
 
 
-def _exec_http(url, payload=None, timeout=10):
-    """Minimal JSON HTTP for the exec bridge (stdlib only). POST when payload given."""
-    data = json.dumps(payload).encode("utf-8") if payload is not None else None
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={"Content-Type": "application/json"} if data is not None else {},
-        method="POST" if data is not None else "GET",
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        body = resp.read().decode("utf-8", "replace")
-    return json.loads(body) if body.strip() else {}
+def accountsync():
+    """The local<->cloud account sync module, imported lazily.
+
+    It imports omnidroid's own accounts module, which on a source checkout means
+    touching sys.path — work that has no business happening during GUI startup,
+    and that must not run at all in the `--omnidroid` engine child."""
+    import accountsync as mod
+    return mod
 
 
 class Api:
     """Methods exposed to JavaScript as window.pywebview.api.*"""
 
+    # How often this machine renews the running lease on its instances. Must be
+    # comfortably under the server's RUNNING_LEASE_MS (90 s) so a single missed
+    # beat — a slow poll, a hiccup — never flips a live instance to "Stopped"
+    # on the user's other machine.
+    HEARTBEAT_SECONDS = 25
+
     def __init__(self):
         self._window = None  # set in main() after the window is created
         self._maximized = False
         self._bootstrapping = False
+        # Accounts this machine last reported as running, so the loop can send
+        # exactly one "stopped" on the transition instead of every tick.
+        self._known_running = set()
+        self._heartbeat_stop = threading.Event()
+        self._heartbeat_thread = None
 
     # ---- window controls (used by the custom title bar) ----
 
@@ -385,18 +392,33 @@ class Api:
         """Run a Luau script in the LIVE game session for `name` — MANUAL only,
         fired when the user clicks Run. Submits to the OMNI-EXEC bridge; the
         in-game UI polls it, loadstring()s it, and reports the result, which we
-        wait briefly for and return so the editor can show ok/output."""
+        wait briefly for and return so the editor can show ok/output.
+
+        The bridge now refuses an unauthenticated submit, and refuses one aimed
+        at an account the signed-in user does not own — so this call carries the
+        session token, and a 401/403 is reported as what it is rather than as a
+        generic failure."""
         bad = self._bad_name(name)
         if bad:
             return bad
         if not isinstance(script, str) or not script.strip():
             return {"ok": False, "error": "empty_script", "message": "Nothing to run — the editor is empty."}
+        if not cloud.signed_in():
+            return {"ok": False, "error": "signed_out",
+                    "message": "Sign in to run scripts."}
         base = self._exec_base()
         try:
-            sub = _exec_http(f"{base}/omni/exec/submit", {"channel": name, "script": script}, timeout=10)
-        except Exception as exc:
-            return {"ok": False, "error": "unreachable",
-                    "message": f"Couldn't reach the exec server at {base}: {exc}"}
+            sub = cloud.request("POST", "/omni/exec/submit",
+                                {"channel": name, "script": script}, base=base, timeout=15)
+        except cloud.CloudError as exc:
+            if exc.error == "not_your_account":
+                return {"ok": False, "error": "not_your_account", "message": exc.message}
+            if exc.status == 401:
+                return {"ok": False, "error": "signed_out",
+                        "message": "Your session expired — sign in again."}
+            if exc.status == 402:
+                return {"ok": False, "error": "subscription_inactive", "message": exc.message}
+            return {"ok": False, "error": "unreachable", "message": exc.message}
         if not sub.get("ok"):
             return {"ok": False, "error": "submit_failed", "message": sub.get("error", "submit failed")}
         job_id = sub.get("id")
@@ -407,8 +429,8 @@ class Api:
         deadline = time.time() + 8.0
         while time.time() < deadline:
             try:
-                res = _exec_http(f"{base}/omni/exec/result?id={job_id}", timeout=4)
-            except Exception:
+                res = cloud.request("GET", f"/omni/exec/result?id={job_id}", base=base, timeout=6)
+            except cloud.CloudError:
                 res = {}
             if res.get("done"):
                 return {"ok": True, "ran": bool(res.get("ok")), "output": res.get("output", ""),
@@ -416,6 +438,202 @@ class Api:
             time.sleep(0.4)
         return {"ok": True, "ran": None, "pending": True, "id": job_id, "connected": True,
                 "output": "Submitted — no result yet (the script may still be running)."}
+
+    # ---- account / sign-in ----
+
+    def auth_status(self):
+        """Who is signed in on this machine, and is the plan good?
+
+        Called on every launch to decide between the sign-in screen and the app.
+        A server that cannot be reached must NOT sign the user out: the token is
+        still valid, the instances on this machine are still theirs, and kicking
+        them to a login form they cannot complete offline would be the worst
+        possible response to a flaky network."""
+        saved = cloud.auth()
+        dev = cloud.device()
+        base = {"ok": True, "device": {"id": dev["deviceId"], "name": dev["deviceName"]},
+                "apiBase": self._api_base()}
+        if not saved.get("token"):
+            return {**base, "signedIn": False}
+        out = {**base, "signedIn": True, "email": saved.get("email"),
+               "subscription": saved.get("subscription") or {}, "stale": True}
+        try:
+            fresh = cloud.me()
+            out.update(email=fresh.get("email"), subscription=fresh.get("subscription") or {},
+                       stale=False)
+        except cloud.CloudError as exc:
+            if exc.status == 401:
+                cloud.sign_out()
+                return {**base, "signedIn": False, "message": "Your session expired — sign in again."}
+            out["message"] = exc.message      # offline: keep working with what we have
+        return out
+
+    def _api_base(self):
+        try:
+            return cloud.api_base(self.get_settings())
+        except Exception:  # noqa: BLE001
+            return cloud.api_base()
+
+    def auth_register(self, email, password, key):
+        try:
+            data = cloud.register(email, password, key)
+        except cloud.CloudError as exc:
+            return {"ok": False, "error": exc.error or "register_failed", "message": exc.message}
+        self._after_sign_in()
+        return {"ok": True, **data}
+
+    def auth_login(self, email, password):
+        try:
+            data = cloud.login(email, password)
+        except cloud.CloudError as exc:
+            return {"ok": False, "error": exc.error or "login_failed", "message": exc.message}
+        self._after_sign_in()
+        return {"ok": True, **data}
+
+    def auth_logout(self):
+        """Sign out, but first release any running lease this machine holds.
+
+        Without that release the accounts this device is running would keep
+        their lease until it expires, and the next user to sign in here would
+        see phantom "Running on <this machine>" rows for accounts that are not
+        theirs."""
+        try:
+            self._release_all_leases()
+        except Exception:  # noqa: BLE001 — never block a sign-out on the network
+            pass
+        cloud.sign_out()
+        self._known_running = set()
+        self._push("auth-changed", {"signedIn": False})
+        return {"ok": True}
+
+    def _after_sign_in(self):
+        """Pull this user's accounts down (and push anything only on this
+        machine) as soon as they sign in, in the background so the window can
+        render immediately."""
+        def _run():
+            try:
+                res = accountsync().sync(progress=lambda line: self._push(
+                    "engine-progress", {"scope": "sync", "line": line}))
+                self._push("accounts-changed", {})
+                self._push("sync-done", res)
+            except Exception as exc:  # noqa: BLE001 — surface, never crash
+                self._push("sync-error", {"message": str(exc)})
+        threading.Thread(target=_run, daemon=True).start()
+
+    def cloud_sync(self):
+        """Manual "sync now" (Settings). Same work as the post-sign-in sync,
+        but synchronous so the button can report a result."""
+        if not cloud.signed_in():
+            return {"ok": False, "error": "signed_out", "message": "Sign in first."}
+        try:
+            res = accountsync().sync(progress=lambda line: self._push(
+                "engine-progress", {"scope": "sync", "line": line}))
+        except cloud.CloudError as exc:
+            return {"ok": False, "error": exc.error or "sync_failed", "message": exc.message}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": "sync_failed", "message": str(exc)}
+        self._push("accounts-changed", {})
+        return res
+
+    def cloud_presence(self):
+        """username -> presence, for the instances list. Returns an empty map
+        (never an error) when signed out or offline: presence is decoration on
+        top of the engine's own local truth, and losing it must not blank the
+        list."""
+        if not cloud.signed_in():
+            return {"ok": True, "presence": {}}
+        try:
+            return {"ok": True, "presence": accountsync().presence_map()}
+        except Exception:  # noqa: BLE001
+            return {"ok": True, "presence": {}}
+
+    def set_device_name(self, name):
+        dev = cloud.set_device_name(name)
+        return {"ok": True, "device": {"id": dev["deviceId"], "name": dev["deviceName"]}}
+
+    # ---- presence heartbeat ----
+
+    def _beat_now(self, name, state, mode=None, place=None):
+        """Report one account's state immediately, off the UI thread.
+
+        An account the SERVER does not know about yet (added on this machine and
+        not yet synced) answers 404; push it up and retry once, so a launch is
+        never invisible to the user's other devices just because the sync had
+        not run."""
+        if not cloud.signed_in():
+            return
+
+        def _run():
+            try:
+                cloud.set_state(name, state, mode=mode, place_id=place)
+            except cloud.CloudError as exc:
+                if exc.status != 404:
+                    return
+                try:
+                    local = accountsync().read_local().get(name)
+                    if local and local.get("cookie"):
+                        cloud.push_account(name, cookie=local["cookie"],
+                                           user_id=local.get("user_id"))
+                        cloud.set_state(name, state, mode=mode, place_id=place)
+                except Exception:  # noqa: BLE001
+                    pass
+            if state == "running":
+                self._known_running.add(name)
+            else:
+                self._known_running.discard(name)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _running_names(self):
+        """Instances the ENGINE says are up on this machine, right now."""
+        res = run_engine(["list", "--json"], timeout=60)
+        accounts = res.get("accounts") if isinstance(res, dict) else None
+        if not isinstance(accounts, list):
+            return None                      # engine unhappy: report nothing, change nothing
+        return {a.get("name") for a in accounts
+                if isinstance(a, dict) and a.get("running") and a.get("name")}
+
+    def _beat_once(self):
+        if not cloud.signed_in():
+            self._known_running = set()
+            return
+        live = self._running_names()
+        if live is None:
+            return
+        for name in live:
+            try:
+                cloud.set_state(name, "running")
+            except cloud.CloudError:
+                pass                          # offline: the lease lapses, which is correct
+        for name in self._known_running - live:
+            try:
+                cloud.set_state(name, "stopped")
+            except cloud.CloudError:
+                pass
+        self._known_running = live
+
+    def _heartbeat_loop(self):
+        while not self._heartbeat_stop.wait(self.HEARTBEAT_SECONDS):
+            try:
+                self._beat_once()
+            except Exception:  # noqa: BLE001 — a heartbeat must never kill the app
+                pass
+
+    def start_heartbeat(self):
+        if self._heartbeat_thread and self._heartbeat_thread.is_alive():
+            return
+        self._heartbeat_stop.clear()
+        self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
+        self._heartbeat_thread.start()
+
+    def _release_all_leases(self):
+        """Tell the server this machine no longer runs anything it claimed."""
+        for name in list(self._known_running):
+            try:
+                cloud.set_state(name, "stopped")
+            except cloud.CloudError:
+                pass
+        self._known_running = set()
 
     # ---- engine ----
 
@@ -565,10 +783,35 @@ class Api:
         """All accounts with base, ports and running state."""
         return run_engine(["list", "--json"], timeout=60)
 
+    def _publish_account(self, result):
+        """Upload a freshly-captured Roblox account to the signed-in Omni user.
+
+        Adding an account is the moment it becomes worth having elsewhere, so it
+        goes up immediately instead of waiting for the next sync — that is what
+        makes "add it on the PC, launch it on the Mac" work without a thought.
+        Best-effort: a failure here must not turn a successful local login into
+        an error the user sees."""
+        name = result.get("username") or result.get("name") if isinstance(result, dict) else None
+        if not name or not result.get("ok") or not cloud.signed_in():
+            return
+
+        def _run():
+            try:
+                rec = accountsync().read_local().get(name) or {}
+                if rec.get("cookie"):
+                    cloud.push_account(name, cookie=rec["cookie"], user_id=rec.get("user_id"))
+                    self._push("sync-done", {"ok": True, "pushed": [name], "pulled": []})
+            except Exception:  # noqa: BLE001
+                pass
+
+        threading.Thread(target=_run, daemon=True).start()
+
     def engine_login_browser(self):
         """Add an account by interactive Roblox sign-in (omnidroid opens its
         own browser). The account is saved under its Roblox username."""
-        return run_engine(["login"], progress=self._progress("login"), timeout=360)
+        res = run_engine(["login"], progress=self._progress("login"), timeout=360)
+        self._publish_account(res)
+        return res
 
     def engine_login_token(self, token):
         """Add an account from a pasted Roblox cookie/token. Written to a
@@ -581,8 +824,10 @@ class Api:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(token.strip())
-            return run_engine(["login", "--token-file", path, "--json"],
-                              progress=self._progress("login"), timeout=120)
+            res = run_engine(["login", "--token-file", path, "--json"],
+                             progress=self._progress("login"), timeout=120)
+            self._publish_account(res)
+            return res
         finally:
             try:
                 os.remove(path)
@@ -608,6 +853,12 @@ class Api:
             args += ["--place", str(place).strip()]
         result = run_engine(args, progress=self._progress(name),
                             timeout=BOOT_TIMEOUT + WATCHDOG_GRACE)
+        if result.get("ok"):
+            # Claim the lease NOW rather than waiting up to a heartbeat period:
+            # the in-game exec bridge cannot claim its poll token until this
+            # account is registered as launched, so a late beat would show up as
+            # "no live session" for the first half-minute of every launch.
+            self._beat_now(name, "running", mode=mode, place=place)
         self._push("accounts-changed", {})
         return result
 
@@ -619,6 +870,8 @@ class Api:
         result = run_engine(["stop", name, "--json", "--timeout", str(STOP_TIMEOUT)],
                             progress=self._progress(name),
                             timeout=STOP_TIMEOUT + WATCHDOG_GRACE)
+        if result.get("ok"):
+            self._beat_now(name, "stopped")
         self._push("accounts-changed", {})
         return result
 
@@ -656,8 +909,13 @@ class Api:
     def _shutdown(self):
         """No embedded viewer/proxy state to tear down — the engine owns its
         own viewer windows. Instances keep running regardless; only an
-        explicit stop powers them off (engine contract)."""
-        pass
+        explicit stop powers them off (engine contract).
+
+        The presence lease is deliberately NOT released here: closing the app
+        does not stop the VMs, so claiming they stopped would be a lie. The
+        lease simply lapses ~90 s later, which is the honest answer for
+        "nothing is reporting on this any more"."""
+        self._heartbeat_stop.set()
 
 
 def _show_macos_traffic_lights(window):
@@ -720,6 +978,9 @@ def main():
         )
 
     api = Api()
+    # Renew running leases from launch, so a second machine sees this one's
+    # instances as "Running on <name>" without waiting for a UI action here.
+    api.start_heartbeat()
     window = webview.create_window(
         "Omni Executor",
         url=str(index),

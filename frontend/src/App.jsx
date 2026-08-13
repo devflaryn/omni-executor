@@ -7,6 +7,7 @@ import EditorView from "./components/EditorView.jsx";
 import AccountsView from "./components/AccountsView.jsx";
 import SettingsView from "./components/SettingsView.jsx";
 import BootstrapView from "./components/BootstrapView.jsx";
+import AuthView from "./components/AuthView.jsx";
 import Toast from "./components/Toast.jsx";
 import { CodeIcon, GearIcon, UsersIcon } from "./components/icons.jsx";
 
@@ -32,20 +33,34 @@ export default function App() {
   // First-boot gate: null = unknown (render nothing yet), false = show
   // BootstrapView, true = runtime ready (or no backend — dev/browser).
   const [ready, setReady] = useState(null);
+  // Sign-in gate: null = still asking the backend, otherwise the auth_status
+  // report. Accounts and script execution belong to an Omni user, so the shell
+  // does not mount until one is signed in.
+  const [auth, setAuth] = useState(null);
   const toastTimer = useRef(null);
+
+  const refreshAuth = useCallback(async () => {
+    const status = await api("auth_status");
+    setAuth(status?.ok ? status : { ok: true, signedIn: false });
+    return status;
+  }, []);
 
   useEffect(() => {
     hasBackend().then(async (desktop) => {
       if (!desktop) {
+        // Browser preview: there is no Python side to hold a session, so the
+        // gate would be unpassable. Skip it rather than show a dead form.
+        setAuth({ ok: true, signedIn: true, preview: true });
         setReady(true);
         return;
       }
       const platform = await api("get_platform");
       setChrome({ desktop: true, mac: platform === "darwin" });
+      await refreshAuth();
       const s = await bootstrapStatus();
       setReady(Boolean(s?.ready));
     });
-  }, []);
+  }, [refreshAuth]);
 
   const showToast = useCallback((message, tone = "info") => {
     setToast({ message, tone });
@@ -106,7 +121,19 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [switchTab]);
 
-  if (ready === null) return null;
+  if (ready === null || auth === null) return null;
+  // Sign-in comes BEFORE the runtime download: the multi-gigabyte base images
+  // are worth fetching only for someone who can actually use them, and the
+  // license check is the cheap question to ask first.
+  if (!auth.signedIn) {
+    return (
+      <AuthView
+        apiBase={auth.apiBase}
+        deviceName={auth.device?.name}
+        onSignedIn={() => refreshAuth()}
+      />
+    );
+  }
   if (ready === false) return <BootstrapView onReady={() => setReady(true)} />;
 
   return (
@@ -143,6 +170,8 @@ export default function App() {
               profile={profile}
               onProfile={updateProfile}
               showToast={showToast}
+              auth={auth}
+              onAuthChange={refreshAuth}
             />
           </main>
         </div>

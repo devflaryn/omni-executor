@@ -20,6 +20,8 @@ export default function SettingsView({
   profile,
   onProfile,
   showToast,
+  auth,
+  onAuthChange,
 }) {
   const engine = useEngine();
   const [name, setName] = useState(profile.name);
@@ -64,6 +66,8 @@ export default function SettingsView({
   return (
     <div className={`min-h-0 flex-1 overflow-y-auto px-5 py-5 ${active ? "" : "hidden"}`}>
       <div className="animate-rise mx-auto flex w-full max-w-[640px] flex-col gap-4">
+        <OmniAccountPanel auth={auth} onAuthChange={onAuthChange} showToast={showToast} />
+
         {/* Profile */}
         <Panel className="overflow-hidden">
           <PanelHead
@@ -242,6 +246,107 @@ export default function SettingsView({
         <p className="silk pb-2 text-center text-ink-3">Omni Executor · v2.0</p>
       </div>
     </div>
+  );
+}
+
+/* The Omni account: which login this machine is using, what the plan is, what
+   this machine calls itself (that name is what other devices SEE — it is the
+   "Mac mini" in "Running on Mac mini"), and the way out. */
+function OmniAccountPanel({ auth, onAuthChange, showToast }) {
+  const [device, setDevice] = useState(auth?.device?.name || "");
+  const [syncing, setSyncing] = useState(false);
+  const nameTimer = useRef(null);
+
+  useEffect(() => {
+    setDevice(auth?.device?.name || "");
+  }, [auth?.device?.name]);
+
+  const sub = auth?.subscription || {};
+  const planLine = !sub.plan
+    ? "No plan"
+    : sub.plan === "lifetime"
+      ? "Lifetime"
+      : sub.active
+        ? `${sub.planLabel || sub.plan} · ${sub.daysRemaining} day${sub.daysRemaining === 1 ? "" : "s"} left`
+        : `${sub.planLabel || sub.plan} · expired`;
+
+  const renameDevice = (next) => {
+    setDevice(next);
+    clearTimeout(nameTimer.current);
+    nameTimer.current = setTimeout(() => api("set_device_name", next), 600);
+  };
+
+  const syncNow = async () => {
+    setSyncing(true);
+    const res = await api("cloud_sync");
+    setSyncing(false);
+    if (!res?.ok) {
+      showToast(res?.message || "Sync failed", "error");
+      return;
+    }
+    const up = res.pushed?.length || 0;
+    const down = res.pulled?.length || 0;
+    showToast(
+      up || down ? `Synced — ${up} uploaded, ${down} downloaded` : "Already up to date",
+      "success"
+    );
+  };
+
+  const signOut = async () => {
+    await api("auth_logout");
+    onAuthChange?.();
+  };
+
+  return (
+    <Panel className="overflow-hidden">
+      <PanelHead
+        icon={UserIcon}
+        title="Omni account"
+        right={
+          <span className="flex items-center gap-2 text-[11.5px] text-ink-2">
+            <Lamp tone={sub.active ? "live" : "fault"} size={6} />
+            {planLine}
+          </span>
+        }
+      />
+      <div className="flex flex-col gap-4 p-4">
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-2.5 font-mono text-[11.5px]">
+          <Row label="Signed in" value={auth?.email || "—"} />
+          <Row label="Server" value={(auth?.apiBase || "").replace(/^https?:\/\//, "") || "—"} />
+        </dl>
+
+        <Field
+          label="This device"
+          htmlFor="device-name"
+          hint="Your other machines show this name when an account is running here."
+        >
+          <input
+            id="device-name"
+            className="input"
+            value={device}
+            maxLength={40}
+            spellCheck={false}
+            onChange={(e) => renameDevice(e.target.value)}
+          />
+        </Field>
+
+        {auth?.stale && (
+          <p className="text-[11px] text-ink-3">
+            Working offline — {auth.message || "the server could not be reached"}. Accounts and
+            plan shown from the last successful check.
+          </p>
+        )}
+
+        <div className="rule-t flex gap-2 pt-4">
+          <Button size="sm" onClick={syncNow} disabled={syncing}>
+            {syncing ? "Syncing…" : "Sync accounts"}
+          </Button>
+          <Button size="sm" className="ml-auto" onClick={signOut}>
+            Sign out
+          </Button>
+        </div>
+      </div>
+    </Panel>
   );
 }
 
