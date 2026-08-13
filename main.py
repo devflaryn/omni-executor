@@ -326,6 +326,7 @@ class Api:
         self._known_running = set()
         self._heartbeat_stop = threading.Event()
         self._heartbeat_thread = None
+        self._updating = False
 
     # ---- window controls (used by the custom title bar) ----
 
@@ -564,6 +565,112 @@ class Api:
     def set_device_name(self, name):
         dev = cloud.set_device_name(name)
         return {"ok": True, "device": {"id": dev["deviceId"], "name": dev["deviceName"]}}
+
+    # ---- updates ----
+
+    def update_check(self):
+        """What is out of date: the base images/offsets, this app, or neither.
+
+        Answers from the manifest only — no downloads — so it is cheap enough
+        to run on every launch. Offline is reported as `ok: false` with the
+        reason, never as "up to date": telling someone they are current when
+        you could not reach the server is how a machine sits on a broken base
+        image for a week."""
+        import updates
+        return updates.check()
+
+    def _check_updates_on_launch(self):
+        """Fire the launch-time check on a background thread.
+
+        Off the startup path deliberately: the manifest is a network round trip
+        and the window must not wait on it. The result arrives as an event, so
+        a slow or unreachable server costs nothing visible."""
+        def _run():
+            try:
+                import updates
+                report = updates.check()
+                report["staged"] = updates.staged_info()
+                self._push("update-status", report)
+            except Exception as exc:  # noqa: BLE001 — a check must never break a launch
+                self._push("update-status", {"ok": False, "error": str(exc)})
+        threading.Thread(target=_run, daemon=True).start()
+
+    def update_runtime(self):
+        """Download the changed base images/offsets.
+
+        Refused while anything is running: these files are open by a live QEMU,
+        so replacing them would either fail halfway (Windows holds the lock) or
+        pull an image out from under a booted guest."""
+        import updates
+        live = self._running_names()
+        if live:
+            return {"ok": False, "error": "instances_running",
+                    "message": f"Stop {', '.join(sorted(live))} first — the base "
+                               f"images are in use by a running instance."}
+        if self._updating:
+            return {"ok": False, "error": "already_running"}
+        self._updating = True
+
+        def _run():
+            try:
+                res = updates.apply_runtime(
+                    progress=lambda p: self._push("update-progress", p))
+                bootstrap.configure_engine(bootstrap.runtime_dir())
+                self._push("update-done", {"scope": "runtime", **res})
+            except Exception as exc:  # noqa: BLE001
+                self._push("update-error", {"scope": "runtime", "message": str(exc)})
+            finally:
+                self._updating = False
+                self._check_updates_on_launch()
+        threading.Thread(target=_run, daemon=True).start()
+        return {"ok": True, "started": True}
+
+    def update_app(self):
+        """Download a new build of this app and stage it.
+
+        Staging only. The swap needs this process gone, so it happens in
+        update_app_restart() — which is also the point where the user gets to
+        say when."""
+        import updates
+        ok, reason = updates.can_apply_app()
+        if not ok:
+            return {"ok": False, "error": "not_applicable", "message": reason}
+        if self._updating:
+            return {"ok": False, "error": "already_running"}
+        self._updating = True
+
+        def _run():
+            try:
+                build = updates.stage_app(
+                    progress=lambda p: self._push("update-progress", p))
+                self._push("update-done", {"scope": "app", "build": str(build),
+                                           "staged": updates.staged_info()})
+            except Exception as exc:  # noqa: BLE001
+                self._push("update-error", {"scope": "app", "message": str(exc)})
+            finally:
+                self._updating = False
+        threading.Thread(target=_run, daemon=True).start()
+        return {"ok": True, "started": True}
+
+    def update_app_restart(self):
+        """Hand the swap to the staged build and close this window.
+
+        Refused while instances are running: the app is what holds their
+        presence lease, and restarting mid-launch would make them look stopped
+        on the user's other machines."""
+        import updates
+        live = self._running_names()
+        if live:
+            return {"ok": False, "error": "instances_running",
+                    "message": f"Stop {', '.join(sorted(live))} first — restarting "
+                               f"now would drop their running state."}
+        try:
+            pid = updates.launch_apply()
+        except updates.UpdateError as exc:
+            return {"ok": False, "error": "apply_failed", "message": str(exc)}
+        # Give the child a moment to start waiting on this pid before it goes.
+        threading.Timer(0.6, self.close).start()
+        return {"ok": True, "helper_pid": pid}
 
     # ---- presence heartbeat ----
 
@@ -960,7 +1067,36 @@ def _show_macos_traffic_lights(window):
         pass
 
 
+def _apply_update_mode(argv):
+    """`--apply-update <target-dir> <pid>`: replace an installed build.
+
+    This runs in the STAGED copy, launched by the outgoing one (see
+    updates.launch_apply). It is a mode of the app rather than a separate
+    helper binary so there is nothing extra to ship, sign or keep in step —
+    and because the code that knows how to lay this build out is right here.
+    """
+    import updates
+    target, pid = argv[2], argv[3]
+    try:
+        updates.apply_staged_app(target, pid)
+    except Exception as exc:  # noqa: BLE001
+        # Nobody is watching a detached console; leave a trace where the app
+        # (and the next support question) will look.
+        try:
+            log = bootstrap.runtime_dir() / "update.log"
+            with open(log, "a", encoding="utf-8") as f:
+                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} apply-update "
+                        f"failed: {exc}\n")
+        except OSError:
+            pass
+        raise
+
+
 def main():
+    if len(sys.argv) > 3 and sys.argv[1] == "--apply-update":
+        _apply_update_mode(sys.argv)
+        return
+
     if len(sys.argv) > 1 and sys.argv[1] == "--omnidroid":
         # In-binary engine dispatch (frozen build's engine_prefix() returns
         # [sys.executable, "--omnidroid"]): re-exec the frozen app's own
@@ -995,6 +1131,9 @@ def main():
     # Renew running leases from launch, so a second machine sees this one's
     # instances as "Running on <name>" without waiting for a UI action here.
     api.start_heartbeat()
+    # Ask what is out of date on every launch — base images, offsets and this
+    # app alike. Background, so nothing waits on the network.
+    api._check_updates_on_launch()
     window = webview.create_window(
         "Omni Executor",
         url=str(index),

@@ -8,6 +8,7 @@ import AccountsView from "./components/AccountsView.jsx";
 import SettingsView from "./components/SettingsView.jsx";
 import BootstrapView from "./components/BootstrapView.jsx";
 import AuthView from "./components/AuthView.jsx";
+import { UpdateBanner, useUpdates } from "./components/UpdateBanner.jsx";
 import Toast from "./components/Toast.jsx";
 import { CodeIcon, GearIcon, UsersIcon } from "./components/icons.jsx";
 
@@ -38,6 +39,9 @@ export default function App() {
   // does not mount until one is signed in.
   const [auth, setAuth] = useState(null);
   const toastTimer = useRef(null);
+  // Launch-time update state. main.py pushes an "update-status" event on every
+  // start, so this is populated without the UI asking.
+  const updates = useUpdates();
 
   const refreshAuth = useCallback(async () => {
     const status = await api("auth_status");
@@ -150,6 +154,7 @@ export default function App() {
 
         <div className="flex min-w-0 flex-1 flex-col">
           <ContextBar tab={tab} profile={profile} chrome={chrome} />
+          <UpdateBanner updates={updates} onOpenSettings={() => switchTab("settings")} />
 
           {/* Every view stays mounted so the editor keeps its buffer and the
               instances list keeps its selection; only visibility changes. */}
@@ -172,6 +177,7 @@ export default function App() {
               showToast={showToast}
               auth={auth}
               onAuthChange={refreshAuth}
+              updates={updates}
             />
           </main>
         </div>

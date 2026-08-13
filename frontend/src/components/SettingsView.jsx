@@ -5,6 +5,7 @@ import { api } from "../api.js";
 import { useEngine } from "../engine.jsx";
 import { Button, Field, Lamp, Panel, PanelHead, Toggle } from "./ui.jsx";
 import { CpuIcon, GearIcon, MoonIcon, SunIcon, UserIcon } from "./icons.jsx";
+import UpdatePanel from "./UpdateBanner.jsx";
 
 function initials(name) {
   const parts = String(name).trim().split(/\s+/).filter(Boolean);
@@ -22,6 +23,7 @@ export default function SettingsView({
   showToast,
   auth,
   onAuthChange,
+  updates,
 }) {
   const engine = useEngine();
   const [name, setName] = useState(profile.name);
@@ -67,6 +69,8 @@ export default function SettingsView({
     <div className={`min-h-0 flex-1 overflow-y-auto px-5 py-5 ${active ? "" : "hidden"}`}>
       <div className="animate-rise mx-auto flex w-full max-w-[640px] flex-col gap-4">
         <OmniAccountPanel auth={auth} onAuthChange={onAuthChange} showToast={showToast} />
+
+        {updates && <UpdatePanel updates={updates} showToast={showToast} />}
 
         {/* Profile */}
         <Panel className="overflow-hidden">

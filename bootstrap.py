@@ -4,7 +4,7 @@ Fetches the named-blob manifest, downloads + sha256-verifies each artifact
 with HTTP Range resume, places it under the OmniExec runtime dir, and records
 installed.json. No GUI, no engine import — pure stdlib so it is unit-testable.
 """
-import hashlib, json, os, re, shutil, subprocess, sys, tarfile, time, urllib.request, urllib.error
+import hashlib, json, os, re, shutil, subprocess, sys, tarfile, time, urllib.request, urllib.error, zipfile
 from pathlib import Path
 
 APP_DIR_NAME = "OmniExec"
@@ -144,11 +144,20 @@ def plan_downloads(manifest: dict, installed: dict) -> list:
     Planning them was a real first-boot failure — download_blob compared the
     downloaded bytes against None, which never matches, so the install pulled
     197 MB and then died with "qemu-win: sha256 mismatch after 3 attempts".
+
+    Artifacts with `kind: "app"` are skipped too, for a different reason: they
+    are builds of THIS APP. Downloading one during first boot would fetch
+    another ~86 MB copy of the program already running, and placing it would
+    put a second app inside the runtime dir where nothing looks for it. The
+    updater (updates.py) asks for it by name when there is actually a newer
+    version to install.
     """
     have = installed.get("artifacts", {})
     out = []
     for a in manifest.get("artifacts", []):
         if not a.get("sha256"):
+            continue
+        if a.get("kind") == "app":
             continue
         cur = have.get(a["name"])
         if not cur or cur.get("sha256") != a["sha256"]:
@@ -181,7 +190,7 @@ def download_blob(base_url: str, artifact: dict, tmp_path: Path, progress=None) 
     for attempt in range(1, _MAX_RETRIES + 1):
         have = tmp_path.stat().st_size if tmp_path.exists() else 0
         if have > total:  # corrupt partial
-            tmp_path.unlink(); have = 0
+            _discard(tmp_path); have = 0
         req = urllib.request.Request(url)
         if have:
             req.add_header("Range", f"bytes={have}-")
@@ -204,13 +213,38 @@ def download_blob(base_url: str, artifact: dict, tmp_path: Path, progress=None) 
             return
         hashed_mismatch = True
         last_exc = None
-        tmp_path.unlink(missing_ok=True)  # bad content, redownload from scratch
+        _discard(tmp_path)   # bad content, redownload from scratch
     if hashed_mismatch:
         raise BootstrapError(f"{artifact['name']}: sha256 mismatch after {_MAX_RETRIES} attempts")
     raise BootstrapError(
         f"{artifact['name']}: download failed after {_MAX_RETRIES} attempts "
         f"(no successful transfer to verify): {last_exc}"
     ) from last_exc
+
+
+def _discard(path: Path) -> None:
+    """Throw away a partial download, without turning a retryable problem into
+    a crash.
+
+    On Windows an open handle makes unlink raise PermissionError (WinError 32),
+    and this is called from the RECOVERY path — a hash mismatch, which is
+    exactly when the retry matters. Losing the whole multi-gigabyte download to
+    a traceback about deleting the scratch file is the worst possible trade, so
+    truncating in place is an acceptable second best: the next attempt resumes
+    from zero either way.
+    """
+    try:
+        path.unlink(missing_ok=True)
+        return
+    except OSError:
+        pass
+    try:
+        with open(path, "wb"):
+            pass
+    except OSError as e:
+        raise BootstrapError(
+            f"could not discard the partial download at {path}: {e}. Another "
+            f"copy of the app may be updating at the same time.") from e
 
 
 def place_artifact(artifact: dict, tmp_path: Path, rt: Path) -> None:
@@ -221,6 +255,12 @@ def place_artifact(artifact: dict, tmp_path: Path, rt: Path) -> None:
         mode = "r:gz" if unpack != "tar" else "r:"
         with tarfile.open(tmp_path, mode) as tf:
             _safe_extract(tf, dest_dir)
+        tmp_path.unlink(missing_ok=True)
+    elif unpack == "zip":
+        # App builds ship as zips: it is what Compress-Archive produces on
+        # Windows and what preserves an .app bundle's layout on macOS.
+        with zipfile.ZipFile(tmp_path) as zf:
+            _safe_extract_zip(zf, dest_dir)
         tmp_path.unlink(missing_ok=True)
     else:
         name = artifact.get("dest_name") or artifact["url"].rsplit("/", 1)[-1]
@@ -241,6 +281,32 @@ def _safe_extract(tf: tarfile.TarFile, dest: Path) -> None:
         # very old interpreters (< 3.12) without the `filter` kwarg; the
         # manual link/containment guard above already vetted every member.
         tf.extractall(dest)
+
+
+def _safe_extract_zip(zf: zipfile.ZipFile, dest: Path) -> None:
+    """Same containment rule as _safe_extract, for zips.
+
+    Zip has no link members to reject, but it very much has `../` traversal in
+    entry names, and ZipFile.extract's own sanitising is not something to rely
+    on when the archive replaces an executable directory.
+    """
+    dest = dest.resolve()
+    for info in zf.infolist():
+        target = (dest / info.filename).resolve()
+        if not (target == dest or dest in target.parents):
+            raise BootstrapError(f"unsafe zip member: {info.filename}")
+    zf.extractall(dest)
+    # Zip does not carry the executable bit on every toolchain (PowerShell's
+    # Compress-Archive drops POSIX modes entirely), so a macOS bundle unpacked
+    # from one would have a non-executable binary inside it.
+    if sys.platform != "win32":
+        for info in zf.infolist():
+            mode = info.external_attr >> 16
+            if mode:
+                try:
+                    os.chmod(dest / info.filename, mode)
+                except OSError:
+                    pass
 
 
 def _precheck_space(rt: Path, plan: list) -> None:
