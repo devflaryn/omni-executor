@@ -78,3 +78,13 @@ export function onEngineEvent(listener) {
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
+
+// ---- first-boot bootstrap (bake the runtime, fetch artifacts) ----
+
+export function bootstrapStatus() {
+  return api("bootstrap_status");
+}
+
+export function bootstrapStart() {
+  return api("bootstrap_start");
+}

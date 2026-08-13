@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, hasBackend, loadSettings, saveSettings } from "./api.js";
+import { api, bootstrapStatus, hasBackend, loadSettings, saveSettings } from "./api.js";
 import { EngineProvider, useEngine } from "./engine.jsx";
 import Sidebar from "./components/Sidebar.jsx";
 import WindowBar from "./components/WindowBar.jsx";
 import EditorView from "./components/EditorView.jsx";
 import AccountsView from "./components/AccountsView.jsx";
 import SettingsView from "./components/SettingsView.jsx";
+import BootstrapView from "./components/BootstrapView.jsx";
 import Toast from "./components/Toast.jsx";
 import { CodeIcon, GearIcon, UsersIcon } from "./components/icons.jsx";
 
@@ -28,13 +29,21 @@ export default function App() {
   // Window chrome: nothing in a browser, native traffic lights on macOS,
   // our own buttons on Windows/Linux. Resolved once from the backend.
   const [chrome, setChrome] = useState({ desktop: false, mac: false });
+  // First-boot gate: null = unknown (render nothing yet), false = show
+  // BootstrapView, true = runtime ready (or no backend — dev/browser).
+  const [ready, setReady] = useState(null);
   const toastTimer = useRef(null);
 
   useEffect(() => {
     hasBackend().then(async (desktop) => {
-      if (!desktop) return;
+      if (!desktop) {
+        setReady(true);
+        return;
+      }
       const platform = await api("get_platform");
       setChrome({ desktop: true, mac: platform === "darwin" });
+      const s = await bootstrapStatus();
+      setReady(Boolean(s?.ready));
     });
   }, []);
 
@@ -96,6 +105,9 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [switchTab]);
+
+  if (ready === null) return null;
+  if (ready === false) return <BootstrapView onReady={() => setReady(true)} />;
 
   return (
     <EngineProvider activeTab={tab} showToast={showToast}>
