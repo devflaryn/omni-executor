@@ -4,7 +4,7 @@ Fetches the named-blob manifest, downloads + sha256-verifies each artifact
 with HTTP Range resume, places it under the OmniExec runtime dir, and records
 installed.json. No GUI, no engine import — pure stdlib so it is unit-testable.
 """
-import hashlib, json, os, re, shutil, sys, tarfile, time, urllib.request, urllib.error
+import hashlib, json, os, re, shutil, subprocess, sys, tarfile, time, urllib.request, urllib.error
 from pathlib import Path
 
 APP_DIR_NAME = "OmniExec"
@@ -315,6 +315,77 @@ def _qemu_hint() -> str:
         return ("QEMU is not installed yet — Omni Executor will download and "
                 "install it automatically on first run.")
     return "brew install qemu android-platform-tools"
+
+
+_WHPX_HINT = (
+    "Windows Hypervisor Platform is turned off, so the Android VM cannot "
+    "start. Enable it in an ADMINISTRATOR PowerShell:\n\n"
+    "    DISM /Online /Enable-Feature /FeatureName:HypervisorPlatform /All\n\n"
+    "then reboot. (Windows Features > \"Windows Hypervisor Platform\" does "
+    "the same thing.)")
+
+_WHPX_NO_QEMU_HINT = (
+    "Virtualization support has not been checked yet — QEMU is still being "
+    "installed.")
+
+# WHPX state cannot change without a reboot, so probe once per process.
+_whpx_cache = {}
+
+
+def _whpx_probe(qemu: str, timeout: float = 6.0):
+    """True/False/None — can QEMU actually initialize the WHPX accelerator?
+
+    Starts a tiny VM PAUSED (-S). QEMU brings the accelerator up during
+    startup, so a process that is still alive after the timeout has already
+    proved WHPX works; one that exits immediately complaining about whpx has
+    proved it does not. Anything else (a missing BIOS, a broken install) is
+    NOT evidence about WHPX and must stay unknown rather than be reported as
+    "virtualization is off"."""
+    proc = subprocess.Popen(
+        [qemu, "-accel", "whpx", "-machine", "q35", "-m", "32",
+         "-display", "none", "-nodefaults", "-no-user-config", "-S"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    try:
+        _, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()                      # never leave a probe VM behind
+        return True
+    err = (err or "").lower()
+    if "whpx" in err or "hypervisor" in err:
+        return False
+    return None
+
+
+def windows_accel_status(probe=None) -> dict:
+    """{"os", "whpx_ok", "hint"} — is this host able to run the VM at all?
+
+    `whpx_ok` is TRI-STATE: True (works), False (the feature is off, and
+    `hint` says exactly how to turn it on), or None (not determinable yet,
+    e.g. QEMU is not installed). None must not be rendered as a failure: a
+    scary "virtualization is off" panel on a machine that is actually fine is
+    worse than saying nothing.
+
+    A no-op returning ok on every non-Windows host."""
+    if current_os() != "win":
+        return {"os": current_os(), "whpx_ok": True, "hint": None}
+    if "win" in _whpx_cache:
+        return dict(_whpx_cache["win"])
+
+    qemu = shutil.which(_qemu_system_name())
+    if not qemu:
+        # Deliberately NOT cached: QEMU is about to be installed, and the
+        # next call should get a real answer.
+        return {"os": "win", "whpx_ok": None, "hint": _WHPX_NO_QEMU_HINT}
+    try:
+        ok = (probe or _whpx_probe)(qemu)
+    except Exception:  # noqa: BLE001 — a probe failure is never fatal
+        ok = None
+    status = {"os": "win", "whpx_ok": ok,
+              "hint": _WHPX_HINT if ok is False else None}
+    if ok is not None:
+        _whpx_cache["win"] = dict(status)
+    return status
 
 
 def engine_ready(rt: Path) -> dict:

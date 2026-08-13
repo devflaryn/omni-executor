@@ -77,6 +77,24 @@ export default function BootstrapView({ onReady }) {
         </div>
       )}
 
+      {/* Windows only, and only on an explicit False -- whpx_ok is tri-state
+          and `null` means "not determined yet" (e.g. QEMU still installing).
+          Showing a virtualization-is-off warning on a machine that is
+          actually fine would be worse than saying nothing. */}
+      {status?.whpx_ok === false && (
+        <div className="max-w-md rounded-lg border border-amber-600/40 bg-amber-950/20 p-4 text-[13px]">
+          <p className="mb-2 font-medium text-amber-400">
+            Windows Hypervisor Platform is off.
+          </p>
+          <p className="mb-2 whitespace-pre-line text-ink-2">
+            {status.whpx_hint}
+          </p>
+          <Button size="sm" className="mt-1" onClick={refresh}>
+            Re-check
+          </Button>
+        </div>
+      )}
+
       {status?.qemu_ok && !error && (
         <div className="w-full max-w-md">
           <div className="mb-2 flex justify-between text-[11px] text-ink-3">

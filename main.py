@@ -450,8 +450,15 @@ class Api:
             error = str(e)
             ready = bool(installed.get("artifacts"))  # offline-tolerant
         ready = ready and eng.get("qemu_ok", False)
+        # WHPX is a hard prerequisite on Windows -- omnidroid boots with
+        # -accel whpx and QEMU just dies if the feature is off -- so the UI
+        # has to be able to say so before the user hits Start. whpx_ok is
+        # tri-state (True/False/None-unknown); only an explicit False is a
+        # blocker, and it never gates a non-Windows host.
+        accel = bootstrap.windows_accel_status()
         return {"ok": True, "ready": ready, "installed": installed.get("artifacts", {}),
                 "qemu_ok": eng.get("qemu_ok", False), "qemu_hint": eng.get("qemu_hint"),
+                "whpx_ok": accel.get("whpx_ok"), "whpx_hint": accel.get("hint"),
                 "error": error}
 
     def bootstrap_start(self):
