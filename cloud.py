@@ -178,6 +178,18 @@ def sign_out():
 
 # --------------------------------------------------------------------- HTTP
 
+def _quote_header(value):
+    """Make an arbitrary Unicode string safe as an HTTP header value.
+
+    urllib.parse.quote with a conservative safe set: the result is pure ASCII,
+    and the server percent-decodes it back. Kept symmetrical with the backend's
+    decodeURIComponent, so a plain ASCII name survives untouched in both
+    directions.
+    """
+    from urllib.parse import quote
+    return quote(value or "", safe="")
+
+
 def api_base(settings=None) -> str:
     base = os.environ.get("OMNI_API_BASE")
     if not base and isinstance(settings, dict):
@@ -195,7 +207,12 @@ def _headers(with_auth=True):
         # and urllib does not send one by default.
         "User-Agent": "OmniExecutor/1.0",
         "X-Omni-Device-Id": dev["deviceId"],
-        "X-Omni-Device-Name": dev["deviceName"],
+        # PERCENT-ENCODED, because HTTP header values are latin-1 and a device
+        # name is whatever the machine is called. The Mac's is "Berat’ın Mac
+        # mini" — a U+2019 apostrophe and a dotless i — and sending it raw made
+        # http.client raise UnicodeEncodeError before the request left the box,
+        # i.e. sign-in failed outright on that machine. The server decodes it.
+        "X-Omni-Device-Name": _quote_header(dev["deviceName"]),
         "X-Omni-Device-Os": sys.platform,
     }
     if with_auth:
