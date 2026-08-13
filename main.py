@@ -33,6 +33,8 @@ import re
 import subprocess
 import sys
 import threading
+import time
+import urllib.request
 from pathlib import Path
 
 import webview
@@ -41,6 +43,10 @@ APP_NAME = "omni-executor"
 PROJECT_DIR = Path(__file__).resolve().parent
 FRONTEND_DIST = PROJECT_DIR / "frontend" / "dist"
 IS_MAC = sys.platform == "darwin"
+
+# OMNI-EXEC remote-execute bridge base (serves the in-game UI + the exec queue).
+# Override with the OMNI_EXEC_BASE env var or a settings.json "execBase" value.
+OMNI_EXEC_BASE = os.environ.get("OMNI_EXEC_BASE", "http://72.62.59.232")
 
 # Some Windows installs register .js as text/plain, which makes the webview
 # refuse to load ES modules.
@@ -241,6 +247,20 @@ def run_engine(args, progress=None, timeout=None):
     return result
 
 
+def _exec_http(url, payload=None, timeout=10):
+    """Minimal JSON HTTP for the exec bridge (stdlib only). POST when payload given."""
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"} if data is not None else {},
+        method="POST" if data is not None else "GET",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        body = resp.read().decode("utf-8", "replace")
+    return json.loads(body) if body.strip() else {}
+
+
 class Api:
     """Methods exposed to JavaScript as window.pywebview.api.*"""
 
@@ -296,6 +316,54 @@ class Api:
             json.dump(current, f, indent=2)
         tmp.replace(SETTINGS_FILE)
         return current
+
+    # ---- remote execute (Editor tab) ----
+
+    def _exec_base(self):
+        base = OMNI_EXEC_BASE
+        try:
+            saved = self.get_settings()
+            if isinstance(saved.get("execBase"), str) and saved["execBase"].strip():
+                base = saved["execBase"].strip()
+        except Exception:
+            pass
+        return base.rstrip("/")
+
+    def execute_script(self, name, script):
+        """Run a Luau script in the LIVE game session for `name` — MANUAL only,
+        fired when the user clicks Run. Submits to the OMNI-EXEC bridge; the
+        in-game UI polls it, loadstring()s it, and reports the result, which we
+        wait briefly for and return so the editor can show ok/output."""
+        bad = self._bad_name(name)
+        if bad:
+            return bad
+        if not isinstance(script, str) or not script.strip():
+            return {"ok": False, "error": "empty_script", "message": "Nothing to run — the editor is empty."}
+        base = self._exec_base()
+        try:
+            sub = _exec_http(f"{base}/omni/exec/submit", {"channel": name, "script": script}, timeout=10)
+        except Exception as exc:
+            return {"ok": False, "error": "unreachable",
+                    "message": f"Couldn't reach the exec server at {base}: {exc}"}
+        if not sub.get("ok"):
+            return {"ok": False, "error": "submit_failed", "message": sub.get("error", "submit failed")}
+        job_id = sub.get("id")
+        if not sub.get("connected"):
+            return {"ok": False, "error": "no_session", "id": job_id,
+                    "message": f"No live session for '{name}'. Launch the game and let Arceus + the "
+                               "OMNI-EXEC UI load, then Run again."}
+        deadline = time.time() + 8.0
+        while time.time() < deadline:
+            try:
+                res = _exec_http(f"{base}/omni/exec/result?id={job_id}", timeout=4)
+            except Exception:
+                res = {}
+            if res.get("done"):
+                return {"ok": True, "ran": bool(res.get("ok")), "output": res.get("output", ""),
+                        "id": job_id, "connected": True}
+            time.sleep(0.4)
+        return {"ok": True, "ran": None, "pending": True, "id": job_id, "connected": True,
+                "output": "Submitted — no result yet (the script may still be running)."}
 
     # ---- engine ----
 

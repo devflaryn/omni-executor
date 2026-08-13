@@ -3,6 +3,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { highlightLua, SAMPLE_SCRIPT } from "../lua.js";
+import { api } from "../api.js";
+import { useEngine } from "../engine.jsx";
 import { Button, IconButton, Lamp } from "./ui.jsx";
 import { CheckIcon, CopyIcon, EraserIcon, FileIcon, PlayIcon } from "./icons.jsx";
 
@@ -17,6 +19,17 @@ export default function EditorView({ active, showToast }) {
   const [dirty, setDirty] = useState(false);
   const [running, setRunning] = useState(false);
   const [copied, setCopied] = useState(false);
+
+  const { accounts, running: runningAccounts } = useEngine();
+  const [target, setTarget] = useState("");
+  const [result, setResult] = useState(null);
+
+  // Default the target to a running account (else the first known account).
+  useEffect(() => {
+    if (target && accounts.some((a) => a.name === target)) return;
+    const pick = runningAccounts[0] || accounts[0];
+    if (pick) setTarget(pick.name);
+  }, [accounts, runningAccounts, target]);
 
   const html = useMemo(() => highlightLua(value), [value]);
   const lineCount = useMemo(() => value.split("\n").length, [value]);
@@ -64,14 +77,31 @@ export default function EditorView({ active, showToast }) {
     }
   };
 
-  const run = () => {
+  const run = async () => {
     if (running) return;
+    if (!target) {
+      showToast("No target account — add or select one in Accounts.", "error");
+      return;
+    }
     setRunning(true);
-    // No execution backend is wired up yet — this is where it would plug in.
-    setTimeout(() => {
-      setRunning(false);
-      showToast("Script sent to the instance", "success");
-    }, 900);
+    setResult(null);
+    const res = await api("execute_script", target, value);
+    setRunning(false);
+    if (!res.ok) {
+      setResult({ tone: "error", text: res.message || res.error || "Execute failed" });
+      showToast(res.message || "Execute failed", "error");
+      return;
+    }
+    if (res.ran === false) {
+      setResult({ tone: "error", text: res.output || "Script error" });
+      showToast("Script error", "error");
+    } else if (res.pending) {
+      setResult({ tone: "warn", text: res.output || "Running…" });
+      showToast("Sent — still running…", "success");
+    } else {
+      setResult({ tone: "ok", text: res.output || "ok" });
+      showToast(`Executed on ${target} ✓`, "success");
+    }
   };
 
   const onKeyDown = (e) => {
@@ -129,6 +159,21 @@ export default function EditorView({ active, showToast }) {
             }`}
           />
           <div className="ml-auto flex items-center gap-1">
+            <select
+              value={target}
+              onChange={(e) => setTarget(e.target.value)}
+              title="Target account — the running game to execute in"
+              className="mr-1 max-w-[150px] rounded border border-white/10 bg-black/20 px-2 py-1
+                         font-mono text-[11px] text-ink-2 outline-none"
+            >
+              {accounts.length === 0 && <option value="">no accounts</option>}
+              {accounts.map((a) => (
+                <option key={a.name} value={a.name}>
+                  {a.name}
+                  {a.running ? " ●" : ""}
+                </option>
+              ))}
+            </select>
             <IconButton label={copied ? "Copied" : "Copy script"} onClick={copy}>
               {copied ? <CheckIcon className="h-4 w-4 text-live" /> : <CopyIcon className="h-4 w-4" />}
             </IconButton>
@@ -197,6 +242,17 @@ export default function EditorView({ active, showToast }) {
             />
           </div>
         </div>
+
+        {/* Exec output */}
+        {result && (
+          <div
+            className={`rule-t max-h-28 shrink-0 overflow-auto px-3.5 py-2 font-mono text-[11px] whitespace-pre-wrap ${
+              result.tone === "error" ? "text-red-400" : result.tone === "warn" ? "text-amber-400" : "text-live"
+            }`}
+          >
+            {result.text}
+          </div>
+        )}
 
         {/* Status bar */}
         <div className="rule-t flex h-8 shrink-0 items-center gap-4 px-3.5 font-mono text-[10.5px] text-ink-3">
