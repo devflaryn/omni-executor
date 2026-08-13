@@ -210,6 +210,14 @@ def _first_present(arm_dir: Path, names) -> str | None:
     return None
 
 
+def engine_ready(rt: Path) -> dict:
+    """Read-only engine readiness probe — no disk write, no env mutation.
+    Mirrors configure_engine's qemu detection so bootstrap_status can poll cheaply."""
+    qemu_bin = shutil.which("qemu-system-aarch64")
+    return {"qemu_ok": bool(qemu_bin),
+            "qemu_hint": None if qemu_bin else "brew install qemu android-platform-tools"}
+
+
 def configure_engine(rt: Path) -> dict:
     """Point the bundled omnidroid engine at the assets ensure_runtime just
     downloaded, and write a paths.json in the schema omnidroid's loader

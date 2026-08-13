@@ -404,7 +404,7 @@ class Api:
     def bootstrap_status(self):
         rt = bootstrap.runtime_dir()
         installed = bootstrap.installed_state(rt)
-        eng = bootstrap.configure_engine(rt)
+        eng = bootstrap.engine_ready(rt)
         error = None
         ready = False
         try:
