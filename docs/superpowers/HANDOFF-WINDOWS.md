@@ -35,18 +35,24 @@ problem, not a code problem — see "The remaining blocker".
 
 ## Do this first
 
-**Deploy the latest build.** The running app is from 21:04 and does NOT have
-the 6.5x boot speed-up. The app was open so I could not replace it:
+**Deploy the latest build to the app the user launches.** This is NOT done:
+the user asked for the build to stay in `dist\` and for their Desktop copy to
+be left alone, so `C:\Users\berat\Desktop\Omni Executor\` is still the
+**21:04 build and does NOT have the 6.5x boot speed-up** — it still
+autoscales to 8 vCPU / 8 GB and boots in ~6 min instead of ~0.9 min.
+
+Deploy only when the user asks. Close Omni Executor first (a running app
+locks its own files), then:
 
 ```powershell
-# close Omni Executor first, then:
 Remove-Item "C:\Users\berat\Desktop\Omni Executor\_internal" -Recurse -Force
 Remove-Item "C:\Users\berat\Desktop\Omni Executor\omni-exec.exe" -Force
-Copy-Item "C:\Users\berat\Desktop\Omni Apps\omni-executor\out3\omni-exec\*" `
+Copy-Item "C:\Users\berat\Desktop\Omni Apps\omni-executor\dist\omni-exec\*" `
           "C:\Users\berat\Desktop\Omni Executor" -Recurse -Force
 ```
 
-Then tidy the stale build dirs (`dist`, `out`, `out2` — `out3` is current).
+Stale build dirs (`out`, `out2`, `out3`, `dist-new`) are already cleaned up —
+`dist\` is the only one, and it holds the current build.
 
 ---
 
@@ -56,7 +62,7 @@ Then tidy the stale build dirs (`dist`, `out`, `out2` — `out3` is current).
 |---|---|
 | Repos (must be siblings) | `C:\Users\berat\Desktop\Omni Apps\{omnidroid, omni-executor, omni-backend}` |
 | The app the user runs | `C:\Users\berat\Desktop\Omni Executor\` |
-| Latest build | `omni-executor\out3\omni-exec\` |
+| Latest build (73 MB, verified `ready: true`) | `omni-executor\dist\omni-exec\` |
 | Product runtime (images, accounts, paths.json) | `%LOCALAPPDATA%\OmniExec\` |
 | Scratch configs for CLI work | `Omni Apps\_work\*.json` |
 | VPS | `72.62.59.232`, root password in a `# VPS` comment in `omni-backend\.env.development.local` |
@@ -71,11 +77,13 @@ export OMNIDROID_CONFIG_PATH="C:/Users/berat/AppData/Local/OmniExec/paths.json"
 export OMNI_DATA_DIR="C:/Users/berat/AppData/Local/OmniExec"
 export OMNI_IMAGES_DIR="C:/Users/berat/AppData/Local/OmniExec/images"
 export OMNIDROID_SELF_ARGV="--omnidroid"          # REQUIRED, see gotchas
-omni-executor/out3/omni-exec/omni-exec.exe --omnidroid doctor --json
-omni-executor/out3/omni-exec/omni-exec.exe --omnidroid start admn1b12farm3
+omni-executor/dist/omni-exec/omni-exec.exe --omnidroid doctor --json
+omni-executor/dist/omni-exec/omni-exec.exe --omnidroid start admn1b12farm3
 ```
 
-Build: `.\build-windows.ps1 -SkipFrontend -DistPath out4`
+Build: `.\build-windows.ps1 -SkipFrontend` (writes to `dist\`). If it fails
+with WinError 5/32, something holds `dist\` open — build elsewhere with
+`-DistPath out` rather than hunting the lock (see gotcha 8).
 
 ---
 
@@ -275,7 +283,9 @@ the VPS deploys by file-copy, so there is no merge.
 
 ## Suggested next steps
 
-1. **Deploy `out3`** (above) — the user is running a build without the speed-up.
+1. **Deploy `dist\omni-exec\` to the Desktop app** when the user asks — they
+   are still launching the 21:04 build, without the speed-up. They asked for
+   the build to stay in `dist\` for now, so do not do this unprompted.
 2. **Rebuild the x86 kiosk with `SessionReceiver`**, re-bake the offset,
    re-upload → unlocks auto-login and join. This is the last real gap.
 3. Consider rooting the x86 base to recover the skipped optimisations
