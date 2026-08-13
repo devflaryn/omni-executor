@@ -103,6 +103,7 @@ def test_windows_uses_exe(tmp_path, monkeypatch):
 def test_mac_ignores_exe_falls_to_source(tmp_path, monkeypatch):
     monkeypatch.delenv("OMNIDROID_ENGINE", raising=False)
     monkeypatch.setattr(main.sys, "platform", "darwin")
+    monkeypatch.setattr(main.sys, "frozen", False, raising=False)
     monkeypatch.setattr(main, "PROJECT_DIR", tmp_path)
     exe = tmp_path / "omnidroid.exe"
     exe.write_text("")
@@ -111,11 +112,11 @@ def test_mac_ignores_exe_falls_to_source(tmp_path, monkeypatch):
     prefix = main.engine_prefix()
     assert prefix is None or str(exe) not in prefix
 
-    # now add the sibling source checkout -> falls to source
-    manager_py = tmp_path.parent / "omnidroid" / "manager.py"
-    manager_py.parent.mkdir(parents=True, exist_ok=True)
-    manager_py.write_text("")
-    assert main.engine_prefix() == [main.sys.executable, str(manager_py)]
+    # now add the sibling source checkout -> falls to `-m omnidroid`
+    sib_main = tmp_path.parent / "omnidroid" / "omnidroid" / "__main__.py"
+    sib_main.parent.mkdir(parents=True, exist_ok=True)
+    sib_main.write_text("")
+    assert main.engine_prefix() == [main.sys.executable, "-m", "omnidroid"]
 
 
 def test_mac_uses_native_binary(tmp_path, monkeypatch):
@@ -130,11 +131,12 @@ def test_mac_uses_native_binary(tmp_path, monkeypatch):
 def test_source_fallback_when_no_binary(tmp_path, monkeypatch):
     monkeypatch.delenv("OMNIDROID_ENGINE", raising=False)
     monkeypatch.setattr(main.sys, "platform", "darwin")
+    monkeypatch.setattr(main.sys, "frozen", False, raising=False)
     monkeypatch.setattr(main, "PROJECT_DIR", tmp_path)
-    manager_py = tmp_path.parent / "omnidroid" / "manager.py"
-    manager_py.parent.mkdir(parents=True, exist_ok=True)
-    manager_py.write_text("")
-    assert main.engine_prefix() == [main.sys.executable, str(manager_py)]
+    sib_main = tmp_path.parent / "omnidroid" / "omnidroid" / "__main__.py"
+    sib_main.parent.mkdir(parents=True, exist_ok=True)
+    sib_main.write_text("")
+    assert main.engine_prefix() == [main.sys.executable, "-m", "omnidroid"]
 
 
 def test_env_override_wins(tmp_path, monkeypatch):

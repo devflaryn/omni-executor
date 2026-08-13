@@ -4,13 +4,27 @@ Fetches the named-blob manifest, downloads + sha256-verifies each artifact
 with HTTP Range resume, places it under the OmniExec runtime dir, and records
 installed.json. No GUI, no engine import — pure stdlib so it is unit-testable.
 """
-import hashlib, json, os, shutil, sys, tarfile, time, urllib.request, urllib.error
+import hashlib, json, os, re, shutil, sys, tarfile, time, urllib.request, urllib.error
 from pathlib import Path
 
 APP_DIR_NAME = "OmniExec"
 MANIFEST_PATH = "/omni/dist/manifest"
 _CHUNK = 1 << 20
 _MAX_RETRIES = 3
+
+# ---------------------------------------------------------- engine wiring
+#
+# Mirrors omnidroid's own arm-base schema (omnidroid/bases.py, offsets.py)
+# and the proven-working dev configs/paths.json: bases + their offsets live
+# in the "arm/" arch subfolder, filenames are recorded RELATIVE to
+# images_dir (so "arm/<file>" — not bare filenames), and base_disk is
+# optional (the current shipped lineage is a standalone rooted system+data
+# pair with no separate pristine backing disk).
+_ARM_SYSTEM_CANDIDATES = ("base_arm_system_rooted.qcow2", "base_arm_system.qcow2")
+_ARM_DATA_CANDIDATES = ("base_arm_data_rooted.qcow2", "base_arm_data.qcow2")
+_ARM_EFIVARS = "base_arm_efivars.fd"
+_ARM_BASE_DISK = "base_arm.qcow2"
+_ARM_OFFSET_RE = re.compile(r"^base_arm_data_offset_([A-Za-z0-9_-]+)\.qcow2$")
 
 
 class BootstrapError(Exception):
@@ -187,3 +201,81 @@ def ensure_runtime(base_url: str = None, progress=None) -> dict:
     if progress:
         progress({"phase": "done", "artifact": None, "received": 0, "total": 0, "percent": 100})
     return {"ok": True, "installed": installed["artifacts"], "changed": changed}
+
+
+def _first_present(arm_dir: Path, names) -> str | None:
+    for name in names:
+        if (arm_dir / name).exists():
+            return name
+    return None
+
+
+def configure_engine(rt: Path) -> dict:
+    """Point the bundled omnidroid engine at the assets ensure_runtime just
+    downloaded, and write a paths.json in the schema omnidroid's loader
+    (engine.py load_config / bases.py autoregister_bases+base_missing_files)
+    expects.
+
+    Sets OMNI_DATA_DIR / OMNI_IMAGES_DIR (the env overrides omnidroid.config
+    honors), then writes rt/paths.json: the qemu block, and — when the
+    downloaded assets are present under rt/images/arm/ — an "arm" base entry
+    (system + data, optionally efivars/base_disk) plus any offsets found
+    there (base_arm_data_offset_<name>.qcow2), with default_offset set when
+    exactly one is present. Detects qemu-system-aarch64 via shutil.which.
+
+    Returns {"images_dir", "data_dir", "qemu_ok", "qemu_hint"}.
+    """
+    images = rt / "images"
+    arm_dir = images / "arm"
+    os.environ["OMNI_DATA_DIR"] = str(rt)
+    os.environ["OMNI_IMAGES_DIR"] = str(images)
+
+    qemu_path = shutil.which("qemu-system-aarch64")
+
+    cfg = {
+        "images_dir": str(images),
+        "current_base": None,      # set below once an arm base is detected
+        "data_template": "data-template-8g.qcow2",
+        "bases": {},
+        "qemu": {"mem_mb": 4096, "smp": 4, "data_disk_size": "8G",
+                 "adb_port_start": 16001, "qmp_port_start": 17001,
+                 "vnc_port_start": 18001},
+    }
+    if qemu_path:
+        cfg["qemu"]["dir"] = str(Path(qemu_path).parent)
+
+    system_name = _first_present(arm_dir, _ARM_SYSTEM_CANDIDATES)
+    data_name = _first_present(arm_dir, _ARM_DATA_CANDIDATES)
+    if system_name and data_name:
+        base = {
+            "type": "arm-uefi",
+            "system": f"arm/{system_name}",
+            "data": f"arm/{data_name}",
+            "rooted": "rooted" in system_name and "rooted" in data_name,
+        }
+        if (arm_dir / _ARM_EFIVARS).exists():
+            base["efivars"] = f"arm/{_ARM_EFIVARS}"
+        if (images / _ARM_BASE_DISK).exists():
+            base["base_disk"] = _ARM_BASE_DISK
+
+        offsets = {}
+        if arm_dir.is_dir():
+            for f in sorted(arm_dir.iterdir()):
+                m = _ARM_OFFSET_RE.match(f.name)
+                if m:
+                    offsets[m.group(1)] = {"data": f"arm/{f.name}"}
+        if offsets:
+            base["offsets"] = offsets
+            if len(offsets) == 1:
+                base["default_offset"] = next(iter(offsets))
+
+        cfg["bases"]["arm"] = base
+        cfg["current_base"] = "arm"
+
+    (rt / "paths.json").write_text(json.dumps(cfg, indent=2))
+    return {
+        "images_dir": str(images),
+        "data_dir": str(rt),
+        "qemu_ok": bool(qemu_path),
+        "qemu_hint": None if qemu_path else "brew install qemu android-platform-tools",
+    }

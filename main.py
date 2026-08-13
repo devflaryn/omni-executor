@@ -93,14 +93,18 @@ def engine_prefix():
          (e.g. the engine's manager/omni.py) which is run with the current
          Python. Lets a build point at a specific engine, and lets dev drive
          the source checkout without building an exe.
-      2. The platform-appropriate NATIVE binary sitting next to main.py (the
+      2. Frozen build: the app re-invokes ITSELF with `--omnidroid` — the
+         engine is dispatched in-process (see the top of main()), so no
+         separate binary needs to be found or shipped next to the app.
+      3. The platform-appropriate NATIVE binary sitting next to main.py (the
          product, installed by the CDN installer): omnidroid.exe on Windows,
          extensionless omnidroid on macOS/Linux. Never cross platforms —
          an omnidroid.exe next to main.py on macOS/Linux is not executable
          and must never be returned there, and vice versa.
-      3. Python-source fallback (dev/test, e.g. this Mac where no native
-         binary is bundled): a sibling omnidroid source checkout's
-         self-contained shim, run with the current Python.
+      4. Python-source fallback (dev/test, e.g. this Mac where no native
+         binary is bundled): a sibling omnidroid source checkout, run as
+         `python -m omnidroid` with the current Python (the checkout's own
+         console-script shim, `omnidroid.cli:main`).
     Returns a subprocess argv prefix (list), or None if nothing is found.
     """
     override = os.environ.get("OMNIDROID_ENGINE")
@@ -109,14 +113,17 @@ def engine_prefix():
         if p.is_file():
             return [sys.executable, str(p)] if p.suffix == ".py" else [str(p)]
 
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--omnidroid"]  # in-binary engine dispatch
+
     native_name = "omnidroid.exe" if sys.platform == "win32" else "omnidroid"
     candidate = PROJECT_DIR / native_name
     if candidate.is_file():
         return [str(candidate)]
 
-    manager_py = PROJECT_DIR.parent / "omnidroid" / "manager.py"
-    if manager_py.is_file():
-        return [sys.executable, str(manager_py)]
+    sibling = PROJECT_DIR.parent / "omnidroid"  # sibling checkout root
+    if (sibling / "omnidroid" / "__main__.py").is_file():
+        return [sys.executable, "-m", "omnidroid"]  # was: manager.py (stale)
 
     return None
 
@@ -188,10 +195,19 @@ def run_engine(args, progress=None, timeout=None):
             "message": "Engine not found — omnidroid.exe must sit next to main.py.",
         }
 
+    env = None
+    if len(prefix) == 3 and prefix[1:] == ["-m", "omnidroid"]:
+        # Source-fallback `-m omnidroid` form: the sibling checkout root must
+        # be importable as a package search path for `python -m omnidroid`
+        # to resolve, since it isn't installed/on sys.path otherwise.
+        sibling = PROJECT_DIR.parent / "omnidroid"
+        env = {**os.environ, "PYTHONPATH": str(sibling)}
+
     try:
         proc = subprocess.Popen(
             [*prefix, *args],
             cwd=str(PROJECT_DIR),
+            env=env,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -593,6 +609,16 @@ def _show_macos_traffic_lights(window):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--omnidroid":
+        # In-binary engine dispatch (frozen build's engine_prefix() returns
+        # [sys.executable, "--omnidroid"]): re-exec the frozen app's own
+        # Python with the omnidroid CLI's own argv shape and run the engine
+        # in-process instead of shelling out to a separate binary.
+        sys.argv = ["omnidroid", *sys.argv[2:]]
+        from omnidroid.cli import main as engine_main
+        engine_main()
+        return
+
     index = FRONTEND_DIST / "index.html"
     if not index.exists():
         sys.exit(
