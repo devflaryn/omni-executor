@@ -8,8 +8,8 @@ observed, not what should happen.
 
 | # | Step | Status |
 |---|---|---|
-| 1 | Download the arch-appropriate runtime (`?os=win` → x86) | ✅ code + tests; ⚠️ not run against the live VPS |
-| 2 | Auto-install / locate QEMU | ✅ URL verified live; ⚠️ silent install not exercised |
+| 1 | Download the arch-appropriate runtime (`?os=win` → x86) | ✅ **verified against the live VPS** |
+| 2 | Auto-install / locate QEMU | ✅ URL + redirect verified; ⚠️ silent install not exercised |
 | 3 | Detect WHPX and guide the user | ✅ verified (returned `whpx_ok: True`) |
 | 4 | Configure the engine for x86 | ✅ verified (`doctor` → `ready: true`) |
 | 5 | Bake the x86 arceus offset | ✅ **verified** — 747 MB overlay |
@@ -134,11 +134,34 @@ resolved relative to the overlay's own directory, so the file has to land in
    sets `qemu.download_url` so `ensure_qemu()` can self-install.
 5. WHPX panel appears only if the probe returns an explicit `False`.
 
-What is **unverified** about this path: it was never run against the live
-VPS from a clean `%LOCALAPPDATA%\OmniExec`, and QEMU's silent install
-(`<installer> /S /D=<dir>`) was never exercised — this box already had QEMU
-11.0.50. Both are covered by unit tests with fixtures, which is not the same
-as having done it.
+**Steps 1–4 have now been run for real** against the live VPS into
+`%LOCALAPPDATA%\OmniExec` (3.6 GB fetched; the offset's sha256 on disk
+matches the registry exactly), and `omni-exec.exe --omnidroid doctor --json`
+against that runtime reports `ready: true`, `default_offset: arceusremote`,
+`present: true`, `missing_files: []`.
+
+That first real run also found two bugs the fixture tests could not:
+
+1. **`qemu-win: sha256 mismatch after 3 attempts`** — a first boot downloaded
+   everything and then died. `qemu-win` is a 302 POINTER, so the manifest
+   reports `sha256: null`; the client planned it like any other artifact and
+   `download_blob` compared the bytes against `None`, which never matches.
+   `plan_downloads` now skips artifacts with no sha256 (they are fetched by
+   whoever consumes them — `ensure_qemu()` via `qemu.download_url`), and
+   `download_blob` refuses an unverifiable artifact with a message that
+   blames the manifest instead of the network.
+2. **A tail failure threw away the whole install.** `installed.json` was
+   written only after the entire plan succeeded, so failing on the LAST
+   artifact discarded the receipt for the 3.6 GB already on disk and the next
+   launch re-downloaded all of it. It is now written after every artifact.
+
+`qemu.download_url` also now points at the dist API's `qemu-win` blob
+(`{base}/omni/dist/blob/qemu-win`) rather than the upstream URL, so a rotted
+installer is a registry edit on the server, not a client release.
+`ensure_qemu()` fetches with urllib, which follows the 302.
+
+Still **unverified**: QEMU's silent install (`<installer> /S /D=<dir>`) — this
+box already had QEMU 11.0.50, so that branch never executed.
 
 ## Gotchas worth keeping
 
@@ -147,9 +170,13 @@ as having done it.
   output. Fixed (bind test + bounded loop) — see the `runtime.py` commit. Any
   Windows box with a similar endpoint-security filter would have hit it.
 - **A stale flat-layout image set breaks base selection.**
-  `C:\Users\berat\OmniImages` still holds root-level `base_arm*.qcow2` files
-  (Syncthing), which `autoregister_bases()` turns into a phantom `arm` base
-  that then wins selection and fails every start. The bake used a dedicated
-  `C:\Users\berat\OmniExecImages` holding only `x86/`.
+  `C:\Users\berat\OmniImages` still holds root-level `base_arm*.qcow2` files,
+  which `autoregister_bases()` turns into a phantom `arm` base that then wins
+  selection and fails every start. The bake used a dedicated
+  `C:\Users\berat\OmniExecImages` holding only `x86/`. Those files are
+  STATIC leftovers — Syncthing is installed (portable, on the Desktop) and
+  has `OmniImages` configured unpaused against `Adils-Mac-mini.local`, but it
+  does not run: no process, no service, no scheduled task, no autostart
+  entry. It only syncs if launched by hand.
 - The engine writes back to whatever `OMNIDROID_CONFIG_PATH` points at
   (auto-registration, offset registration) — expect the file to change.

@@ -130,21 +130,37 @@ if (-not (Test-Path $exe)) { throw "expected $exe to exist after the build" }
 # Proves the in-binary engine dispatch works: no omnidroid.exe, no source
 # checkout -- the frozen binary re-executes itself and runs the engine CLI.
 Write-Host "==> smoke test: omni-exec.exe --omnidroid version --json"
-$prev = $ErrorActionPreference
-$ErrorActionPreference = "Continue"
-$out = (& $exe --omnidroid version --json 2>&1 | Out-String)
-$ErrorActionPreference = $prev
-Write-Host $out.Trim()
-if ($out -notmatch '"version"') {
-    throw "engine dispatch smoke test FAILED -- expected JSON with a version field"
+# Start-Process with separate stdout/stderr files, NOT `& $exe ... 2>&1`.
+# The engine writes housekeeping lines ("[config] created default config: …")
+# to stderr, and Windows PowerShell 5.1 wraps native stderr in ErrorRecords —
+# which made this script exit non-zero on a build that had actually succeeded.
+$so = Join-Path $env:TEMP "omni-exec-smoke.out"
+$se = Join-Path $env:TEMP "omni-exec-smoke.err"
+$p = Start-Process -FilePath $exe -ArgumentList '--omnidroid', 'version', '--json' `
+                   -NoNewWindow -Wait -PassThru `
+                   -RedirectStandardOutput $so -RedirectStandardError $se
+$out = (Get-Content $so -Raw -ErrorAction SilentlyContinue)
+$err = (Get-Content $se -Raw -ErrorAction SilentlyContinue)
+Remove-Item $so, $se -Force -ErrorAction SilentlyContinue
+if ($err) { Write-Host "    (stderr) $($err.Trim())" }
+if ($p.ExitCode -ne 0) {
+    throw "engine dispatch smoke test FAILED -- exit code $($p.ExitCode). $err"
 }
+if ($out -notmatch '"version"') {
+    throw "engine dispatch smoke test FAILED -- expected JSON with a version field, got: $out"
+}
+Write-Host "    engine dispatch OK"
 
 # --- package -------------------------------------------------------------
 if ($Zip) {
-    $zip = ".\dist\omni-exec-win64.zip"
-    if (Test-Path $zip) { Remove-Item $zip -Force }
-    Write-Host "==> zipping -> $zip"
-    Compress-Archive -Path ".\dist\omni-exec\*" -DestinationPath $zip
+    # $zipPath, not $zip: PowerShell variable names are case-INSENSITIVE, so
+    # `$zip = "..."` assigns a String to the [switch]$Zip parameter and the
+    # script dies with a SwitchParameter cast error.
+    $zipPath = ".\dist\omni-exec-win64.zip"
+    if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+    Write-Host "==> zipping -> $zipPath"
+    Compress-Archive -Path ".\dist\omni-exec\*" -DestinationPath $zipPath
+    Write-Host ("    {0:N1} MB" -f ((Get-Item $zipPath).Length / 1MB))
 }
 
 Write-Host ""

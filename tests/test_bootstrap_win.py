@@ -240,3 +240,84 @@ def test_the_windows_hint_is_not_brew(win, tmp_path, monkeypatch):
 
     assert r["qemu_ok"] is False
     assert "brew" not in (r["qemu_hint"] or "").lower()
+
+
+# ------------------------------------------------- pointer (redirect) entries
+
+def test_a_sha_less_artifact_is_not_downloaded(win):
+    # REGRESSION: `qemu-win` is a 302 POINTER, not a stored blob, so the
+    # manifest reports sha256:null for it. It used to be planned like any
+    # other artifact, and download_blob compared the downloaded bytes against
+    # None -- which can never match -- so a first boot died with
+    # "qemu-win: sha256 mismatch after 3 attempts" after pulling 197 MB.
+    manifest = {"artifacts": [
+        {"name": "base-x86", "sha256": "abc", "bytes": 10},
+        {"name": "qemu-win", "sha256": None, "bytes": None},
+    ]}
+    plan = bootstrap.plan_downloads(manifest, {"artifacts": {}})
+    assert [a["name"] for a in plan] == ["base-x86"]
+
+
+def test_a_sha_less_artifact_never_looks_stale(win):
+    # It must not reappear in the plan on every launch either.
+    manifest = {"artifacts": [{"name": "qemu-win", "sha256": None}]}
+    assert bootstrap.plan_downloads(manifest, {"artifacts": {}}) == []
+
+
+def test_download_blob_refuses_an_unverifiable_artifact(win, tmp_path):
+    # Belt and braces: if one is ever passed directly, say WHY rather than
+    # reporting a hash mismatch against nothing.
+    with pytest.raises(bootstrap.BootstrapError) as e:
+        bootstrap.download_blob("http://example.invalid",
+                                {"name": "qemu-win", "sha256": None,
+                                 "url": "/omni/dist/blob/qemu-win"},
+                                tmp_path / "x.part")
+    assert "sha256" in str(e.value).lower()
+    assert "qemu-win" in str(e.value)
+
+
+def test_qemu_download_url_points_at_the_dist_api(win, tmp_path, monkeypatch):
+    # Served through the dist API's redirect rather than baked at the
+    # upstream URL, so an expired installer is a server-side fix instead of
+    # a client release. ensure_qemu() uses urlopen, which follows the 302.
+    win.setenv("OMNIEXEC_RUNTIME_DIR", str(tmp_path))
+    win.delenv("OMNI_QEMU_WIN_URL", raising=False)
+    win.setenv("OMNI_EXEC_BASE", "http://dist.example.invalid")
+    _seed_x86(tmp_path)
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda n: None)
+
+    bootstrap.configure_engine(tmp_path)
+    cfg = json.loads((tmp_path / "paths.json").read_text())
+
+    assert cfg["qemu"]["download_url"] == \
+        "http://dist.example.invalid/omni/dist/blob/qemu-win"
+
+
+def test_progress_is_recorded_after_each_artifact(win, tmp_path, monkeypatch):
+    # REGRESSION: installed.json used to be written only after the WHOLE plan
+    # succeeded, so a failure on the last artifact discarded the receipt for
+    # gigabytes already on disk and the next launch re-downloaded all of it.
+    win.setenv("OMNIEXEC_RUNTIME_DIR", str(tmp_path))
+    manifest = {"ok": True, "app": {"version": "9"}, "artifacts": [
+        {"name": "big", "sha256": "aa", "bytes": 1, "url": "/b/big",
+         "dest": "images/x86", "version": "1"},
+        {"name": "boom", "sha256": "bb", "bytes": 1, "url": "/b/boom",
+         "dest": "images/x86", "version": "1"},
+    ]}
+    monkeypatch.setattr(bootstrap, "read_manifest", lambda *a, **k: manifest)
+    monkeypatch.setattr(bootstrap, "_precheck_space", lambda *a, **k: None)
+
+    def fake_download(base_url, artifact, tmp, progress=None):
+        if artifact["name"] == "boom":
+            raise bootstrap.BootstrapError("sha256 mismatch")
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_bytes(b"x")
+
+    monkeypatch.setattr(bootstrap, "download_blob", fake_download)
+
+    with pytest.raises(bootstrap.BootstrapError):
+        bootstrap.ensure_runtime(base_url="http://example.invalid")
+
+    state = json.loads((tmp_path / "installed.json").read_text())
+    assert "big" in state["artifacts"], "the completed artifact must survive"
+    assert "boom" not in state["artifacts"]

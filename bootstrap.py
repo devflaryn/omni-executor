@@ -53,12 +53,17 @@ _X86_OFFSET_RE = re.compile(
 # installer URL or the engine can never self-install. Overridable for a
 # pinned/mirrored build.
 #
-# Pinned to a DATED build that was verified to exist (HTTP 200, 197 MB) —
-# weilnetz publishes per-date installers and prunes old ones, so this needs
-# re-pinning when it starts 404ing. Serving it through the dist API's
-# `qemu-win` redirect instead lets that be fixed server-side without shipping
-# a new client.
-DEFAULT_QEMU_WIN_URL = "https://qemu.weilnetz.de/w64/qemu-w64-setup-20260811.exe"
+# Resolved through the dist API's `qemu-win` entry, which 302s to the real
+# installer. weilnetz publishes per-date builds and PRUNES old ones (the first
+# URL pinned here was already dead), so the indirection is the point: a rotted
+# installer becomes a one-line registry edit on the server instead of a client
+# release. omnidroid's ensure_qemu() fetches with urllib, which follows the
+# redirect. OMNI_QEMU_WIN_URL overrides for an air-gapped/mirrored build.
+_QEMU_WIN_BLOB = "/omni/dist/blob/qemu-win"
+
+
+def qemu_win_url() -> str:
+    return os.environ.get("OMNI_QEMU_WIN_URL") or f"{dist_base()}{_QEMU_WIN_BLOB}"
 
 
 class BootstrapError(Exception):
@@ -128,9 +133,23 @@ def read_manifest(base_url: str, os_name: str = None, channel: str = "stable") -
 
 
 def plan_downloads(manifest: dict, installed: dict) -> list:
+    """Which artifacts still need fetching.
+
+    Artifacts with NO sha256 are POINTERS, not payloads — a registry entry
+    served as a 302 (`qemu-win`) carries a redirect instead of a stored blob,
+    so the manifest reports `sha256: null` and there is nothing to verify.
+    They are skipped entirely: whoever consumes them (omnidroid's
+    ensure_qemu(), via qemu.download_url) fetches them itself.
+
+    Planning them was a real first-boot failure — download_blob compared the
+    downloaded bytes against None, which never matches, so the install pulled
+    197 MB and then died with "qemu-win: sha256 mismatch after 3 attempts".
+    """
     have = installed.get("artifacts", {})
     out = []
     for a in manifest.get("artifacts", []):
+        if not a.get("sha256"):
+            continue
         cur = have.get(a["name"])
         if not cur or cur.get("sha256") != a["sha256"]:
             out.append(a)
@@ -148,7 +167,14 @@ def _hash_file(path: Path) -> str:
 def download_blob(base_url: str, artifact: dict, tmp_path: Path, progress=None) -> None:
     url = f"{base_url.rstrip('/')}{artifact['url']}"
     total = int(artifact.get("bytes") or 0)
-    want = artifact["sha256"]
+    want = artifact.get("sha256")
+    if not want:
+        # Refuse rather than "verify" against None, which reports a hash
+        # mismatch and blames the network for a manifest problem.
+        raise BootstrapError(
+            f"{artifact.get('name')}: no sha256 in the manifest, so it cannot "
+            f"be verified. Redirect/pointer artifacts are not downloadable "
+            f"blobs — see plan_downloads.")
     tmp_path.parent.mkdir(parents=True, exist_ok=True)
     last_exc = None
     hashed_mismatch = False
@@ -224,6 +250,18 @@ def _precheck_space(rt: Path, plan: list) -> None:
         raise BootstrapError(f"insufficient disk: need ~{need // 2**30}GB, free {free // 2**30}GB")
 
 
+def _write_installed(rt: Path, installed: dict, manifest: dict = None) -> None:
+    """Atomically persist the install receipt (tmp file + replace), so a crash
+    mid-write can never leave a truncated installed.json that would be
+    unparseable and silently re-download everything."""
+    if manifest is not None:
+        installed.setdefault("app_version",
+                             manifest.get("app", {}).get("version"))
+    tmpf = _installed_file(rt).with_suffix(".tmp")
+    tmpf.write_text(json.dumps(installed, indent=2))
+    tmpf.replace(_installed_file(rt))
+
+
 def ensure_runtime(base_url: str = None, progress=None) -> dict:
     base_url = (base_url or dist_base()).rstrip("/")
     rt = runtime_dir()
@@ -245,10 +283,14 @@ def ensure_runtime(base_url: str = None, progress=None) -> dict:
         installed.setdefault("artifacts", {})[a["name"]] = {
             "version": a.get("version"), "sha256": a["sha256"], "bytes": a.get("bytes")}
         changed.append(a["name"])
+        # Record after EVERY artifact, not once at the end. These are
+        # multi-gigabyte downloads: writing the receipt only after the whole
+        # plan succeeded meant one failure at the tail threw away the record
+        # of everything already on disk, and the next launch re-downloaded
+        # all of it.
+        _write_installed(rt, installed, manifest)
     installed["app_version"] = manifest.get("app", {}).get("version")
-    tmpf = _installed_file(rt).with_suffix(".tmp")
-    tmpf.write_text(json.dumps(installed, indent=2))
-    tmpf.replace(_installed_file(rt))
+    _write_installed(rt, installed, manifest)
     shutil.rmtree(staging, ignore_errors=True)
     if progress:
         progress({"phase": "done", "artifact": None, "received": 0, "total": 0, "percent": 100})
@@ -447,8 +489,7 @@ def configure_engine(rt: Path) -> dict:
     if win:
         # Without this omnidroid's ensure_qemu() is a silent no-op and a
         # machine with no QEMU can never acquire one.
-        cfg["qemu"]["download_url"] = os.environ.get("OMNI_QEMU_WIN_URL",
-                                                     DEFAULT_QEMU_WIN_URL)
+        cfg["qemu"]["download_url"] = qemu_win_url()
 
     if win:
         _register_x86_base(cfg, images)
