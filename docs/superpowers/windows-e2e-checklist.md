@@ -163,6 +163,55 @@ installer is a registry edit on the server, not a client release.
 Still **unverified**: QEMU's silent install (`<installer> /S /D=<dir>`) — this
 box already had QEMU 11.0.50, so that branch never executed.
 
+## Warm boot on x86 (launch speed)
+
+The warm-restore cache used to refuse x86 outright ("warm-restore cache is
+arm-only on this host ... cold-booting"), so a Windows host paid a full cold
+boot -- minutes -- for every single launch. The only genuinely arm-specific
+part was `efivars.fd` (UEFI pflash) being welded into the cache's
+required-file contract; the x86 restore path in `qemu_command` already
+existed. efivars is now optional and recorded per entry
+(`warmcache.required_files()` keys off `meta["arch"]`), so x86 takes the same
+lookup/bake route as arm. Entries with no recorded arch are still treated as
+arm, so pre-existing caches validate unchanged.
+
+**It needs disk.** A warm entry stores the guest's RAM, and
+`warmcache.FREE_RESERVE_BYTES` refuses to bake unless **10 GiB remains free
+afterwards**. `playable` sizes itself to the host and was 8192 MB here, so a
+usable cache wants ~18 GB free. Below that `has_room()` returns False, no
+entry is written, and every launch quietly cold-boots with no error.
+
+### ...but WHPX cannot be snapshotted at all (verified 2026-08-13)
+
+With 31 GB free, a real cold boot on this host reached the bake and QEMU
+refused it:
+
+    warm bake failed (State blocked due to non-migratable CPUID feature
+    support, dirty memory tracking support, and XSAVE/XRSTOR support);
+    this launch is unaffected
+
+That is QEMU's **migration blocker for the WHPX accelerator**: WHPX exposes
+no dirty-memory tracking and no migratable CPU state, so `migrate ->
+file:` -- which is exactly how a warm entry is captured -- cannot run. This
+is a property of the accelerator, not of this code: nothing in omnidroid can
+work around it while the guest runs under `-accel whpx`.
+
+So on Windows:
+
+- The x86 warm-cache plumbing is correct and now ATTEMPTS a bake (it used to
+  refuse by name), and it degrades exactly as designed -- the failure is
+  caught, logged, and `this launch is unaffected`. A `warm/` directory is
+  created and left EMPTY; no partial entry is published.
+- But **no warm entry can ever be produced under WHPX**, so launches stay
+  cold boots (measured 0.5 - 4.3 min, varying with disk contention).
+- The work is not wasted: it is the same code path arm already uses, so it
+  becomes live the moment it runs under an accelerator that supports
+  migration (KVM on a Linux host).
+
+If launch latency matters on Windows, the realistic levers are NOT the warm
+cache: keep an instance running rather than stopping it, and/or lower the
+mode's memory so there is less guest RAM to allocate and touch at boot.
+
 ## Gotchas worth keeping
 
 - **Closed loopback ports time out instead of refusing on this host.** That
