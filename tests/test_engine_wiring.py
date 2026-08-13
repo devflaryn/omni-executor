@@ -23,6 +23,40 @@ def test_engine_prefix_source_fallback_is_module(monkeypatch, tmp_path):
     assert prefix[0] == sys.executable and "omnidroid" in prefix  # -m omnidroid form
 
 
+def test_configure_engine_on_launch_sets_env_on_every_launch(tmp_path, monkeypatch):
+    """Fix round 1: _configure_engine_on_launch() must set the same env
+    configure_engine() sets, called unconditionally from main() on EVERY
+    launch -- not just first-boot (see the gap this closes: bootstrap_start
+    is only invoked once, on first install; a relaunch of an already
+    -installed app never re-runs it, so without this helper being called
+    from main() on every launch, later engine subprocesses would inherit no
+    OMNIDROID_CONFIG_PATH/OMNI_DATA_DIR/OMNI_IMAGES_DIR at all)."""
+    monkeypatch.setenv("OMNIEXEC_RUNTIME_DIR", str(tmp_path))
+    for var in ("OMNIDROID_CONFIG_PATH", "OMNI_DATA_DIR", "OMNI_IMAGES_DIR"):
+        monkeypatch.delenv(var, raising=False)
+
+    main._configure_engine_on_launch()
+
+    assert os.environ["OMNIDROID_CONFIG_PATH"] == str(tmp_path / "paths.json")
+    assert os.environ["OMNI_DATA_DIR"] == str(tmp_path)
+    assert os.environ["OMNI_IMAGES_DIR"] == str(tmp_path / "images")
+    assert (tmp_path / "paths.json").exists()
+
+
+def test_configure_engine_on_launch_no_images_does_not_raise(tmp_path, monkeypatch):
+    """Genuinely fresh first boot: runtime dir exists but nothing has been
+    downloaded yet (no images/arm at all). configure_engine() must not raise
+    -- it just writes a base-less paths.json; bootstrap_start() corrects it
+    once the download completes."""
+    monkeypatch.setenv("OMNIEXEC_RUNTIME_DIR", str(tmp_path))
+
+    main._configure_engine_on_launch()  # must not raise
+
+    cfg = json.loads((tmp_path / "paths.json").read_text())
+    assert cfg["bases"] == {}
+    assert cfg["current_base"] is None
+
+
 def test_configure_engine_sets_env_and_writes_paths(tmp_path, monkeypatch):
     monkeypatch.setenv("OMNIEXEC_RUNTIME_DIR", str(tmp_path))
     (tmp_path / "images/arm").mkdir(parents=True)

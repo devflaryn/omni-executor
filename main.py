@@ -136,6 +136,40 @@ def find_engine():
     return prefix[-1] if prefix else None
 
 
+def _configure_engine_on_launch():
+    """Set the engine env vars (OMNIDROID_CONFIG_PATH / OMNI_DATA_DIR /
+    OMNI_IMAGES_DIR) + write rt/paths.json for THIS GUI process, on every
+    launch -- not just first-boot.
+
+    bootstrap.bootstrap_start() (the first-boot install flow) already calls
+    bootstrap.configure_engine() once the runtime download completes. But on
+    a SUBSEQUENT launch of an already-installed app, bootstrap_status()
+    returns ready=true, the frontend skips BootstrapView entirely, and
+    bootstrap_start() is never called again -- so without this, engine
+    subprocesses spawned later (engine_start/engine_view/etc., via
+    run_engine()'s env=None inherit) would carry NONE of those vars, and the
+    frozen --omnidroid engine would fall back to the read-only app bundle's
+    own configs/paths.json and never find the installed arm base.
+
+    Calling configure_engine() here, unconditionally, in the GUI parent
+    process before any window/engine subprocess exists, makes every launch
+    (first-boot or relaunch) set the same env for every engine subprocess
+    this session spawns. Safe on a genuinely fresh runtime dir (nothing
+    downloaded yet): configure_engine() just writes a base-less paths.json
+    and sets the env vars anyway (no arm/ dir to scan yet is not an error);
+    bootstrap_start() overwrites it correctly once the download finishes.
+
+    Must run only in the GUI parent process, never inside the --omnidroid
+    child dispatch branch (that subprocess IS the engine; it doesn't spawn
+    further engine subprocesses of its own).
+    """
+    try:
+        import bootstrap
+        bootstrap.configure_engine(bootstrap.runtime_dir())
+    except Exception as e:  # noqa: BLE001 — engine config must never crash the app launch
+        print(f"[omni-exec] engine pre-config skipped: {e}", file=sys.stderr)
+
+
 def _parse_engine_stdout(stdout, code):
     """Engine contract: exactly one JSON value on stdout. Be tolerant anyway —
     scan for the last parseable line if the whole output isn't clean JSON."""
@@ -657,6 +691,13 @@ def main():
         from omnidroid.cli import main as engine_main
         engine_main()
         return
+
+    # GUI parent process: set the engine env for THIS session on every
+    # launch (first-boot AND relaunch of an already-installed runtime), so
+    # every engine subprocess spawned below inherits it. See
+    # _configure_engine_on_launch's docstring for why this can't be left to
+    # bootstrap_start() alone.
+    _configure_engine_on_launch()
 
     index = FRONTEND_DIST / "index.html"
     if not index.exists():
