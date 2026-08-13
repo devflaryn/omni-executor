@@ -26,6 +26,34 @@ _ARM_EFIVARS = "base_arm_efivars.fd"
 _ARM_BASE_DISK = "base_arm.qcow2"
 _ARM_OFFSET_RE = re.compile(r"^base_arm_data_offset_([A-Za-z0-9_-]+)\.qcow2$")
 
+# ---- x86 (Windows) ----
+#
+# NOT the arm entry with different filenames. An x86-bliss base boots its
+# system disk directly with -kernel/-initrd and no UEFI, so it carries
+# disk/kernel/initrd (never system/data/efivars) plus a `src` kernel argument,
+# and its per-instance /data is seeded from a shared template recorded at the
+# TOP level of the config as "data_template". Names are verbatim from
+# omnidroid/bases.py; `src` is its DEFAULT_SRC. qemu_proc.qemu_command()
+# indexes base["src"] directly when it builds the x86 command line, so an
+# entry without one cannot boot.
+_X86_DIR = "x86"
+_X86_DISK = "base_x86.qcow2"
+_X86_KERNEL = "base_x86.kernel"
+_X86_INITRD_CANDIDATES = ("base_x86_rooted.initrd.img", "base_x86.initrd.img")
+_X86_DATA_TEMPLATE = "data-template-8g.qcow2"
+_X86_SRC = "/android-2024-10-11"
+# Dots are legal in an offset name ("2.740.101" is the name a human wants) —
+# see omnidroid/offsets.py OFFSET_NAME_RE.
+_X86_OFFSET_RE = re.compile(
+    r"^base_x86_data_offset_([A-Za-z0-9][A-Za-z0-9._-]*)\.qcow2$")
+
+# omnidroid's ensure_qemu() silently does nothing unless qemu.download_url is
+# set (its DEFAULT_QEMU_URL is None). On macOS QEMU is a brew install away; on
+# Windows nothing else will ever put it there, so the client has to supply the
+# installer URL or the engine can never self-install. Overridable for a
+# pinned/mirrored build.
+DEFAULT_QEMU_WIN_URL = "https://qemu.weilnetz.de/w64/qemu-w64-setup-20250611.exe"
+
 
 class BootstrapError(Exception):
     pass
@@ -35,10 +63,27 @@ def dist_base() -> str:
     return os.environ.get("OMNI_EXEC_BASE", "http://72.62.59.232").rstrip("/")
 
 
+def current_os() -> str:
+    """The dist API's name for this host: "win" | "mac".
+
+    Every manifest request goes through this. The base a machine downloads
+    MUST match its architecture — a Windows box asking for the mac manifest
+    would fetch the arm64 base and its arm offset, neither of which it can
+    boot — so this is never hardcoded at a call site."""
+    return "win" if sys.platform == "win32" else "mac"
+
+
 def runtime_dir() -> Path:
     override = os.environ.get("OMNIEXEC_RUNTIME_DIR")
     if override:
         p = Path(override)
+    elif sys.platform == "win32":
+        # Multi-gigabyte base images are machine-local state, not roaming
+        # profile data, so LOCALAPPDATA is the correct home; APPDATA is only
+        # a fallback for a profile that somehow lacks it.
+        root = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        p = Path(root) / APP_DIR_NAME if root else \
+            Path.home() / "AppData" / "Local" / APP_DIR_NAME
     elif sys.platform == "darwin":
         p = Path.home() / "Library" / "Application Support" / APP_DIR_NAME
     else:  # dev on other OSes
@@ -61,7 +106,8 @@ def installed_state(rt: Path) -> dict:
     return {"artifacts": {}, "app_version": None}
 
 
-def read_manifest(base_url: str, os_name: str = "mac", channel: str = "stable") -> dict:
+def read_manifest(base_url: str, os_name: str = None, channel: str = "stable") -> dict:
+    os_name = os_name or current_os()
     url = f"{base_url.rstrip('/')}{MANIFEST_PATH}?os={os_name}&channel={channel}"
     try:
         with urllib.request.urlopen(url, timeout=30) as r:
@@ -210,12 +256,73 @@ def _first_present(arm_dir: Path, names) -> str | None:
     return None
 
 
+def _register_x86_base(cfg: dict, images: Path) -> None:
+    """Register the downloaded x86 Bliss base (+ any baked offsets) into cfg.
+
+    Mirrors omnidroid's own autoregister_bases() x86 branch: the base is
+    complete only when the disk + kernel + initrd triple is all present, the
+    ROOTED initrd is preferred when it has been built, and every recorded
+    filename carries its "x86/" arch subfolder because an offset must resolve
+    beside the /data template it overlays.
+
+    A base-less cfg is not an error — on a genuinely fresh first boot nothing
+    has been downloaded yet, and ensure_runtime() calls this again afterwards.
+    """
+    x86_dir = images / _X86_DIR
+    initrd = _first_present(x86_dir, _X86_INITRD_CANDIDATES)
+    if not ((x86_dir / _X86_DISK).exists()
+            and (x86_dir / _X86_KERNEL).exists() and initrd):
+        return
+
+    base = {
+        "type": "x86-bliss",
+        "disk": f"{_X86_DIR}/{_X86_DISK}",
+        "kernel": f"{_X86_DIR}/{_X86_KERNEL}",
+        "initrd": f"{_X86_DIR}/{initrd}",
+        "rooted": initrd.startswith("base_x86_rooted"),
+        "src": _X86_SRC,
+    }
+
+    offsets = {}
+    for f in sorted(x86_dir.iterdir()):
+        m = _X86_OFFSET_RE.match(f.name)
+        if m:
+            offsets[m.group(1)] = {"data": f"{_X86_DIR}/{f.name}"}
+    if offsets:
+        base["offsets"] = offsets
+        # Exactly one baked version is unambiguously what a bare launch
+        # means; with two or more, guessing is how you debug the wrong
+        # Roblox for an hour (see omnidroid/offsets.py default_offset_name).
+        if len(offsets) == 1:
+            base["default_offset"] = next(iter(offsets))
+
+    cfg["bases"]["x86"] = base
+    cfg["current_base"] = "x86"
+
+
+def _qemu_system_name() -> str:
+    """The QEMU emulator THIS host needs: x86_64 for the Bliss base on
+    Windows, aarch64 for the arm64 base on macOS."""
+    return "qemu-system-x86_64" if current_os() == "win" \
+        else "qemu-system-aarch64"
+
+
+def _qemu_hint() -> str:
+    """What the user should do when no QEMU is on PATH. Windows never says
+    'brew': there the engine downloads and silently installs QEMU itself
+    (see DEFAULT_QEMU_WIN_URL), so this is a status line, not a chore."""
+    if current_os() == "win":
+        return ("QEMU is not installed yet — Omni Executor will download and "
+                "install it automatically on first run.")
+    return "brew install qemu android-platform-tools"
+
+
 def engine_ready(rt: Path) -> dict:
     """Read-only engine readiness probe — no disk write, no env mutation.
     Mirrors configure_engine's qemu detection so bootstrap_status can poll cheaply."""
-    qemu_bin = shutil.which("qemu-system-aarch64")
+    qemu_bin = shutil.which(_qemu_system_name())
     return {"qemu_ok": bool(qemu_bin),
-            "qemu_hint": None if qemu_bin else "brew install qemu android-platform-tools"}
+            "qemu_hint": None if qemu_bin else _qemu_hint()}
 
 
 def configure_engine(rt: Path) -> dict:
@@ -245,12 +352,14 @@ def configure_engine(rt: Path) -> dict:
     # (inherits this process's env), so setting it here reaches the engine.
     os.environ["OMNIDROID_CONFIG_PATH"] = str(rt / "paths.json")
 
-    qemu_path = shutil.which("qemu-system-aarch64")
+    qemu_path = shutil.which(_qemu_system_name())
+    win = current_os() == "win"
 
     cfg = {
         "images_dir": str(images),
-        "current_base": None,      # set below once an arm base is detected
-        "data_template": "data-template-8g.qcow2",
+        "current_base": None,      # set below once a base is detected
+        "data_template": (f"{_X86_DIR}/{_X86_DATA_TEMPLATE}" if win
+                          else "data-template-8g.qcow2"),
         "bases": {},
         "qemu": {"mem_mb": 4096, "smp": 4, "data_disk_size": "8G",
                  "adb_port_start": 16001, "qmp_port_start": 17001,
@@ -258,6 +367,21 @@ def configure_engine(rt: Path) -> dict:
     }
     if qemu_path:
         cfg["qemu"]["dir"] = str(Path(qemu_path).parent)
+    if win:
+        # Without this omnidroid's ensure_qemu() is a silent no-op and a
+        # machine with no QEMU can never acquire one.
+        cfg["qemu"]["download_url"] = os.environ.get("OMNI_QEMU_WIN_URL",
+                                                     DEFAULT_QEMU_WIN_URL)
+
+    if win:
+        _register_x86_base(cfg, images)
+        (rt / "paths.json").write_text(json.dumps(cfg, indent=2))
+        return {
+            "images_dir": str(images),
+            "data_dir": str(rt),
+            "qemu_ok": bool(qemu_path),
+            "qemu_hint": None if qemu_path else _qemu_hint(),
+        }
 
     system_name = _first_present(arm_dir, _ARM_SYSTEM_CANDIDATES)
     data_name = _first_present(arm_dir, _ARM_DATA_CANDIDATES)
