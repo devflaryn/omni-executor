@@ -248,3 +248,25 @@ def test_the_managed_runtime_dir_is_still_offered(offline_runtime, monkeypatch):
     r = updates.check()
     assert r["runtime"]["managed"] is True
     assert r["runtime"]["update"] is True
+
+
+# ------------------------------------------------------ first-boot gating
+
+def test_a_published_app_build_does_not_make_an_installed_runtime_look_incomplete(
+        offline_runtime, monkeypatch):
+    """REGRESSION, seen live the first time an app build was published.
+
+    bootstrap_status() decided readiness by comparing every manifest entry
+    against installed.json. `app-win` is in the manifest and is never recorded
+    there, so a fully-installed machine was judged incomplete and dropped into
+    the first-boot setup screen — where it began re-downloading the base
+    images it already had.
+    """
+    manifest = _manifest("1.0.1", runtime_artifacts=[
+        {"name": "base-x86", "sha256": "e" * 64, "url": "/x", "dest": "images/x86"},
+        # a pointer artifact, which is also never recorded
+        {"name": "qemu-win", "sha256": None, "url": "/q", "dest": "qemu"},
+    ])
+    installed = {"artifacts": {"base-x86": {"sha256": "e" * 64}}}
+    # Everything installable is installed -> nothing to do -> ready.
+    assert bootstrap.plan_downloads(manifest, installed) == []

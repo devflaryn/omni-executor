@@ -782,9 +782,19 @@ class Api:
         ready = False
         try:
             manifest = bootstrap.read_manifest(bootstrap.dist_base())
-            have = installed.get("artifacts", {})
-            ready = all(have.get(a["name"], {}).get("sha256") == a["sha256"]
-                        for a in manifest.get("artifacts", []))
+            # Ask plan_downloads, rather than re-deriving readiness by
+            # comparing every manifest entry. It is the ONE place that knows
+            # which artifacts are actually installable — pointer entries with
+            # no sha256 (qemu-win) and app builds (kind: "app") are neither
+            # downloaded nor recorded here.
+            #
+            # REGRESSION this fixes: the moment an app build was published,
+            # the old comparison found `app-win` in the manifest and not in
+            # installed.json, decided the runtime was incomplete, and dropped
+            # every already-installed client into the first-boot setup screen
+            # — where it started re-downloading the base images. Seen live the
+            # first time an app artifact went up.
+            ready = not bootstrap.plan_downloads(manifest, installed)
         except bootstrap.BootstrapError as e:
             error = str(e)
             ready = bool(installed.get("artifacts"))  # offline-tolerant
