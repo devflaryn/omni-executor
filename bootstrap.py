@@ -4,7 +4,7 @@ Fetches the named-blob manifest, downloads + sha256-verifies each artifact
 with HTTP Range resume, places it under the OmniExec runtime dir, and records
 installed.json. No GUI, no engine import — pure stdlib so it is unit-testable.
 """
-import hashlib, json, os, shutil, sys, tarfile, tempfile, time, urllib.request, urllib.error
+import hashlib, json, os, shutil, sys, tarfile, time, urllib.request, urllib.error
 from pathlib import Path
 
 APP_DIR_NAME = "OmniExec"
@@ -84,6 +84,8 @@ def download_blob(base_url: str, artifact: dict, tmp_path: Path, progress=None) 
     total = int(artifact.get("bytes") or 0)
     want = artifact["sha256"]
     tmp_path.parent.mkdir(parents=True, exist_ok=True)
+    last_exc = None
+    hashed_mismatch = False
     for attempt in range(1, _MAX_RETRIES + 1):
         have = tmp_path.stat().st_size if tmp_path.exists() else 0
         if have > total:  # corrupt partial
@@ -103,12 +105,20 @@ def download_blob(base_url: str, artifact: dict, tmp_path: Path, progress=None) 
                         progress({"phase": "download", "artifact": artifact["name"],
                                   "received": received, "total": total,
                                   "percent": (received / total * 100) if total else 0})
-        except (urllib.error.URLError, TimeoutError, OSError):
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            last_exc = e
             time.sleep(1); continue  # resume next attempt
         if _hash_file(tmp_path) == want:
             return
+        hashed_mismatch = True
+        last_exc = None
         tmp_path.unlink(missing_ok=True)  # bad content, redownload from scratch
-    raise BootstrapError(f"{artifact['name']}: sha256 mismatch after {_MAX_RETRIES} attempts")
+    if hashed_mismatch:
+        raise BootstrapError(f"{artifact['name']}: sha256 mismatch after {_MAX_RETRIES} attempts")
+    raise BootstrapError(
+        f"{artifact['name']}: download failed after {_MAX_RETRIES} attempts "
+        f"(no successful transfer to verify): {last_exc}"
+    ) from last_exc
 
 
 def place_artifact(artifact: dict, tmp_path: Path, rt: Path) -> None:
@@ -128,10 +138,17 @@ def place_artifact(artifact: dict, tmp_path: Path, rt: Path) -> None:
 def _safe_extract(tf: tarfile.TarFile, dest: Path) -> None:
     dest = dest.resolve()
     for m in tf.getmembers():
+        if m.issym() or m.islnk():
+            raise BootstrapError(f"unsafe tar member (link): {m.name}")
         target = (dest / m.name).resolve()
-        if not str(target).startswith(str(dest)):
+        if not (target == dest or dest in target.parents):
             raise BootstrapError(f"unsafe tar member: {m.name}")
-    tf.extractall(dest)
+    try:
+        tf.extractall(dest, filter="data")
+    except TypeError:
+        # very old interpreters (< 3.12) without the `filter` kwarg; the
+        # manual link/containment guard above already vetted every member.
+        tf.extractall(dest)
 
 
 def _precheck_space(rt: Path, plan: list) -> None:
