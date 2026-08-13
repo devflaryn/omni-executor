@@ -21,12 +21,28 @@ PROJECT_DIR = os.path.dirname(os.path.abspath(SPEC))
 OMNIDROID_REPO = os.path.normpath(os.path.join(PROJECT_DIR, "..", "omnidroid"))
 
 hiddenimports = []
+# This app's own modules — see OmniExecutor-win.spec: declared for the record,
+# not out of need. Kept identical to the Windows spec on purpose (tests/
+# test_packaging.py asserts the two agree).
+hiddenimports += ["accountsync", "cloud", "bootstrap"]
 hiddenimports += collect_submodules("omnidroid")
+# Selenium drives the "add account" browser login (omnidroid/accounts.py). It is
+# imported LAZILY inside the login functions, so PyInstaller's static analysis
+# does not see it and the frozen engine reports "selenium is not installed" on a
+# machine where it is. This was fixed in the Windows spec when it bit there and
+# never mirrored here — the Mac build had the same bug waiting.
+hiddenimports += collect_submodules("selenium")
+# The built-in VNC viewer (omnidroid/vncview.py) imports tkinter and PIL INSIDE
+# its run function, so the frozen viewer died with "Pillow is required".
+hiddenimports += ["tkinter", "PIL.Image", "PIL.ImageTk"]
 
 datas = [
     (os.path.join(PROJECT_DIR, "frontend", "dist"), "frontend/dist"),
 ]
 datas += collect_data_files("omnidroid")
+# Selenium Manager is a NATIVE BINARY shipped as package data; collecting the
+# Python modules alone is not enough to resolve a chromedriver.
+datas += collect_data_files("selenium", include_py_files=False)
 
 a = Analysis(
     ["main.py"],

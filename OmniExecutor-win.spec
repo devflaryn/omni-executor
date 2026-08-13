@@ -29,6 +29,12 @@ PROJECT_DIR = os.path.dirname(os.path.abspath(SPEC))
 OMNIDROID_REPO = os.path.normpath(os.path.join(PROJECT_DIR, "..", "omnidroid"))
 
 hiddenimports = []
+# This app's own modules. Declared for the record rather than out of need:
+# a control build without this line still bundled all three, because
+# PyInstaller walks bytecode and does find a plain `import x` inside a
+# function. Naming them keeps a future dynamic import (importlib, __import__)
+# from silently dropping out of the bundle.
+hiddenimports += ["accountsync", "cloud", "bootstrap"]
 hiddenimports += collect_submodules("omnidroid")
 # Selenium drives the "add account" browser login (omnidroid/accounts.py). It
 # is imported LAZILY inside the login functions, so PyInstaller's static
