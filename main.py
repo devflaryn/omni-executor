@@ -26,6 +26,7 @@ Engine:
 """
 
 import atexit
+import bootstrap
 import json
 import mimetypes
 import os
@@ -283,6 +284,7 @@ class Api:
     def __init__(self):
         self._window = None  # set in main() after the window is created
         self._maximized = False
+        self._bootstrapping = False
 
     # ---- window controls (used by the custom title bar) ----
 
@@ -396,6 +398,43 @@ class Api:
 
     def _progress(self, scope):
         return lambda line: self._push("engine-progress", {"scope": scope, "line": line})
+
+    # ---- bootstrap (first-boot runtime install) ----
+
+    def bootstrap_status(self):
+        rt = bootstrap.runtime_dir()
+        installed = bootstrap.installed_state(rt)
+        eng = bootstrap.configure_engine(rt)
+        error = None
+        ready = False
+        try:
+            manifest = bootstrap.read_manifest(bootstrap.dist_base())
+            have = installed.get("artifacts", {})
+            ready = all(have.get(a["name"], {}).get("sha256") == a["sha256"]
+                        for a in manifest.get("artifacts", []))
+        except bootstrap.BootstrapError as e:
+            error = str(e)
+            ready = bool(installed.get("artifacts"))  # offline-tolerant
+        ready = ready and eng.get("qemu_ok", False)
+        return {"ok": True, "ready": ready, "installed": installed.get("artifacts", {}),
+                "qemu_ok": eng.get("qemu_ok", False), "qemu_hint": eng.get("qemu_hint"),
+                "error": error}
+
+    def bootstrap_start(self):
+        if self._bootstrapping:
+            return {"ok": False, "error": "already running"}
+        self._bootstrapping = True
+        def _run():
+            try:
+                res = bootstrap.ensure_runtime(progress=lambda p: self._push("bootstrap-progress", p))
+                bootstrap.configure_engine(bootstrap.runtime_dir())
+                self._push("bootstrap-done", res)
+            except Exception as e:  # noqa: BLE001 — surface any failure to the UI
+                self._push("bootstrap-error", {"error": str(e)})
+            finally:
+                self._bootstrapping = False
+        threading.Thread(target=_run, daemon=True).start()
+        return {"ok": True, "started": True}
 
     _FALLBACK_MODES = ["playable", "hard", "brutal", "farming"]
 
