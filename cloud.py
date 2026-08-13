@@ -147,7 +147,13 @@ def auth() -> dict:
     return _read_json(auth_file(), {})
 
 
-def token() -> str | None:
+def token():
+    """The bearer token, or None.
+
+    Deliberately unannotated: this module has to import on the Mac's system
+    Python 3.9, where `str | None` in an annotation is evaluated at def time
+    and raises TypeError.
+    """
     return auth().get("token") or None
 
 
