@@ -276,7 +276,7 @@ function AccountRow({
       tabIndex={0}
       aria-pressed={selected}
       onClick={onSelect}
-      onDoubleClick={() => running && !busyLabel && onOpen()}
+      onDoubleClick={() => running && onOpen()}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
@@ -327,7 +327,14 @@ function AccountRow({
       <div className="flex shrink-0 items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
         {running ? (
           <>
-            <IconButton label="Open viewer" tone="accent" onClick={onOpen} disabled={Boolean(busyLabel)}>
+            {/* Deliberately NOT disabled while busy. `busyLabel` stays
+                "Starting" for the whole boot -- minutes -- but QEMU's VNC
+                server binds the moment the process spawns, and `running`
+                flips as soon as its run.json exists. Watching the boot is
+                the one thing you most want during it, and disabling this
+                was the difference between "nothing is happening" and
+                seeing Android come up. */}
+            <IconButton label="Open viewer" tone="accent" onClick={onOpen}>
               <MonitorIcon className="h-4 w-4" />
             </IconButton>
             <IconButton label="Stop instance" onClick={onStop} disabled={Boolean(busyLabel)}>

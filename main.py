@@ -695,6 +695,12 @@ def main():
         # Python with the omnidroid CLI's own argv shape and run the engine
         # in-process instead of shelling out to a separate binary.
         sys.argv = ["omnidroid", *sys.argv[2:]]
+        # Belt and braces: the engine spawns its own detached children (the
+        # VNC viewer, the autocap recorder) by re-running THIS binary, and it
+        # must put "--omnidroid" in front or the child relaunches the GUI.
+        # bootstrap.configure_engine() normally sets this in the parent and it
+        # is inherited; setting it here too covers an engine invoked directly.
+        os.environ.setdefault("OMNIDROID_SELF_ARGV", "--omnidroid")
         from omnidroid.cli import main as engine_main
         engine_main()
         return

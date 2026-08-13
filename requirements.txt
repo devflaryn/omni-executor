@@ -13,6 +13,13 @@ pywebview>=5.0
 # matching the installed Chrome at first use; no separate driver to install.
 selenium>=4.6
 
+# The built-in VNC viewer (the View button -> omnidroid's `_vncview`). It
+# decodes RFB framebuffers through PIL and renders them in a Tk window, and
+# imports both lazily -- so a missing Pillow is not a startup failure, it is
+# the viewer dying the moment you click View. Must be present at BUILD time
+# too, or PyInstaller cannot freeze it in.
+pillow>=10.0
+
 # macOS packaging (build-macos.sh -> OmniExecutor.spec -> dist/Omni Executor.app).
 # create-dmg is a brew dependency, not pip: brew install create-dmg
 pyinstaller>=6.0

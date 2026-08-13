@@ -470,6 +470,14 @@ def configure_engine(rt: Path) -> dict:
     # boot. run_engine() spawns the --omnidroid subprocess with env=None
     # (inherits this process's env), so setting it here reaches the engine.
     os.environ["OMNIDROID_CONFIG_PATH"] = str(rt / "paths.json")
+    # The engine re-invokes the FROZEN BINARY for its detached children (the
+    # VNC viewer, the autocap recorder) as `[sys.executable, "<subcommand>"]`.
+    # That is right for the standalone omnidroid.exe, whose entry point is the
+    # engine CLI -- but this binary's entry point is the GUI, which routes to
+    # the engine only when argv[1] is "--omnidroid". Without this, clicking
+    # "Open viewer" ran `omni-exec.exe _vncview ...` and launched a SECOND
+    # COPY OF THE APP instead of the viewer.
+    os.environ["OMNIDROID_SELF_ARGV"] = "--omnidroid"
 
     qemu_path = shutil.which(_qemu_system_name())
     win = current_os() == "win"

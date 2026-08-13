@@ -35,6 +35,13 @@ hiddenimports += collect_submodules("omnidroid")
 # analysis does not see it and the frozen engine reported "selenium is not
 # installed" on a machine where it was.
 hiddenimports += collect_submodules("selenium")
+# The built-in VNC viewer (omnidroid/vncview.py, spawned as the hidden
+# `_vncview` subcommand by the View button). It imports tkinter and PIL
+# INSIDE its run function, so static analysis never sees them and the frozen
+# viewer died on startup with "Pillow is required for the built-in viewer".
+# Naming them here also pulls in PyInstaller's tkinter hook, which ships the
+# Tcl/Tk runtime the viewer window needs.
+hiddenimports += ["tkinter", "PIL.Image", "PIL.ImageTk"]
 
 datas = [
     (os.path.join(PROJECT_DIR, "frontend", "dist"), "frontend/dist"),
