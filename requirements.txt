@@ -4,6 +4,15 @@ pywebview>=5.0
 # or uncomment the Qt extra below:
 # pywebview[qt]>=5.0
 
+# The "add account" browser login. omnidroid/accounts.py imports selenium
+# LAZILY (inside the login functions), so nothing fails at startup when it is
+# missing -- the GUI just reports "selenium is not installed" the moment you
+# try to add an account. It must also be present at BUILD time or PyInstaller
+# cannot freeze it into omni-exec.exe, which is the same failure again in the
+# shipped app. Selenium Manager (bundled in the wheel) fetches a chromedriver
+# matching the installed Chrome at first use; no separate driver to install.
+selenium>=4.6
+
 # macOS packaging (build-macos.sh -> OmniExecutor.spec -> dist/Omni Executor.app).
 # create-dmg is a brew dependency, not pip: brew install create-dmg
 pyinstaller>=6.0

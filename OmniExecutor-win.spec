@@ -30,11 +30,21 @@ OMNIDROID_REPO = os.path.normpath(os.path.join(PROJECT_DIR, "..", "omnidroid"))
 
 hiddenimports = []
 hiddenimports += collect_submodules("omnidroid")
+# Selenium drives the "add account" browser login (omnidroid/accounts.py). It
+# is imported LAZILY inside the login functions, so PyInstaller's static
+# analysis does not see it and the frozen engine reported "selenium is not
+# installed" on a machine where it was.
+hiddenimports += collect_submodules("selenium")
 
 datas = [
     (os.path.join(PROJECT_DIR, "frontend", "dist"), "frontend/dist"),
 ]
 datas += collect_data_files("omnidroid")
+# Selenium Manager is a NATIVE BINARY shipped as package data
+# (selenium/webdriver/common/windows/selenium-manager.exe). Without it
+# _resolve_chromedriver() cannot download a chromedriver matching the
+# installed Chrome, so collecting the Python modules alone is not enough.
+datas += collect_data_files("selenium", include_py_files=False)
 
 a = Analysis(
     ["main.py"],
