@@ -1,5 +1,52 @@
 # Windows self-installing `omni-exec.exe` (Slice C) Implementation Plan
 
+> **STATUS 2026-08-13 — EXECUTED on a real Windows 11/amd64 host.** Tasks 1–6
+> are done; the outcomes and the honest verified/unverified split live in
+> [`../windows-e2e-checklist.md`](../windows-e2e-checklist.md) and
+> [`../windows-build-notes.md`](../windows-build-notes.md). Read those first —
+> where they disagree with the task text below, they are right, because they
+> were written from what the hardware actually did.
+>
+> **Where this plan was wrong (all found by running it):**
+>
+> 1. **`offsets.py` needed less than the plan said, `engine.py` far more.**
+>    `offsets_of()`/`default_offset_name()` do NOT scan subfolders — they read
+>    the registry, so they were already arch-neutral; only `offset_image_name`
+>    needed the base. The real work was elsewhere: `_offset_base()` *refused*
+>    x86 outright ("offsets are an arm /data concept"), `bake_offset()` was
+>    arm-shaped throughout (`base["system"]`, `base["data"]`, efivars), and
+>    `data_bake_source()` returned `None` for x86 (an x86 base has no `data`
+>    key — its pristine /data is the shared ext4 template).
+> 2. **The product LAUNCH path was arm-only and the plan never mentioned it.**
+>    `build_acct()` pinned `_select_base_tag(cfg, arch="arm")` and asserted
+>    arm-uefi, so every x86 launch died with "no arm base registered"; and the
+>    x86 branch of `qemu_command()` had no ephemeral/`data_image` support, so
+>    the resolved offset was ignored. Without this, nothing the GUI does can
+>    boot on Windows. (Task 1c.)
+> 3. **A blocking Windows bug that had nothing to do with x86.** Closed
+>    loopback ports on this host TIME OUT instead of refusing, so
+>    `runtime._port_answers()` read every port as occupied and
+>    `allocate_ports()`'s `while True` spun forever: `omni start` hung with
+>    zero output and no timeout. Fixed with a bind test + a bounded loop.
+> 4. **Task 4's WHPX detection method does not work.** DISM /
+>    `Get-WindowsOptionalFeature` REQUIRE ELEVATION — unelevated they raise
+>    `COMException`, so the plan's detector would report "WHPX disabled" on a
+>    machine where WHPX works. Detection asks QEMU instead, and `whpx_ok` is
+>    tri-state so "unknown" is never rendered as a failure.
+> 5. **Task 5 was not build-only.** The exe was actually built and
+>    smoke-tested here; the plan assumed that was impossible (it was, on the
+>    Mac). Two PowerShell 5.1 traps had to be dodged — see the build notes.
+> 6. **`doctor` hardcoded `offsets: []` for non-arm bases**, so it told a
+>    Windows user "no Roblox baked" about a deployment that boots fine.
+> 7. **An x86 base entry must carry `src`** (`qemu_command` indexes it
+>    directly) and its `data_template` lives at the config's TOP level — the
+>    plan's Task 2 schema omitted both.
+>
+> **The one thing that still does not work** is not in this plan at all: the
+> x86 base ships an OUTDATED `com.omni.kiosk` with no `SessionReceiver`, so
+> `omni start` ends in `session NOT applied: no_kiosk_reply` and Roblox never
+> logs in. Arceus itself runs. That is a base-image rebuild, not a code fix.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A Windows `omni-exec.exe` that, on first boot, downloads the **arch-appropriate** runtime — for Windows the **x86 Bliss OS base + an x86 arceus offset** (not the arm64 base) — auto-installs QEMU, detects/guides WHPX, points the bundled omnidroid engine at the x86 assets, and thereafter is the executor. Same self-install architecture as Slice B (macOS), made arch-aware.
