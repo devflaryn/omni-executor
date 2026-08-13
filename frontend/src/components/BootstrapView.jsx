@@ -2,7 +2,7 @@
    Polls bootstrap_status once, auto-starts the bake if QEMU is present, and
    otherwise surfaces the qemu_hint so the user can fix their machine. */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { bootstrapStatus, bootstrapStart, onEngineEvent } from "../api.js";
 import { Button } from "./ui.jsx";
 import { CpuIcon } from "./icons.jsx";
@@ -11,24 +11,32 @@ export default function BootstrapView({ onReady }) {
   const [status, setStatus] = useState(null);
   const [progress, setProgress] = useState(null);
   const [error, setError] = useState(null);
+  // Tracks whether we've already fired bootstrap_start this session, so a
+  // transition into "ready to install" (mount, or Re-check after installing
+  // QEMU) only ever kicks off one download.
+  const startedRef = useRef(false);
+
+  const maybeStart = useCallback((s) => {
+    if (s && !s.ready && s.qemu_ok && !startedRef.current) {
+      startedRef.current = true;
+      bootstrapStart();
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     const s = await bootstrapStatus();
     setStatus(s);
     if (s?.ready) onReady?.();
+    else maybeStart(s);
     return s;
-  }, [onReady]);
+  }, [onReady, maybeStart]);
 
   useEffect(() => {
-    let started = false;
     let cancelled = false;
 
     refresh().then((s) => {
       if (cancelled) return;
-      if (s && !s.ready && s.qemu_ok && !started) {
-        started = true;
-        bootstrapStart();
-      }
+      maybeStart(s);
     });
 
     const off = onEngineEvent((event, payload) => {
@@ -92,6 +100,7 @@ export default function BootstrapView({ onReady }) {
             size="sm"
             onClick={() => {
               setError(null);
+              startedRef.current = true;
               bootstrapStart();
             }}
           >
