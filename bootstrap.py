@@ -52,7 +52,13 @@ _X86_OFFSET_RE = re.compile(
 # Windows nothing else will ever put it there, so the client has to supply the
 # installer URL or the engine can never self-install. Overridable for a
 # pinned/mirrored build.
-DEFAULT_QEMU_WIN_URL = "https://qemu.weilnetz.de/w64/qemu-w64-setup-20250611.exe"
+#
+# Pinned to a DATED build that was verified to exist (HTTP 200, 197 MB) —
+# weilnetz publishes per-date installers and prunes old ones, so this needs
+# re-pinning when it starts 404ing. Serving it through the dist API's
+# `qemu-win` redirect instead lets that be fixed server-side without shipping
+# a new client.
+DEFAULT_QEMU_WIN_URL = "https://qemu.weilnetz.de/w64/qemu-w64-setup-20260811.exe"
 
 
 class BootstrapError(Exception):
