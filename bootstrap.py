@@ -237,6 +237,13 @@ def configure_engine(rt: Path) -> dict:
     arm_dir = images / "arm"
     os.environ["OMNI_DATA_DIR"] = str(rt)
     os.environ["OMNI_IMAGES_DIR"] = str(images)
+    # Frozen (PyInstaller) omnidroid subprocesses compute their default
+    # CONFIG_PATH as <exe-dir>/configs/paths.json, which is NOT the
+    # rt/paths.json this function writes below -- without this override the
+    # frozen engine can never see the arm base we just registered and can't
+    # boot. run_engine() spawns the --omnidroid subprocess with env=None
+    # (inherits this process's env), so setting it here reaches the engine.
+    os.environ["OMNIDROID_CONFIG_PATH"] = str(rt / "paths.json")
 
     qemu_path = shutil.which("qemu-system-aarch64")
 

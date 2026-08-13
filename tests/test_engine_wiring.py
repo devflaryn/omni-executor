@@ -31,6 +31,7 @@ def test_configure_engine_sets_env_and_writes_paths(tmp_path, monkeypatch):
     info = bootstrap.configure_engine(tmp_path)
     assert os.environ["OMNI_DATA_DIR"] == str(tmp_path)
     assert os.environ["OMNI_IMAGES_DIR"] == str(tmp_path / "images")
+    assert os.environ["OMNIDROID_CONFIG_PATH"] == str(tmp_path / "paths.json")
     cfg = json.loads((tmp_path / "paths.json").read_text())
     assert "qemu" in cfg and "images_dir" in cfg
     assert isinstance(info["qemu_ok"], bool)
@@ -76,6 +77,7 @@ def test_configure_engine_config_matches_real_loader(tmp_path, monkeypatch):
 
     info = bootstrap.configure_engine(rt)
     assert info["images_dir"] == str(rt / "images")
+    assert os.environ["OMNIDROID_CONFIG_PATH"] == str(rt / "paths.json")
 
     fake_config_path = rt / "paths.json"
     # Redirect the loader's fixed config location at the file
