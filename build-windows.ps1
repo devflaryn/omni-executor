@@ -17,15 +17,26 @@
     Reuse the existing frontend\dist instead of running npm.
 
 .PARAMETER Zip
-    Also produce dist\omni-exec-win64.zip.
+    Also produce <DistPath>\omni-exec-win64.zip.
+
+.PARAMETER DistPath
+    Output directory (default: dist). PyInstaller DELETES and recreates this
+    folder, so the build fails with "WinError 32 / access denied" if anything
+    holds it open -- an Explorer window showing it is enough, and so is a
+    shell whose working directory is inside it. Build somewhere else rather
+    than hunting the lock: -DistPath dist-new
 
 .EXAMPLE
     .\build-windows.ps1 -Zip
+
+.EXAMPLE
+    .\build-windows.ps1 -SkipFrontend -DistPath dist-new
 #>
 [CmdletBinding()]
 param(
     [switch]$SkipFrontend,
-    [switch]$Zip
+    [switch]$Zip,
+    [string]$DistPath = "dist"
 )
 
 Set-StrictMode -Version Latest
@@ -118,12 +129,12 @@ if ($SkipFrontend) {
 }
 
 # --- freeze --------------------------------------------------------------
-Write-Host "==> freezing app (PyInstaller, one-dir)"
+Write-Host "==> freezing app (PyInstaller, one-dir) -> $DistPath"
 Invoke-Native -What "PyInstaller" -Command {
-    & $python -m PyInstaller --noconfirm OmniExecutor-win.spec
+    & $python -m PyInstaller --noconfirm --distpath $DistPath OmniExecutor-win.spec
 }
 
-$exe = ".\dist\omni-exec\omni-exec.exe"
+$exe = Join-Path $DistPath "omni-exec\omni-exec.exe"
 if (-not (Test-Path $exe)) { throw "expected $exe to exist after the build" }
 
 # --- smoke test ----------------------------------------------------------
@@ -156,14 +167,14 @@ if ($Zip) {
     # $zipPath, not $zip: PowerShell variable names are case-INSENSITIVE, so
     # `$zip = "..."` assigns a String to the [switch]$Zip parameter and the
     # script dies with a SwitchParameter cast error.
-    $zipPath = ".\dist\omni-exec-win64.zip"
+    $zipPath = Join-Path $DistPath "omni-exec-win64.zip"
     if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
     Write-Host "==> zipping -> $zipPath"
-    Compress-Archive -Path ".\dist\omni-exec\*" -DestinationPath $zipPath
+    Compress-Archive -Path (Join-Path $DistPath "omni-exec\*") -DestinationPath $zipPath
     Write-Host ("    {0:N1} MB" -f ((Get-Item $zipPath).Length / 1MB))
 }
 
 Write-Host ""
-Write-Host "==> done: dist\omni-exec\omni-exec.exe"
+Write-Host "==> done: $exe"
 Write-Host "    NOTE: unsigned. SmartScreen will warn on first run until the"
 Write-Host "    binary is Authenticode-signed (out of scope for v1)."
