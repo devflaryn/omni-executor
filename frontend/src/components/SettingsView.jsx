@@ -286,6 +286,19 @@ function OmniAccountPanel({ auth, onAuthChange, showToast }) {
     }
     const up = res.pushed?.length || 0;
     const down = res.pulled?.length || 0;
+    const foreign = res.foreign?.length || 0;
+    if (foreign) {
+      // Worth saying out loud rather than hiding in a count: these are
+      // accounts another Omni user left on this machine, and the app is
+      // deliberately not uploading them into the current user's account.
+      showToast(
+        `Synced — ${up} up, ${down} down · left ${foreign} account${
+          foreign === 1 ? "" : "s"
+        } belonging to another Omni user alone`,
+        "info"
+      );
+      return;
+    }
     showToast(
       up || down ? `Synced — ${up} uploaded, ${down} downloaded` : "Already up to date",
       "success"
