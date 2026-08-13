@@ -75,9 +75,15 @@ class FakeCloud:
     """Stand-in for the server side of accountsync, holding plaintext cookies
     and the sha256 the real backend publishes."""
 
-    def __init__(self, rows=None):
+    def __init__(self, rows=None, user_id="user-1"):
         self.rows = rows or {}          # username -> {cookie, ts}
         self.pushed = []
+        self.user_id = user_id
+
+    def auth(self):
+        """accountsync asks the cloud module who is signed in, to decide which
+        local accounts this user may push."""
+        return {"token": "t", "userId": self.user_id}
 
     def _hash(self, cookie):
         import hashlib
@@ -188,3 +194,85 @@ def test_cookies_are_never_written_to_the_store_listing(store, monkeypatch):
     listing = mod.list_accounts(str(store))
     assert listing and all("cookie" not in row for row in listing)
     assert json.dumps(listing).find("secret-cookie") == -1
+
+
+# ------------------------------------------------- one machine, two Omni users
+
+def _as_user(monkeypatch, user_id):
+    """Pretend a particular Omni user is signed in on this machine."""
+    accountsync.cloud.user_id = user_id
+
+
+def test_a_second_user_does_not_inherit_the_first_users_accounts(store, monkeypatch):
+    """THE LEAK THIS EXISTS TO STOP.
+
+    Measured during the multi-device acceptance run: user A signed in on the
+    Mac and pulled their accounts down; user B then signed in on the SAME
+    machine and their first sync uploaded every one of A's cookies into B's
+    cloud account. The local store is per-machine; ownership is per-user.
+    """
+    fake_a = FakeCloud({"a-farm": {"cookie": "cookie-a", "ts": "2029-01-01T00:00:00.000Z"}})
+    monkeypatch.setattr(accountsync, "cloud", fake_a)
+    _as_user(monkeypatch, "user-A")
+    accountsync.sync()
+    assert "a-farm" in _local_cookies()          # A pulled it down
+
+    fake_b = FakeCloud()                          # B's cloud store is empty
+    monkeypatch.setattr(accountsync, "cloud", fake_b)
+    _as_user(monkeypatch, "user-B")
+    res = accountsync.sync()
+
+    assert res["pushed"] == [], "B must not upload A's accounts"
+    assert res["foreign"] == ["a-farm"]
+    assert fake_b.rows == {}, "A's cookie must not appear in B's cloud store"
+
+
+def test_an_unclaimed_local_account_belongs_to_whoever_syncs_it(store, monkeypatch):
+    """An account added on this machine and never synced has no owner yet —
+    the person sitting at the machine adds it, so it is theirs."""
+    fake = FakeCloud()
+    monkeypatch.setattr(accountsync, "cloud", fake)
+    _as_user(monkeypatch, "user-A")
+    _write_local("fresh", "cookie-fresh")
+
+    res = accountsync.sync()
+
+    assert res["pushed"] == ["fresh"]
+    assert accountsync.owned_here("fresh", "user-A") is True
+    assert accountsync.owned_here("fresh", "user-B") is False
+
+
+def test_signing_out_drops_the_accounts_that_user_pulled_down(store, monkeypatch):
+    fake = FakeCloud({"a-farm": {"cookie": "cookie-a", "ts": "2029-01-01T00:00:00.000Z"}})
+    monkeypatch.setattr(accountsync, "cloud", fake)
+    _as_user(monkeypatch, "user-A")
+    _write_local("local-only", "cookie-local")     # never claimed by anyone
+    accountsync.sync()
+    assert {"a-farm", "local-only"} <= set(_local_cookies())
+
+    removed = accountsync.forget_user("user-A")
+
+    # Everything A synced is gone from this machine; it is still in the cloud
+    # and comes back on their next sign-in.
+    assert "a-farm" in removed
+    assert "a-farm" not in _local_cookies()
+    assert fake.rows["a-farm"]["cookie"] == "cookie-a"
+    # `local-only` was pushed during that sync, so it is A's too.
+    assert "local-only" in removed
+
+
+def test_forgetting_one_user_leaves_another_users_accounts_alone(store, monkeypatch):
+    fake_a = FakeCloud({"a-farm": {"cookie": "ca", "ts": "2029-01-01T00:00:00.000Z"}})
+    monkeypatch.setattr(accountsync, "cloud", fake_a)
+    _as_user(monkeypatch, "user-A")
+    accountsync.sync()
+
+    fake_b = FakeCloud({"b-farm": {"cookie": "cb", "ts": "2029-01-01T00:00:00.000Z"}})
+    monkeypatch.setattr(accountsync, "cloud", fake_b)
+    _as_user(monkeypatch, "user-B")
+    accountsync.sync()
+
+    accountsync.forget_user("user-B")
+
+    assert "a-farm" in _local_cookies()
+    assert "b-farm" not in _local_cookies()

@@ -491,20 +491,34 @@ class Api:
         return {"ok": True, **data}
 
     def auth_logout(self):
-        """Sign out, but first release any running lease this machine holds.
+        """Sign out: release this machine's leases, then drop the accounts that
+        were pulled down for the departing user.
 
-        Without that release the accounts this device is running would keep
-        their lease until it expires, and the next user to sign in here would
-        see phantom "Running on <this machine>" rows for accounts that are not
-        theirs."""
+        Both halves matter. Without the lease release, the accounts this device
+        is running keep their lease until it expires and the next user sees
+        phantom "Running on <this machine>" rows for accounts that are not
+        theirs. Without the purge, the next user's first sync UPLOADS the
+        previous user's cookies into their own cloud account — measured, on the
+        Mac, during the multi-device run. The purged records live in the cloud
+        and come back on the owner's next sign-in; accounts nobody has claimed
+        are left alone, because those exist only here."""
+        departing = (cloud.auth() or {}).get("userId") or ""
         try:
             self._release_all_leases()
         except Exception:  # noqa: BLE001 — never block a sign-out on the network
             pass
+        removed = []
+        if departing:
+            try:
+                removed = accountsync().forget_user(departing)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[omni-exec] could not purge local accounts: {exc}",
+                      file=sys.stderr)
         cloud.sign_out()
         self._known_running = set()
         self._push("auth-changed", {"signedIn": False})
-        return {"ok": True}
+        self._push("accounts-changed", {})
+        return {"ok": True, "removed": removed}
 
     def _after_sign_in(self):
         """Pull this user's accounts down (and push anything only on this
