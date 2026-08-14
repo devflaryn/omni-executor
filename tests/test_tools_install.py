@@ -123,6 +123,27 @@ def test_a_hosted_portable_build_removes_the_admin_prompt(fresh):
     assert plan["portable"]["name"] == "qemu-portable-win"
 
 
+def test_the_portable_build_is_not_a_runtime_download(fresh):
+    """It has a sha256 and a dest, so it looks exactly like a base image to
+    plan_downloads -- and must not be treated as one.
+
+    Two failures if it were: a fresh machine downloads 76 MB twice (once by
+    ensure_tools, once by ensure_runtime), and — much worse — every machine
+    that legitimately SKIPPED it because QEMU was already installed would
+    report un-ready forever, because readiness is "the plan is empty". An app
+    artifact caused precisely that the first time one was published."""
+    man = {"artifacts": [
+        {"name": "qemu-portable-win", "kind": "tool", "sha256": "ab" * 32,
+         "url": "/omni/dist/blob/qemu-portable-win", "bytes": 1, "dest": "qemu"},
+        {"name": "base-x86", "sha256": "cd" * 32,
+         "url": "/omni/dist/blob/base-x86", "bytes": 1, "dest": "images/x86"},
+    ]}
+    planned = [a["name"] for a in bootstrap.plan_downloads(man, {"artifacts": {}})]
+    assert planned == ["base-x86"]
+    # ...but ensure_tools still finds it, because it asks by NAME.
+    assert bootstrap.qemu_install_plan(fresh, man)["portable"] is not None
+
+
 def test_portable_entry_without_a_hash_is_ignored(fresh):
     """A pointer/redirect entry carries no sha256 and is not a downloadable
     blob -- treating one as the portable build would try to verify bytes
@@ -243,6 +264,7 @@ def test_ensure_tools_skips_elevation_when_a_portable_build_exists(fresh, monkey
         return _make_qemu(bootstrap.qemu_dir(rt))
 
     monkeypatch.setattr(bootstrap, "_install_qemu_portable", fake_portable)
+    monkeypatch.setattr(bootstrap, "tools_manifest", lambda: man)
     monkeypatch.setattr(bootstrap, "run_elevated", lambda *a, **k:
                         pytest.fail("a portable build must need no elevation"))
     monkeypatch.setattr(bootstrap, "_download_to",
@@ -252,6 +274,71 @@ def test_ensure_tools_skips_elevation_when_a_portable_build_exists(fresh, monkey
                         lambda *a, **k: {"whpx_ok": True, "hint": None})
     out = bootstrap.ensure_tools(fresh, man)
     assert "qemu" in out["installed"]
+
+
+def test_a_portable_build_found_only_in_the_tools_channel_is_actually_used(
+        fresh, monkeypatch):
+    """Regression: ensure_tools() looked up the tools channel, saw the portable
+    build, and then handed install_qemu_windows() the ORIGINAL manifest --
+    None. It recomputed a plan that could not see the portable build, and so
+    downloaded the 197 MB vendor installer and raised a UAC prompt on a machine
+    that needed neither. Shipped in 1.0.10; caught by an end-to-end run against
+    the live server, not by a unit test, which is why this one exists."""
+    man = {"artifacts": [{"name": "qemu-portable-win", "sha256": "ab" * 32,
+                          "url": "/omni/dist/blob/qemu-portable-win", "bytes": 2}]}
+    monkeypatch.setattr(bootstrap, "tools_manifest", lambda: man)
+    monkeypatch.setattr(bootstrap, "_install_qemu_portable",
+                        lambda rt, artifact, progress=None: _make_qemu(
+                            bootstrap.qemu_dir(rt)))
+    monkeypatch.setattr(bootstrap, "run_elevated", lambda *a, **k: pytest.fail(
+        "a published portable build must remove the administrator prompt"))
+    monkeypatch.setattr(bootstrap, "_download_to",
+                        lambda url, dest, progress=None, label="":
+                        dest.write_bytes(_platform_tools_zip()))
+    monkeypatch.setattr(bootstrap, "windows_accel_status",
+                        lambda *a, **k: {"whpx_ok": True, "hint": None})
+    # No manifest argument at all -- exactly how bootstrap_start calls it.
+    out = bootstrap.ensure_tools(fresh)
+    assert set(out["installed"]) == {"qemu", "adb"}
+
+
+def test_install_qemu_windows_asks_the_tools_channel_itself(fresh, monkeypatch):
+    """It is a public entry point, so it must not assume a caller already
+    looked for a portable build."""
+    man = {"artifacts": [{"name": "qemu-portable-win", "sha256": "ab" * 32,
+                          "url": "/omni/dist/blob/qemu-portable-win", "bytes": 2}]}
+    monkeypatch.setattr(bootstrap, "tools_manifest", lambda: man)
+    monkeypatch.setattr(bootstrap, "_install_qemu_portable",
+                        lambda rt, artifact, progress=None: _make_qemu(
+                            bootstrap.qemu_dir(rt)))
+    monkeypatch.setattr(bootstrap, "run_elevated", lambda *a, **k: pytest.fail(
+        "must not elevate when a portable build is published"))
+    assert bootstrap.install_qemu_windows(fresh) == bootstrap.qemu_dir(fresh)
+
+
+def test_the_tools_channel_is_only_consulted_when_qemu_is_missing(fresh, monkeypatch):
+    """A machine that already has QEMU must not make a network call to learn
+    it does not need one."""
+    asked = []
+    monkeypatch.setattr(bootstrap, "tools_manifest",
+                        lambda: asked.append(1) or {"artifacts": []})
+    _make_qemu(bootstrap.qemu_dir(fresh))
+    (bootstrap.adb_dir(fresh)).mkdir(parents=True)
+    (bootstrap.adb_dir(fresh) / "adb.exe").write_bytes(b"MZ")
+    monkeypatch.setattr(bootstrap, "windows_accel_status",
+                        lambda *a, **k: {"whpx_ok": True, "hint": None})
+    bootstrap.ensure_tools(fresh)
+    assert asked == []
+
+
+def test_an_unreachable_tools_channel_falls_back_to_the_installer(fresh, monkeypatch):
+    """A server that is down must cost a UAC prompt, not the whole install."""
+    monkeypatch.setattr(bootstrap, "read_manifest", lambda *a, **k: (_ for _ in ()).throw(
+        bootstrap.BootstrapError("unreachable")))
+    assert bootstrap.tools_manifest() == {}
+    monkeypatch.setattr(bootstrap, "is_elevated", lambda: False)
+    plan = bootstrap.qemu_install_plan(fresh, bootstrap.tools_manifest())
+    assert plan["needed"] is True and plan["needs_admin"] is True
 
 
 def test_whpx_is_enabled_when_qemu_exists_and_reports_it_off(fresh, monkeypatch):

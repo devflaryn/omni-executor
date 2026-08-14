@@ -170,13 +170,22 @@ def plan_downloads(manifest: dict, installed: dict) -> list:
     put a second app inside the runtime dir where nothing looks for it. The
     updater (updates.py) asks for it by name when there is actually a newer
     version to install.
+
+    `kind: "tool"` is skipped for the same shape of reason: those are HOST
+    tools (the portable QEMU), owned by ensure_tools(), which installs one only
+    when the machine does not already have that tool. Leaving it in the plan
+    would download it a second time on a fresh machine — and, far worse, would
+    make every machine that legitimately skipped it (because QEMU was already
+    installed) look permanently un-ready, since readiness is "the plan is
+    empty". That is exactly the regression an `app` artifact caused the first
+    time one was published.
     """
     have = installed.get("artifacts", {})
     out = []
     for a in manifest.get("artifacts", []):
         if not a.get("sha256"):
             continue
-        if a.get("kind") == "app":
+        if a.get("kind") in ("app", "tool"):
             continue
         cur = have.get(a["name"])
         if not cur or cur.get("sha256") != a["sha256"]:
@@ -418,6 +427,16 @@ _QEMU_TOOLS = ("qemu-system-x86_64", "qemu-img", "qemu-io")
 # when the manifest has no such artifact the elevated installer path below is
 # used instead, so this is an optimization, never a requirement.
 _QEMU_PORTABLE_ARTIFACT = "qemu-portable-win"
+# ...and it lives in its OWN CHANNEL, not "stable".
+#
+# It is a sha256'd artifact with a dest, so to any client older than the
+# `kind: "tool"` rule below it is indistinguishable from a base image: it would
+# land in the first-boot download plan, be fetched a second time, and — far
+# worse — make every already-installed machine report un-ready forever, because
+# readiness is "the plan is empty". Shipping it in `stable` would therefore
+# break every 1.0.8/1.0.9 client the moment it went live. A separate channel
+# means those clients never see it at all.
+_TOOLS_CHANNEL = "tools"
 
 
 def qemu_dir(rt: Path) -> Path:
@@ -688,12 +707,30 @@ def _install_qemu_portable(rt: Path, artifact: dict, progress=None) -> Path:
     return dest
 
 
+def tools_manifest() -> dict:
+    """The tools channel, or {} if it cannot be read.
+
+    Never raises. A server that is down, or simply has no tools channel yet, is
+    not a reason to fail the install — it only means falling back to the vendor
+    installer, which costs a UAC prompt and still works. Silence here is the
+    difference between "one extra prompt" and "setup failed"."""
+    try:
+        return read_manifest(dist_base(), channel=_TOOLS_CHANNEL)
+    except BootstrapError:
+        return {}
+
+
 def qemu_install_plan(rt: Path, manifest: dict = None) -> dict:
     """What installing QEMU on this machine would take, WITHOUT doing it.
 
     Lets the caller decide up front whether administrator rights are needed at
     all, and batch every elevated action into a single prompt. Returns
-    {"needed": bool, "portable": artifact|None, "needs_admin": bool}."""
+    {"needed": bool, "portable": artifact|None, "needs_admin": bool}.
+
+    `manifest` is looked up by NAME, so it does not matter which channel it
+    came from; pass one to avoid a network round trip, or leave it None on a
+    machine that already has QEMU (the common case) and nothing is fetched at
+    all."""
     if find_qemu(rt) is not None:
         return {"needed": False, "portable": None, "needs_admin": False}
     portable = None
@@ -727,6 +764,11 @@ def install_qemu_windows(rt: Path, manifest: dict = None, progress=None) -> Path
     plan = qemu_install_plan(rt, manifest)
     if not plan["needed"]:
         return find_qemu(rt)
+    if plan["portable"] is None and manifest is None:
+        # Never reach for the elevated installer without having ASKED whether a
+        # portable build exists. This is a public entry point, so it cannot
+        # assume ensure_tools() already looked.
+        plan = qemu_install_plan(rt, tools_manifest())
     if plan["portable"]:
         return _install_qemu_portable(rt, plan["portable"], progress)
 
@@ -830,6 +872,18 @@ def ensure_tools(rt: Path, manifest: dict = None, progress=None) -> dict:
         return out
 
     plan = qemu_install_plan(rt, manifest)
+    if plan["needed"] and plan["portable"] is None and manifest is None:
+        # Only now is it worth a round trip: this machine really has no QEMU,
+        # and a portable build would save it a UAC prompt. A machine that
+        # already has one never reaches here, so the common path stays offline.
+        #
+        # Keep the manifest we resolved, not just the plan. Passing the
+        # original `manifest` (None) down to install_qemu_windows made it
+        # recompute a plan that could not see the portable build, so it
+        # downloaded the 197 MB vendor installer and asked for administrator
+        # on a machine where neither was needed.
+        manifest = tools_manifest()
+        plan = qemu_install_plan(rt, manifest)
     # Decide the elevated work ONCE, before doing any of it, so it costs at
     # most one UAC prompt. WHPX can only be probed with a working QEMU, so on
     # a machine that has none we cannot know whether the feature needs turning
