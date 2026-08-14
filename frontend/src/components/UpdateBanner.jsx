@@ -84,7 +84,7 @@ export function useUpdates() {
 /** One line above the content when something is out of date. Deliberately not
     a modal: an update is never so urgent that it should take the app away. */
 export function UpdateBanner({ updates, onOpenSettings }) {
-  const { status, progress, busy } = updates;
+  const { status, progress, busy, error, startApp, restartIntoUpdate } = updates;
   const runtime = status?.runtime?.update;
   const app = status?.app?.update;
   const staged = status?.staged;
@@ -109,11 +109,21 @@ export function UpdateBanner({ updates, onOpenSettings }) {
     <div className="rule-b flex items-center gap-3 bg-accent/8 px-4 py-2">
       <Lamp tone={busy ? "busy" : "live"} pulse={Boolean(busy)} size={6} />
       <span className="truncate text-[12px] text-ink">
-        {what}
+        {error || what}
         {pct != null && <span className="ml-2 font-mono text-ink-3">{pct}%</span>}
       </span>
-      <Button size="sm" className="ml-auto shrink-0" onClick={onOpenSettings}>
-        {staged ? "Install" : busy ? "Details" : "Update"}
+      {/* The button DOES the thing it is labelled with. It used to call
+          onOpenSettings for every state, so a button reading "Install" only
+          switched tabs — and did nothing visible at all when Settings was
+          already open. Only "Details" navigates, because that is what it
+          means. */}
+      <Button
+        size="sm"
+        className="ml-auto shrink-0"
+        disabled={Boolean(busy)}
+        onClick={staged ? restartIntoUpdate : app && !runtime ? startApp : onOpenSettings}
+      >
+        {staged ? "Install and restart" : busy ? "Details" : app && !runtime ? "Download" : "Update"}
       </Button>
     </div>
   );
@@ -217,11 +227,11 @@ export default function UpdatePanel({ updates, showToast }) {
               Version {staged.version} is downloaded and ready.
             </p>
             <p className="mb-3 text-[11px] leading-snug text-ink-3">
-              Installing restarts the app. Stop every instance first — this app holds
-              their running state.
+              Installing closes this window and reopens it on the new version. Running
+              instances are unaffected — they are separate processes and keep running.
             </p>
             <Button variant="solid" size="sm" onClick={restartIntoUpdate}>
-              Restart and install
+              Install and restart
             </Button>
           </div>
         )}

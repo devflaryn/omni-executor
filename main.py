@@ -655,15 +655,17 @@ class Api:
     def update_app_restart(self):
         """Hand the swap to the staged build and close this window.
 
-        Refused while instances are running: the app is what holds their
-        presence lease, and restarting mid-launch would make them look stopped
-        on the user's other machines."""
+        This does NOT require instances to be stopped, and an earlier version
+        that did was simply wrong: QEMU is spawned detached, so the VMs outlive
+        this process — killing the GUI and watching them keep running is how
+        that was established. The presence lease is 90 s and the app is back in
+        a few, so a restart does not even lapse it. Refusing here meant the
+        Install button did nothing whenever anything was running, which is most
+        of the time.
+
+        The RUNTIME update still requires a stop, and that distinction is real:
+        those files are open by a live QEMU."""
         import updates
-        live = self._running_names()
-        if live:
-            return {"ok": False, "error": "instances_running",
-                    "message": f"Stop {', '.join(sorted(live))} first — restarting "
-                               f"now would drop their running state."}
         try:
             pid = updates.launch_apply()
         except updates.UpdateError as exc:
