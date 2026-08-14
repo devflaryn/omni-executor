@@ -1156,10 +1156,91 @@ def _apply_update_mode(argv):
         raise
 
 
+# Windows stamps every file extracted from a DOWNLOADED zip with this
+# alternate data stream, recording that it came from the Internet zone.
+_MOTW_STREAM = ":Zone.Identifier"
+
+
+def _has_motw(path):
+    try:
+        return os.path.exists(f"{path}{_MOTW_STREAM}")
+    except OSError:
+        return False
+
+
+def _unblock_app_files(log=None):
+    """Strip Mark-of-the-Web from this install, or the app cannot start at all.
+
+    A user who downloads the zip and extracts it with Explorer gets a
+    `Zone.Identifier` stream on EVERY extracted file. The .NET Framework
+    assembly loader then refuses to load Python.Runtime.dll out of the
+    Internet zone, clr_loader cannot resolve its entry point, and pywebview's
+    WinForms backend dies on import — before a single line of this program's
+    own logic runs:
+
+        RuntimeError: Failed to resolve Python.Runtime.Loader.Initialize from
+        ...\\_internal\\pythonnet\\runtime\\Python.Runtime.dll
+
+    Reproduced exactly by putting that one stream on that one DLL, and cured
+    by removing it. It is invisible in development because a build produced
+    locally was never downloaded, so it is never marked.
+
+    The proper fix is to ship an installer (files an installer writes are not
+    marked). This stays anyway: people extract zips, and a program that cannot
+    start is not the place to be principled about whose fault it is.
+
+    Cheap on a normal launch — one stat of the DLL that actually matters, and
+    a full sweep only when that comes back marked. Best-effort throughout: an
+    install in a read-only location cannot be unmarked, but it also cannot
+    have been marked, because an installer put it there.
+    """
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return 0
+    root = Path(sys.executable).resolve().parent
+    probe = root / "_internal" / "pythonnet" / "runtime" / "Python.Runtime.dll"
+    if not _has_motw(probe) and not _has_motw(Path(sys.executable)):
+        return 0
+    cleared = 0
+    # The whole tree, not just that DLL: Python.Runtime.dll pulls in ~100
+    # netstandard facade assemblies beside it, and each is refused on the same
+    # grounds. Clearing one file only moves the error to the next one.
+    for path in root.rglob("*"):
+        try:
+            if not path.is_file() or not _has_motw(path):
+                continue
+            os.remove(f"{path}{_MOTW_STREAM}")
+            cleared += 1
+        except OSError:
+            continue
+    if cleared and log:
+        log(f"[omni-exec] cleared the downloaded-file mark from {cleared} "
+            f"file(s) so Windows will load them")
+    return cleared
+
+
+def _fatal_dialog(title, message):
+    """Say what went wrong somewhere a GUI user can actually see it.
+
+    A windowed PyInstaller build has no console, so an uncaught exception
+    surfaces as a raw traceback dialog that means nothing to the person
+    reading it."""
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, message, title, 0x10)
+    except Exception:  # noqa: BLE001 — this IS the error path; never raise here
+        print(f"{title}: {message}", file=sys.stderr)
+
+
 def main():
     if len(sys.argv) > 3 and sys.argv[1] == "--apply-update":
         _apply_update_mode(sys.argv)
         return
+
+    # Before anything imports the CLR. webview.start() is what pulls in the
+    # WinForms backend, so this only has to beat the bottom of this function —
+    # but it is first because everything below it is downstream of the app
+    # being loadable at all.
+    _unblock_app_files(log=lambda m: print(m, file=sys.stderr))
 
     if len(sys.argv) > 1 and sys.argv[1] == "--doctor":
         # "Why won't it start?" in one line, from the SHIPPED binary, without
@@ -1248,7 +1329,26 @@ def main():
     window.events.closed += lambda *a: api._shutdown()
     atexit.register(api._shutdown)
 
-    webview.start()
+    try:
+        webview.start()
+    except RuntimeError as e:
+        # This is where the WinForms/CLR backend is actually loaded, and the
+        # one failure a user can do something about. _unblock_app_files() has
+        # already handled the common cause; anything left is a machine
+        # problem, and a raw traceback dialog tells the reader nothing.
+        if "Python.Runtime" not in str(e):
+            raise
+        _fatal_dialog(
+            "Omni Executor could not start",
+            "Windows blocked part of Omni Executor from loading.\n\n"
+            "This normally happens when the app is run straight out of a "
+            "downloaded .zip. Two fixes, either works:\n\n"
+            "  1. Install it with the Omni Executor installer instead of "
+            "unzipping it.\n"
+            "  2. Right-click the .zip you downloaded, choose Properties, "
+            "tick Unblock, then extract it again.\n\n"
+            f"Details: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

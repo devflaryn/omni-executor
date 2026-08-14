@@ -1,9 +1,9 @@
-"""Auto-update: check on every launch, apply on request.
+﻿"""Auto-update: check on every launch, apply on request.
 
 TWO things go stale, and they fail differently, so they are handled separately
 even though one manifest describes both.
 
-  runtime  the base image and its Roblox offsets. A stale one is not cosmetic —
+  runtime  the base image and its Roblox offsets. A stale one is not cosmetic â€”
            this is exactly how the x86 base ended up shipping a kiosk that could
            not deliver a session, and every machine that had already installed it
            kept that bug until someone reinstalled by hand. Detected by sha256,
@@ -16,7 +16,7 @@ even though one manifest describes both.
            PyInstaller build is a whole tree, and in dev there is no build at
            all).
 
-Applying is deliberately manual — one click, not a surprise. Replacing a base
+Applying is deliberately manual â€” one click, not a surprise. Replacing a base
 image while a VM has it open, or swapping the app out from under a running
 launch, are both things a user should get to schedule.
 """
@@ -34,7 +34,7 @@ import bootstrap
 # The app version this build reports. Bumped when a build is published (see
 # omni-backend/scripts/push-app.mjs); compared against the manifest's
 # `app.version` to decide whether an update exists.
-APP_VERSION = "1.0.11"
+APP_VERSION = "1.0.12"
 
 # Where a downloaded app build is unpacked before it replaces the live one.
 STAGING_DIR = "app-update"
@@ -51,7 +51,7 @@ def _parts(version):
 
     "1.2.3" -> (1, 2, 3); "1.2.3-beta" -> (1, 2, 3). Anything unparseable
     sorts lowest, so a garbled manifest can never look newer than what is
-    installed — the safe direction for a value that triggers a self-replace.
+    installed â€” the safe direction for a value that triggers a self-replace.
     """
     out = []
     for chunk in str(version or "").split("."):
@@ -98,7 +98,7 @@ def staging_root():
 
 
 def can_apply_app():
-    """(bool, reason) — whether this process can replace itself in place."""
+    """(bool, reason) â€” whether this process can replace itself in place."""
     if app_dir() is None:
         return False, ("Running from source, so there is no build to replace. "
                        "Pull and rebuild instead.")
@@ -106,11 +106,11 @@ def can_apply_app():
 
 
 def manages_runtime():
-    """(bool, reason) — whether the engine actually boots the images we install.
+    """(bool, reason) â€” whether the engine actually boots the images we install.
 
     The updater owns exactly one image directory: the one inside the runtime
-    dir it installed. A checkout pointed somewhere else — OMNI_IMAGES_DIR, or a
-    hand-written paths.json, which is how every dev machine here is set up —
+    dir it installed. A checkout pointed somewhere else â€” OMNI_IMAGES_DIR, or a
+    hand-written paths.json, which is how every dev machine here is set up â€”
     boots images this code has never touched. Offering an update there is worse
     than useless: it would download gigabytes into a directory the engine does
     not read, and report success while changing nothing the user can see.
@@ -142,7 +142,7 @@ def _app_artifact(manifest):
 def check(base_url=None):
     """What is available, without downloading anything but the manifest.
 
-    Never raises for a normal offline case — the caller is a launch-time
+    Never raises for a normal offline case â€” the caller is a launch-time
     background check and a missing network is not an error worth a dialog.
     """
     result = {
@@ -188,7 +188,7 @@ def check(base_url=None):
 def apply_runtime(base_url=None, progress=None):
     """Download whatever changed and place it. ensure_runtime is already
     idempotent and sha256-driven, so this is the same code path first boot
-    uses — an update is just a first boot with most of the work already
+    uses â€” an update is just a first boot with most of the work already
     done."""
     return bootstrap.ensure_runtime(base_url=base_url, progress=progress)
 
@@ -251,7 +251,7 @@ def staged_info():
       * nothing staged,
       * the receipt points at a directory that is gone (offering an Install
         button that cannot work is worse than offering none),
-      * the staged build is no longer NEWER than what is running — which is
+      * the staged build is no longer NEWER than what is running â€” which is
         exactly the state after a successful update, since the staging dir
         outlives the swap. Without this the app would sit there forever
         offering to install the version it already is.
@@ -278,7 +278,7 @@ def launch_apply(build_dir=None):
     """Hand the swap to the STAGED copy and ask this process to exit.
 
     The staged executable is a different file on disk, so it can replace the
-    directory this process is running from — which is the whole reason the
+    directory this process is running from â€” which is the whole reason the
     swap is not done here. Windows will not let a running image be replaced at
     all, and on macOS replacing a loaded bundle out from under itself is just
     as bad an idea.
@@ -333,7 +333,7 @@ def apply_staged_app(target_dir, wait_pid, timeout=90, log=print):
 
     Runs in the STAGED copy, launched by launch_apply() from the old one. The
     old directory is renamed aside rather than deleted, and put back if the
-    copy fails — a half-copied application directory is the one outcome worse
+    copy fails â€” a half-copied application directory is the one outcome worse
     than not updating.
     """
     target = Path(target_dir)

@@ -19,6 +19,14 @@
 .PARAMETER Zip
     Also produce <DistPath>\omni-exec-win64.zip.
 
+.PARAMETER Installer
+    Also build OmniExecutorSetup.exe (one file, ~12 MB) into <DistPath>. This
+    is what users should download: an installer writes its files itself, so
+    they never carry the Mark-of-the-Web that a downloaded .zip puts on
+    everything it extracts -- which broke the app on launch (see
+    HANDOFF-WINDOWS 0a/0f). The stub downloads the published build from the
+    dist API, so it does not need to be rebuilt for every app release.
+
 .PARAMETER DistPath
     Output directory (default: dist). PyInstaller DELETES and recreates this
     folder, so the build fails with "WinError 32 / access denied" if anything
@@ -36,6 +44,7 @@
 param(
     [switch]$SkipFrontend,
     [switch]$Zip,
+    [switch]$Installer,
     [string]$DistPath = "dist"
 )
 
@@ -172,6 +181,17 @@ if ($Zip) {
     Write-Host "==> zipping -> $zipPath"
     Compress-Archive -Path (Join-Path $DistPath "omni-exec\*") -DestinationPath $zipPath
     Write-Host ("    {0:N1} MB" -f ((Get-Item $zipPath).Length / 1MB))
+}
+
+# --- installer ------------------------------------------------------------
+if ($Installer) {
+    Write-Host "==> building OmniExecutorSetup.exe"
+    Invoke-Native -What "PyInstaller (installer)" -Command {
+        & $python -m PyInstaller --noconfirm --distpath $DistPath OmniExecutorSetup.spec
+    }
+    $setup = Join-Path $DistPath "OmniExecutorSetup.exe"
+    if (-not (Test-Path $setup)) { throw "expected $setup to exist after the build" }
+    Write-Host ("    {0:N1} MB" -f ((Get-Item $setup).Length / 1MB))
 }
 
 Write-Host ""
