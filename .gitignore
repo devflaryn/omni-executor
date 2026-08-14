@@ -21,3 +21,6 @@ runtime/
 # PyInstaller build output (build-macos.sh)
 build/
 dist/
+
+# throwaway PyInstaller output dirs (a running omni-exec.exe locks dist/)
+dist-*/

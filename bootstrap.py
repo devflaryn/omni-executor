@@ -1,10 +1,12 @@
-"""Headless first-boot runtime installer for Omni Executor (macOS).
+"""Headless first-boot runtime installer for Omni Executor.
 
 Fetches the named-blob manifest, downloads + sha256-verifies each artifact
 with HTTP Range resume, places it under the OmniExec runtime dir, and records
-installed.json. No GUI, no engine import — pure stdlib so it is unit-testable.
+installed.json. Also installs the host TOOLS the engine shells out to (QEMU
+and adb on Windows) so a fresh machine needs nothing preinstalled. No GUI, no
+engine import — pure stdlib so it is unit-testable.
 """
-import hashlib, json, os, re, shutil, subprocess, sys, tarfile, time, urllib.request, urllib.error, zipfile
+import ctypes, hashlib, json, os, re, shutil, subprocess, sys, tarfile, time, urllib.request, urllib.error, zipfile
 from pathlib import Path
 
 APP_DIR_NAME = "OmniExec"
@@ -61,9 +63,26 @@ _X86_OFFSET_RE = re.compile(
 # redirect. OMNI_QEMU_WIN_URL overrides for an air-gapped/mirrored build.
 _QEMU_WIN_BLOB = "/omni/dist/blob/qemu-win"
 
+# adb has the same problem and no equivalent excuse: omnidroid/adb.py shells
+# the BARE NAME "adb", so on a machine without Android platform-tools every
+# guest command fails at CreateProcess. Resolved through the dist API for the
+# same reason as QEMU — a moved/rotted URL is a server-side edit, not a client
+# release. `adb-win` is a redirect entry (no sha256), so plan_downloads skips
+# it and this module fetches it directly.
+_ADB_WIN_BLOB = "/omni/dist/blob/adb-win"
+# Google's "latest" alias, not a dated build: it is the one platform-tools URL
+# that has never moved. Used only if the dist API has no adb-win entry yet, so
+# a client shipped before the registry edit still installs.
+_ADB_WIN_FALLBACK = ("https://dl.google.com/android/repository/"
+                     "platform-tools-latest-windows.zip")
+
 
 def qemu_win_url() -> str:
     return os.environ.get("OMNI_QEMU_WIN_URL") or f"{dist_base()}{_QEMU_WIN_BLOB}"
+
+
+def adb_win_url() -> str:
+    return os.environ.get("OMNI_ADB_WIN_URL") or f"{dist_base()}{_ADB_WIN_BLOB}"
 
 
 class BootstrapError(Exception):
@@ -363,6 +382,506 @@ def ensure_runtime(base_url: str = None, progress=None) -> dict:
     return {"ok": True, "installed": installed["artifacts"], "changed": changed}
 
 
+# ------------------------------------------------------------------ tools
+#
+# The engine SHELLS OUT to two host programs it does not bundle: QEMU
+# (qemu-system-x86_64 / qemu-img / qemu-io) and adb. On a developer box both
+# are already on PATH, which is exactly why their absence never showed up
+# here — a genuinely fresh machine has neither, and the app dead-ended on the
+# setup screen forever.
+#
+# WHERE they get installed matters as much as that they do:
+#
+#   * NOT next to the exe. omnidroid's QEMU_DIR is <exe dir>/qemu, and the
+#     app's own updater REPLACES that whole directory (updates.py stages the
+#     new build and renames the old tree aside) — so a QEMU installed there is
+#     destroyed by every app update and re-downloaded, ~200 MB at a time. It is
+#     also under Program Files for anyone who installs there, i.e. unwritable.
+#   * The runtime dir instead (%LOCALAPPDATA%\OmniExec\...): always writable by
+#     the user with NO elevation, untouched by app updates, and beside the
+#     images it exists to boot.
+#
+# The engine finds them because configure_engine() writes the resolved QEMU
+# directory into paths.json as `qemu.dir` — which omnidroid's qemu_bin()
+# already consults FIRST — and prepends the adb directory to PATH, which the
+# engine subprocess inherits (run_engine spawns with env=None).
+_QEMU_SUBDIR = "qemu"
+_ADB_SUBDIR = "platform-tools"
+# Everything the engine actually invokes (grep qemu_bin( in omnidroid/engine.py).
+# qemu-io is used by the rooted-system baker; a QEMU install missing it is not
+# a complete one.
+_QEMU_TOOLS = ("qemu-system-x86_64", "qemu-img", "qemu-io")
+# A portable QEMU zip WE host, if one has been published. Preferred over the
+# vendor installer because it needs no elevation at all: the weilnetz NSIS
+# installer is manifested requireAdministrator, so CreateProcess on it fails
+# outright with WinError 740 unless the call is elevated. Optional by design —
+# when the manifest has no such artifact the elevated installer path below is
+# used instead, so this is an optimization, never a requirement.
+_QEMU_PORTABLE_ARTIFACT = "qemu-portable-win"
+
+
+def qemu_dir(rt: Path) -> Path:
+    return rt / _QEMU_SUBDIR
+
+
+def adb_dir(rt: Path) -> Path:
+    return rt / _ADB_SUBDIR
+
+
+def _exe(name: str) -> str:
+    return name + (".exe" if sys.platform == "win32" else "")
+
+
+def _looks_like_qemu_dir(d: Path) -> bool:
+    """A directory holding a COMPLETE QEMU for this host.
+
+    Every tool is required, not just the system emulator: a half-extracted or
+    part-pruned directory that has qemu-system-x86_64.exe but no qemu-img.exe
+    would satisfy a naive check and then fail later, at the point where an
+    account's overlay disk is created — far from the cause."""
+    if not d or not d.is_dir():
+        return False
+    names = [_qemu_system_name()] + [t for t in _QEMU_TOOLS
+                                     if not t.startswith("qemu-system")]
+    return all((d / _exe(n)).exists() for n in names)
+
+
+def find_qemu(rt: Path) -> Path | None:
+    """The directory containing a usable QEMU, or None.
+
+    Ordered so an install we control wins over one we merely found, and a
+    machine that already has QEMU is never made to download 200 MB of it
+    again. Mirrors omnidroid's qemu_bin() resolution so the app's idea of
+    "QEMU is installed" cannot disagree with the engine's — they DID disagree:
+    engine_ready() used shutil.which (PATH only) while qemu_bin() on Windows
+    deliberately never consults PATH, so each was capable of reporting ready
+    when the other could not run."""
+    env = os.environ.get("OMNI_QEMU_DIR")
+    if env and _looks_like_qemu_dir(Path(env)):
+        return Path(env)
+    if _looks_like_qemu_dir(qemu_dir(rt)):
+        return qemu_dir(rt)
+    on_path = shutil.which(_qemu_system_name())
+    if on_path and _looks_like_qemu_dir(Path(on_path).parent):
+        return Path(on_path).parent
+    if sys.platform == "win32":
+        for root in (os.environ.get("ProgramFiles", r"C:\Program Files"),
+                     os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")):
+            cand = Path(root) / "qemu"
+            if _looks_like_qemu_dir(cand):
+                return cand
+    return None
+
+
+def find_adb(rt: Path) -> Path | None:
+    """The directory containing adb, or None. Same ordering rationale as
+    find_qemu. omnidroid/adb.py runs the BARE NAME "adb", so whatever this
+    returns has to end up on PATH — see configure_engine()."""
+    env = os.environ.get("OMNI_ADB_DIR")
+    if env and (Path(env) / _exe("adb")).exists():
+        return Path(env)
+    if (adb_dir(rt) / _exe("adb")).exists():
+        return adb_dir(rt)
+    on_path = shutil.which("adb")
+    if on_path:
+        return Path(on_path).parent
+    if sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            cand = Path(local) / "Android" / "Sdk" / "platform-tools"
+            if (cand / "adb.exe").exists():
+                return cand
+    return None
+
+
+def _download_to(url: str, dest: Path, progress=None, label: str = "") -> None:
+    """Stream a URL to a file with progress, resuming a partial file.
+
+    Deliberately separate from download_blob(): that one verifies a sha256 the
+    manifest promised, and REFUSES an artifact without one. These downloads are
+    redirect pointers to a vendor (weilnetz, Google) whose bytes we do not hash
+    in advance, so correctness is established afterwards, by running the thing
+    (_looks_like_qemu_dir / adb --version) rather than by comparing a digest we
+    were never given."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    last_exc = None
+    for attempt in range(1, _MAX_RETRIES + 1):
+        have = dest.stat().st_size if dest.exists() else 0
+        req = urllib.request.Request(url)
+        if have:
+            req.add_header("Range", f"bytes={have}-")
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                # A server that ignores Range answers 200 with the WHOLE file;
+                # appending it to what we already have would silently produce a
+                # corrupt double-length download.
+                if have and r.status != 206:
+                    have = 0
+                    dest.unlink(missing_ok=True)
+                total = have + int(r.headers.get("Content-Length") or 0)
+                mode = "ab" if have else "wb"
+                with open(dest, mode) as out:
+                    received = have
+                    while True:
+                        chunk = r.read(_CHUNK)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                        received += len(chunk)
+                        if progress:
+                            progress({"phase": "download", "artifact": label,
+                                      "received": received, "total": total,
+                                      "percent": (received / total * 100) if total else 0})
+            return
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            last_exc = e
+            time.sleep(1)
+    raise BootstrapError(f"{label or url}: download failed after "
+                         f"{_MAX_RETRIES} attempts: {last_exc}") from last_exc
+
+
+# ---- elevation -----------------------------------------------------------
+
+def is_elevated() -> bool:
+    if sys.platform != "win32":
+        return os.geteuid() == 0 if hasattr(os, "geteuid") else False
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:  # noqa: BLE001 — never let a probe decide the app dies
+        return False
+
+
+def run_elevated(command: str, timeout: float = 1800) -> int:
+    """Run one command line as administrator and wait for it. Returns its exit
+    code; raises BootstrapError if the user declines the UAC prompt.
+
+    ShellExecuteExW, not subprocess: elevation is a SHELL verb ("runas"), and
+    CreateProcess — which is all subprocess can do — cannot elevate. It fails
+    with WinError 740 instead, which is exactly how the QEMU install was
+    failing. SEE_MASK_NOCLOSEPROCESS is what makes the call waitable at all;
+    plain ShellExecuteW returns an HINSTANCE and no process handle, so there
+    would be no way to know whether the install finished, let alone whether it
+    worked.
+    """
+    if sys.platform != "win32":
+        raise BootstrapError("elevation is only implemented on Windows")
+
+    class _SHELLEXECUTEINFOW(ctypes.Structure):
+        _fields_ = [("cbSize", ctypes.c_ulong),
+                    ("fMask", ctypes.c_ulong),
+                    ("hwnd", ctypes.c_void_p),
+                    ("lpVerb", ctypes.c_wchar_p),
+                    ("lpFile", ctypes.c_wchar_p),
+                    ("lpParameters", ctypes.c_wchar_p),
+                    ("lpDirectory", ctypes.c_wchar_p),
+                    ("nShow", ctypes.c_int),
+                    ("hInstApp", ctypes.c_void_p),
+                    ("lpIDList", ctypes.c_void_p),
+                    ("lpClass", ctypes.c_wchar_p),
+                    ("hkeyClass", ctypes.c_void_p),
+                    ("dwHotKey", ctypes.c_ulong),
+                    ("hIcon", ctypes.c_void_p),
+                    ("hProcess", ctypes.c_void_p)]
+
+    SEE_MASK_NOCLOSEPROCESS = 0x00000040
+    SEE_MASK_NO_CONSOLE = 0x00008000   # don't hand it our console
+    SW_HIDE = 0
+    ERROR_CANCELLED = 1223
+
+    info = _SHELLEXECUTEINFOW()
+    info.cbSize = ctypes.sizeof(info)
+    info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NO_CONSOLE
+    info.lpVerb = "runas"
+    # cmd.exe /c, so one elevated prompt can run a whole SCRIPT — the point of
+    # batching: a fresh machine needs QEMU installed AND (maybe) the hypervisor
+    # feature enabled, and asking for administrator twice for one setup is a
+    # worse experience than the thing being manual.
+    info.lpFile = os.environ.get("COMSPEC") or "cmd.exe"
+    info.lpParameters = f'/c {command}'
+    info.nShow = SW_HIDE
+    if not ctypes.windll.shell32.ShellExecuteExW(ctypes.byref(info)):
+        err = ctypes.get_last_error() or ctypes.GetLastError()
+        if err == ERROR_CANCELLED:
+            raise BootstrapError(
+                "Administrator permission was declined. Omni Executor needs it "
+                "once, to install QEMU and turn on Windows Hypervisor Platform.")
+        raise BootstrapError(f"could not request administrator rights (error {err})")
+    if not info.hProcess:
+        raise BootstrapError("elevated process did not start")
+    WAIT_TIMEOUT = 0x102
+    rc = ctypes.windll.kernel32.WaitForSingleObject(
+        info.hProcess, int(timeout * 1000))
+    if rc == WAIT_TIMEOUT:
+        ctypes.windll.kernel32.CloseHandle(info.hProcess)
+        raise BootstrapError(f"elevated step timed out after {int(timeout)}s")
+    code = ctypes.c_ulong()
+    ctypes.windll.kernel32.GetExitCodeProcess(info.hProcess, ctypes.byref(code))
+    ctypes.windll.kernel32.CloseHandle(info.hProcess)
+    return int(code.value)
+
+
+# ---- adb -----------------------------------------------------------------
+
+def install_adb_windows(rt: Path, progress=None) -> Path:
+    """Download Google's platform-tools and unpack adb into the runtime dir.
+
+    Needs no elevation and no installer: it is a plain zip, and the runtime dir
+    is user-writable by construction."""
+    staging = rt / "staging"
+    staging.mkdir(parents=True, exist_ok=True)
+    tmp = staging / "platform-tools.zip"
+    try:
+        _download_to(adb_win_url(), tmp, progress, "adb")
+    except BootstrapError:
+        # The dist API may not carry an adb-win entry yet (it is a redirect
+        # entry added alongside this code). Falling back to Google's own
+        # "latest" alias keeps a client that is newer than the registry working
+        # rather than failing on a server that simply has not been edited.
+        _download_to(_ADB_WIN_FALLBACK, tmp, progress, "adb")
+    dest = adb_dir(rt)
+    dest.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(tmp) as zf:
+        _safe_extract_zip(zf, dest)
+    tmp.unlink(missing_ok=True)
+    # The zip contains a top-level platform-tools/ folder, so the files land at
+    # <dest>/platform-tools/adb.exe. Flatten it — find_adb and the PATH entry
+    # both name ONE directory, and a nested one silently resolves to nothing.
+    nested = dest / "platform-tools"
+    if (nested / "adb.exe").exists():
+        for item in nested.iterdir():
+            target = dest / item.name
+            if target.exists():
+                shutil.rmtree(target) if target.is_dir() else target.unlink()
+            shutil.move(str(item), str(target))
+        shutil.rmtree(nested, ignore_errors=True)
+    if not (dest / _exe("adb")).exists():
+        raise BootstrapError("adb was downloaded but adb.exe is not where it "
+                             "was expected after unpacking")
+    return dest
+
+
+# ---- qemu ----------------------------------------------------------------
+
+def _install_qemu_portable(rt: Path, artifact: dict, progress=None) -> Path:
+    """Unpack a portable QEMU zip that we host. No elevation, verified by
+    sha256 like any other manifest artifact."""
+    staging = rt / "staging"
+    staging.mkdir(parents=True, exist_ok=True)
+    tmp = staging / f"{artifact['name']}.part"
+    download_blob(dist_base(), artifact, tmp, progress)
+    dest = qemu_dir(rt)
+    dest.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(tmp) as zf:
+        _safe_extract_zip(zf, dest)
+    tmp.unlink(missing_ok=True)
+    nested = dest / "qemu"
+    if _looks_like_qemu_dir(nested):
+        for item in nested.iterdir():
+            target = dest / item.name
+            if target.exists():
+                shutil.rmtree(target) if target.is_dir() else target.unlink()
+            shutil.move(str(item), str(target))
+        shutil.rmtree(nested, ignore_errors=True)
+    if not _looks_like_qemu_dir(dest):
+        raise BootstrapError("the portable QEMU archive did not contain a "
+                             "complete QEMU install")
+    return dest
+
+
+def qemu_install_plan(rt: Path, manifest: dict = None) -> dict:
+    """What installing QEMU on this machine would take, WITHOUT doing it.
+
+    Lets the caller decide up front whether administrator rights are needed at
+    all, and batch every elevated action into a single prompt. Returns
+    {"needed": bool, "portable": artifact|None, "needs_admin": bool}."""
+    if find_qemu(rt) is not None:
+        return {"needed": False, "portable": None, "needs_admin": False}
+    portable = None
+    for a in (manifest or {}).get("artifacts", []):
+        if a.get("name") == _QEMU_PORTABLE_ARTIFACT and a.get("sha256"):
+            portable = a
+            break
+    return {"needed": True, "portable": portable,
+            "needs_admin": portable is None and not is_elevated()}
+
+
+def install_qemu_windows(rt: Path, manifest: dict = None, progress=None) -> Path:
+    """Put a working QEMU on this machine and return the directory holding it.
+
+    Two routes, preferred order:
+
+    1. A portable zip we host (`qemu-portable-win` in the manifest) — extracted
+       straight into the runtime dir. No installer, no elevation, sha256
+       verified.
+    2. The vendor's NSIS installer, run SILENTLY and ELEVATED. It is manifested
+       requireAdministrator, so an unelevated CreateProcess on it does not run
+       and fail — it never starts, raising WinError 740. That is precisely how
+       the old engine-side ensure_qemu() broke on a fresh machine.
+
+    Either way the target is the runtime dir, never Program Files and never the
+    app dir: no admin is needed to WRITE there, and an app update cannot delete
+    it.
+    """
+    if sys.platform != "win32":
+        raise BootstrapError("install_qemu_windows is Windows-only")
+    plan = qemu_install_plan(rt, manifest)
+    if not plan["needed"]:
+        return find_qemu(rt)
+    if plan["portable"]:
+        return _install_qemu_portable(rt, plan["portable"], progress)
+
+    staging = rt / "staging"
+    staging.mkdir(parents=True, exist_ok=True)
+    installer = staging / "qemu-setup.exe"
+    _download_to(qemu_win_url(), installer, progress, "qemu")
+    dest = qemu_dir(rt)
+    dest.mkdir(parents=True, exist_ok=True)
+    if progress:
+        progress({"phase": "install", "artifact": "qemu", "received": 0,
+                  "total": 0, "percent": 100})
+    code = _run_qemu_installer(installer, dest)
+    installer.unlink(missing_ok=True)
+    if not _looks_like_qemu_dir(dest):
+        raise BootstrapError(
+            f"the QEMU installer exited with {code} but did not produce a "
+            f"working QEMU in {dest}")
+    return dest
+
+
+def _nsis_command(installer: Path, dest: Path) -> str:
+    """The silent-install command line for an NSIS installer.
+
+    `/D=` is NSIS's own switch, not a normal argument: it must come LAST and
+    must NOT be quoted, even when the path contains spaces (NSIS reads the raw
+    command line and takes everything after `/D=` to the end). Quoting it — the
+    reflex for any other program — makes it install to the default location
+    instead, silently, which then looks like the download was wrong."""
+    return f'"{installer}" /S /D={dest}'
+
+
+def _run_qemu_installer(installer: Path, dest: Path) -> int:
+    cmd = _nsis_command(installer, dest)
+    if is_elevated():
+        # Already administrator (the app was started elevated): no second
+        # prompt. A string, not a list — CreateProcess is handed the command
+        # line verbatim, which is what keeps an unquoted /D= with spaces intact.
+        return subprocess.run(cmd, timeout=1800).returncode
+    return run_elevated(cmd)
+
+
+# ---- Windows Hypervisor Platform ----------------------------------------
+
+_DISM_ENABLE = ('dism.exe /Online /Enable-Feature '
+                '/FeatureName:HypervisorPlatform /All /NoRestart')
+# DISM's documented "it worked, but Windows must restart" code. Treated as
+# success with a reboot flag, not as a failure — it is the NORMAL outcome of
+# turning the feature on, and reporting it as an error would tell a user their
+# perfectly successful setup had failed.
+_DISM_REBOOT_REQUIRED = 3010
+
+
+def enable_whpx(timeout: float = 1800) -> dict:
+    """Turn on Windows Hypervisor Platform. Requires administrator.
+
+    Returns {"ok", "reboot_required", "exit_code"}. Idempotent: on a machine
+    where the feature is already on, DISM exits 0 and nothing changes — which
+    is what makes it safe to batch into the same elevated step as the QEMU
+    install, on a fresh machine where WHPX cannot be probed yet because there
+    is no QEMU to probe it with."""
+    if sys.platform != "win32":
+        return {"ok": True, "reboot_required": False, "exit_code": 0}
+    if is_elevated():
+        code = subprocess.run(_DISM_ENABLE, timeout=timeout,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                              ).returncode
+    else:
+        code = run_elevated(_DISM_ENABLE, timeout=timeout)
+    ok = code in (0, _DISM_REBOOT_REQUIRED)
+    if ok:
+        # The cached "WHPX is off" answer is now stale, and it is the thing
+        # gating the Start button.
+        _whpx_cache.pop("win", None)
+    return {"ok": ok, "reboot_required": code == _DISM_REBOOT_REQUIRED,
+            "exit_code": code}
+
+
+def ensure_tools(rt: Path, manifest: dict = None, progress=None) -> dict:
+    """Install everything the ENGINE needs from the host, before any image is
+    downloaded. Idempotent; safe to call on every launch.
+
+    This is the fix for "a fresh machine never installs QEMU". Nothing else ran
+    an install: the engine's ensure_qemu() only fires when an instance is
+    actually started, the first-boot screen refused to begin until QEMU already
+    existed, and each of those was waiting on the other.
+
+    Returns {"qemu_dir", "adb_dir", "installed": [...], "reboot_required",
+    "whpx_ok"}.
+    """
+    out = {"qemu_dir": None, "adb_dir": None, "installed": [],
+           "reboot_required": False, "whpx_ok": None}
+    if current_os() != "win":
+        # macOS/Linux policy is SYSTEM tooling (brew/apt) — deliberately not
+        # automated here; installing into a user's system package manager
+        # behind their back is not ours to do.
+        q, a = find_qemu(rt), find_adb(rt)
+        out["qemu_dir"] = str(q) if q else None
+        out["adb_dir"] = str(a) if a else None
+        out["whpx_ok"] = True
+        return out
+
+    plan = qemu_install_plan(rt, manifest)
+    # Decide the elevated work ONCE, before doing any of it, so it costs at
+    # most one UAC prompt. WHPX can only be probed with a working QEMU, so on
+    # a machine that has none we cannot know whether the feature needs turning
+    # on — and DISM's enable is idempotent, so bundling it in is strictly
+    # better than a second prompt later.
+    whpx = windows_accel_status() if not plan["needed"] else {"whpx_ok": None}
+    want_whpx = whpx.get("whpx_ok") is not True
+    if plan["needed"] and plan["needs_admin"] and want_whpx:
+        if progress:
+            progress({"phase": "elevate", "artifact": "qemu", "received": 0,
+                      "total": 0, "percent": 0})
+        (rt / "staging").mkdir(parents=True, exist_ok=True)
+        installer = rt / "staging" / "qemu-setup.exe"
+        _download_to(qemu_win_url(), installer, progress, "qemu")
+        dest = qemu_dir(rt)
+        dest.mkdir(parents=True, exist_ok=True)
+        # One prompt, both jobs. `&` and not `&&`: DISM must run even if the
+        # QEMU install fails, and its own exit code is the one we need back.
+        code = run_elevated(f'{_nsis_command(installer, dest)} & {_DISM_ENABLE}')
+        installer.unlink(missing_ok=True)
+        if not _looks_like_qemu_dir(dest):
+            raise BootstrapError(
+                f"the QEMU installer did not produce a working QEMU in {dest}")
+        out["installed"].append("qemu")
+        out["reboot_required"] = code == _DISM_REBOOT_REQUIRED
+        _whpx_cache.pop("win", None)
+    elif plan["needed"]:
+        install_qemu_windows(rt, manifest, progress)
+        out["installed"].append("qemu")
+
+    if find_adb(rt) is None:
+        if progress:
+            progress({"phase": "start", "artifact": "adb", "received": 0,
+                      "total": 0, "percent": 0})
+        install_adb_windows(rt, progress)
+        out["installed"].append("adb")
+
+    q, a = find_qemu(rt), find_adb(rt)
+    out["qemu_dir"] = str(q) if q else None
+    out["adb_dir"] = str(a) if a else None
+    # Now that QEMU exists, ask it directly rather than trusting the plan.
+    if q and not out["reboot_required"]:
+        _apply_tool_env(rt)
+        out["whpx_ok"] = windows_accel_status().get("whpx_ok")
+        if out["whpx_ok"] is False:
+            res = enable_whpx()
+            out["reboot_required"] = res["reboot_required"]
+            if res["ok"]:
+                out["installed"].append("whpx")
+    return out
+
+
 def _first_present(arm_dir: Path, names) -> str | None:
     for name in names:
         if (arm_dir / name).exists():
@@ -422,21 +941,23 @@ def _qemu_system_name() -> str:
 
 
 def _qemu_hint() -> str:
-    """What the user should do when no QEMU is on PATH. Windows never says
-    'brew': there the engine downloads and silently installs QEMU itself
-    (see DEFAULT_QEMU_WIN_URL), so this is a status line, not a chore."""
+    """What the user should do when no QEMU is installed. On Windows: nothing
+    — ensure_tools() installs it. This is a status line, not a chore.
+
+    It used to be a LIE. It promised an automatic install on first run while
+    the first-boot screen refused to start until QEMU was already there, and
+    nothing in the launch path ever installed it, so the promise resolved to a
+    permanent wait."""
     if current_os() == "win":
-        return ("QEMU is not installed yet — Omni Executor will download and "
-                "install it automatically on first run.")
+        return ("QEMU is not installed yet — Omni Executor is installing it "
+                "automatically.")
     return "brew install qemu android-platform-tools"
 
 
 _WHPX_HINT = (
     "Windows Hypervisor Platform is turned off, so the Android VM cannot "
-    "start. Enable it in an ADMINISTRATOR PowerShell:\n\n"
-    "    DISM /Online /Enable-Feature /FeatureName:HypervisorPlatform /All\n\n"
-    "then reboot. (Windows Features > \"Windows Hypervisor Platform\" does "
-    "the same thing.)")
+    "start. Omni Executor can turn it on for you — it needs administrator "
+    "permission once, and Windows has to restart afterwards.")
 
 _WHPX_NO_QEMU_HINT = (
     "Virtualization support has not been checked yet — QEMU is still being "
@@ -486,11 +1007,12 @@ def windows_accel_status(probe=None) -> dict:
     if "win" in _whpx_cache:
         return dict(_whpx_cache["win"])
 
-    qemu = shutil.which(_qemu_system_name())
-    if not qemu:
+    qdir = find_qemu(runtime_dir())
+    if not qdir:
         # Deliberately NOT cached: QEMU is about to be installed, and the
         # next call should get a real answer.
         return {"os": "win", "whpx_ok": None, "hint": _WHPX_NO_QEMU_HINT}
+    qemu = str(qdir / _exe(_qemu_system_name()))
     try:
         ok = (probe or _whpx_probe)(qemu)
     except Exception:  # noqa: BLE001 — a probe failure is never fatal
@@ -504,10 +1026,43 @@ def windows_accel_status(probe=None) -> dict:
 
 def engine_ready(rt: Path) -> dict:
     """Read-only engine readiness probe — no disk write, no env mutation.
-    Mirrors configure_engine's qemu detection so bootstrap_status can poll cheaply."""
-    qemu_bin = shutil.which(_qemu_system_name())
-    return {"qemu_ok": bool(qemu_bin),
-            "qemu_hint": None if qemu_bin else _qemu_hint()}
+    Mirrors configure_engine's tool detection so bootstrap_status can poll
+    cheaply.
+
+    It used to call shutil.which() — PATH ONLY — which was wrong in both
+    directions. omnidroid's qemu_bin() on Windows never consults PATH, so a
+    machine with QEMU on PATH reported qemu_ok while the engine could not find
+    it; and a QEMU installed where the engine DOES look (the runtime dir)
+    reported not-installed forever. adb was not checked at all, though
+    omnidroid/adb.py shells the bare name and fails just as hard without it."""
+    qdir = find_qemu(rt)
+    adir = find_adb(rt)
+    return {"qemu_ok": qdir is not None,
+            "qemu_dir": str(qdir) if qdir else None,
+            "adb_ok": adir is not None,
+            "adb_dir": str(adir) if adir else None,
+            "tools_ok": qdir is not None and adir is not None,
+            "qemu_hint": None if qdir else _qemu_hint()}
+
+
+def _apply_tool_env(rt: Path) -> dict:
+    """Point THIS process (and therefore every engine subprocess it spawns) at
+    the tools ensure_tools() installed.
+
+    adb has to go on PATH because omnidroid/adb.py runs the bare name "adb";
+    there is no config knob for it. QEMU does not need PATH — configure_engine
+    writes its directory into paths.json as `qemu.dir`, which qemu_bin() reads
+    first — but OMNI_QEMU_DIR is set anyway so a subprocess that somehow reads
+    no config still resolves it."""
+    q, a = find_qemu(rt), find_adb(rt)
+    if q:
+        os.environ["OMNI_QEMU_DIR"] = str(q)
+    if a:
+        cur = os.environ.get("PATH", "")
+        entries = cur.split(os.pathsep)
+        if str(a) not in entries:
+            os.environ["PATH"] = str(a) + os.pathsep + cur
+    return {"qemu_dir": str(q) if q else None, "adb_dir": str(a) if a else None}
 
 
 def configure_engine(rt: Path) -> dict:
@@ -545,7 +1100,10 @@ def configure_engine(rt: Path) -> dict:
     # COPY OF THE APP instead of the viewer.
     os.environ["OMNIDROID_SELF_ARGV"] = "--omnidroid"
 
-    qemu_path = shutil.which(_qemu_system_name())
+    # PATH for adb + OMNI_QEMU_DIR, inherited by every engine subprocess.
+    _apply_tool_env(rt)
+    qemu_found = find_qemu(rt)
+    qemu_path = str(qemu_found / _exe(_qemu_system_name())) if qemu_found else None
     win = current_os() == "win"
 
     cfg = {

@@ -13,6 +13,7 @@ need. QEMU is both the authority and the consumer here: if it can initialize
 the accelerator, the feature is on.
 """
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -41,7 +42,7 @@ def test_non_windows_is_a_no_op(monkeypatch):
 
 
 def test_whpx_available_reports_ok(win, monkeypatch):
-    monkeypatch.setattr(bootstrap.shutil, "which", lambda n: "C:/q/qemu.exe")
+    monkeypatch.setattr(bootstrap, "find_qemu", lambda rt: Path("C:/q"))
     s = bootstrap.windows_accel_status(probe=lambda qemu: True)
     assert s["os"] == "win"
     assert s["whpx_ok"] is True
@@ -49,18 +50,21 @@ def test_whpx_available_reports_ok(win, monkeypatch):
 
 
 def test_whpx_missing_names_the_feature_and_the_fix(win, monkeypatch):
-    monkeypatch.setattr(bootstrap.shutil, "which", lambda n: "C:/q/qemu.exe")
+    monkeypatch.setattr(bootstrap, "find_qemu", lambda rt: Path("C:/q"))
     s = bootstrap.windows_accel_status(probe=lambda qemu: False)
     assert s["whpx_ok"] is False
-    assert "HypervisorPlatform" in s["hint"]
-    assert "reboot" in s["hint"].lower()
+    # The hint no longer tells the user to go run DISM themselves -- the app
+    # does it for them (enable_whpx), so it explains the two things they will
+    # actually experience: one admin prompt, then a restart.
+    assert "administrator" in s["hint"].lower()
+    assert "restart" in s["hint"].lower()
 
 
 def test_no_qemu_yet_is_unknown_not_disabled(win, monkeypatch):
     # First boot: QEMU has not been installed yet, so WHPX is unprobeable.
     # Reporting False here would show a scary "virtualization is off" panel to
     # a user whose machine is fine. Unknown must be distinguishable.
-    monkeypatch.setattr(bootstrap.shutil, "which", lambda n: None)
+    monkeypatch.setattr(bootstrap, "find_qemu", lambda rt: None)
     s = bootstrap.windows_accel_status()
     assert s["whpx_ok"] is None
     assert s["hint"]
@@ -70,7 +74,7 @@ def test_a_probe_that_explodes_is_unknown_not_disabled(win, monkeypatch):
     def boom(qemu):
         raise OSError("access denied")
 
-    monkeypatch.setattr(bootstrap.shutil, "which", lambda n: "C:/q/qemu.exe")
+    monkeypatch.setattr(bootstrap, "find_qemu", lambda rt: Path("C:/q"))
     s = bootstrap.windows_accel_status(probe=boom)
     assert s["whpx_ok"] is None
 

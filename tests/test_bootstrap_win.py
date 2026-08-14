@@ -220,22 +220,47 @@ def test_no_images_yet_is_not_an_error(win, tmp_path, monkeypatch):
 # ------------------------------------------------------------- engine_ready
 
 def test_engine_ready_looks_for_the_x86_emulator(win, tmp_path, monkeypatch):
+    """A Windows host must look for qemu-system-x86_64, never the aarch64
+    build -- and it must look where the ENGINE looks.
+
+    Detection used to be shutil.which(), i.e. PATH only, which was wrong in
+    both directions: omnidroid's qemu_bin() deliberately never consults PATH
+    on Windows, so a PATH-only QEMU reported ready to an engine that could not
+    find it, and a QEMU installed in the runtime dir -- where the engine DOES
+    look, and where ensure_tools() puts it -- reported not-installed forever.
+    That second half is what deadlocked every fresh machine."""
     asked = []
 
     def which(n):
         asked.append(n)
-        return "C:/q/qemu-system-x86_64.exe" if "x86_64" in n else None
+        return None
 
     monkeypatch.setattr(bootstrap.shutil, "which", which)
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "no-pf"))
+    monkeypatch.setenv("ProgramFiles(x86)", str(tmp_path / "no-pf86"))
+    monkeypatch.delenv("OMNI_QEMU_DIR", raising=False)
+
+    # Nothing installed anywhere: not ready.
+    assert bootstrap.engine_ready(tmp_path)["qemu_ok"] is False
+
+    # Installed in the runtime dir, and on PATH nowhere: ready anyway.
+    q = bootstrap.qemu_dir(tmp_path)
+    q.mkdir(parents=True)
+    for n in ("qemu-system-x86_64.exe", "qemu-img.exe", "qemu-io.exe"):
+        (q / n).write_bytes(b"MZ")
     r = bootstrap.engine_ready(tmp_path)
 
     assert r["qemu_ok"] is True
+    assert r["qemu_dir"] == str(q)
     assert any("x86_64" in n for n in asked)
     assert not any("aarch64" in n for n in asked)
 
 
 def test_the_windows_hint_is_not_brew(win, tmp_path, monkeypatch):
     monkeypatch.setattr(bootstrap.shutil, "which", lambda n: None)
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "no-pf"))
+    monkeypatch.setenv("ProgramFiles(x86)", str(tmp_path / "no-pf86"))
+    monkeypatch.delenv("OMNI_QEMU_DIR", raising=False)
     r = bootstrap.engine_ready(tmp_path)
 
     assert r["qemu_ok"] is False

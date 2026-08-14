@@ -88,3 +88,13 @@ export function bootstrapStatus() {
 export function bootstrapStart() {
   return api("bootstrap_start");
 }
+
+/** Turn on Windows Hypervisor Platform (one UAC prompt, then a restart).
+    Only reachable when the probe reported it explicitly off. */
+export function enableVirtualization() {
+  return api("enable_virtualization");
+}
+
+export function restartWindows() {
+  return api("restart_windows");
+}

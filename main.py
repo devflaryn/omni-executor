@@ -321,6 +321,11 @@ class Api:
         self._window = None  # set in main() after the window is created
         self._maximized = False
         self._bootstrapping = False
+        # Set once WHPX has been turned on but Windows has not restarted yet.
+        # Sticky for the process: DISM already reported the reboot, and the
+        # feature is not live until it happens, so re-probing would say "off"
+        # and offer to enable an already-enabled feature forever.
+        self._reboot_required = False
         # Accounts this machine last reported as running, so the loop can send
         # exactly one "stopped" on the transition instead of every tick.
         self._known_running = set()
@@ -800,7 +805,12 @@ class Api:
         except bootstrap.BootstrapError as e:
             error = str(e)
             ready = bool(installed.get("artifacts"))  # offline-tolerant
-        ready = ready and eng.get("qemu_ok", False)
+        # The host TOOLS (QEMU, adb) are part of being ready, not a
+        # precondition for becoming ready. Treating them as a precondition is
+        # what deadlocked every fresh machine: bootstrap_start() was gated on
+        # qemu_ok, and nothing in the app ever installed QEMU, so qemu_ok
+        # could never become true and the download never began.
+        ready = ready and eng.get("tools_ok", False)
         # WHPX is a hard prerequisite on Windows -- omnidroid boots with
         # -accel whpx and QEMU just dies if the feature is off -- so the UI
         # has to be able to say so before the user hits Start. whpx_ok is
@@ -809,7 +819,9 @@ class Api:
         accel = bootstrap.windows_accel_status()
         return {"ok": True, "ready": ready, "installed": installed.get("artifacts", {}),
                 "qemu_ok": eng.get("qemu_ok", False), "qemu_hint": eng.get("qemu_hint"),
+                "adb_ok": eng.get("adb_ok", False), "tools_ok": eng.get("tools_ok", False),
                 "whpx_ok": accel.get("whpx_ok"), "whpx_hint": accel.get("hint"),
+                "reboot_required": self._reboot_required,
                 "error": error}
 
     def bootstrap_start(self):
@@ -818,15 +830,55 @@ class Api:
         self._bootstrapping = True
         def _run():
             try:
+                rt = bootstrap.runtime_dir()
+                # Tools FIRST, images second. The 4 GB of base images are
+                # useless without a QEMU to boot them, and this is the step
+                # that was missing entirely -- the engine's own ensure_qemu()
+                # only fires when an instance is started, which a user cannot
+                # reach from the setup screen.
+                self._push("bootstrap-progress",
+                           {"phase": "tools", "artifact": "qemu",
+                            "received": 0, "total": 0, "percent": 0})
+                tools = bootstrap.ensure_tools(
+                    rt, progress=lambda p: self._push("bootstrap-progress", p))
+                if tools.get("reboot_required"):
+                    self._reboot_required = True
+                    self._push("bootstrap-reboot", tools)
                 res = bootstrap.ensure_runtime(progress=lambda p: self._push("bootstrap-progress", p))
-                bootstrap.configure_engine(bootstrap.runtime_dir())
-                self._push("bootstrap-done", res)
+                bootstrap.configure_engine(rt)
+                self._push("bootstrap-done", {**res, "tools": tools})
             except Exception as e:  # noqa: BLE001 — surface any failure to the UI
                 self._push("bootstrap-error", {"error": str(e)})
             finally:
                 self._bootstrapping = False
         threading.Thread(target=_run, daemon=True).start()
         return {"ok": True, "started": True}
+
+    def enable_virtualization(self):
+        """Turn on Windows Hypervisor Platform (one UAC prompt + a restart).
+
+        Exposed separately from the first-boot flow for the case it cannot
+        cover: a machine where QEMU was ALREADY installed, so the setup screen
+        never needed elevation, and the feature turns out to be off only when
+        QEMU is finally there to be asked."""
+        try:
+            res = bootstrap.enable_whpx()
+        except bootstrap.BootstrapError as e:
+            return {"ok": False, "error": str(e)}
+        if res.get("reboot_required"):
+            self._reboot_required = True
+        return {"ok": res["ok"], "reboot_required": res["reboot_required"],
+                "message": ("Virtualization is on. Restart Windows to finish."
+                            if res["reboot_required"] else
+                            "Virtualization is already on.")}
+
+    def restart_windows(self):
+        """Reboot, at the user's explicit click, after enabling WHPX."""
+        if sys.platform != "win32":
+            return {"ok": False, "error": "windows only"}
+        subprocess.Popen(["shutdown", "/r", "/t", "5"],
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return {"ok": True}
 
     _FALLBACK_MODES = ["playable", "hard", "brutal", "farming"]
 
@@ -1107,6 +1159,28 @@ def _apply_update_mode(argv):
 def main():
     if len(sys.argv) > 3 and sys.argv[1] == "--apply-update":
         _apply_update_mode(sys.argv)
+        return
+
+    if len(sys.argv) > 1 and sys.argv[1] == "--doctor":
+        # "Why won't it start?" in one line, from the SHIPPED binary, without
+        # a GUI or a support call. Prints where this install found (or failed
+        # to find) QEMU and adb, and what the hypervisor probe says.
+        #
+        # It also makes a frozen build verifiable: the app is a GUI subsystem
+        # binary, so short of launching it there was previously no way to
+        # confirm which bootstrap code a given omni-exec.exe actually carries.
+        import updates          # module-local, like every other call site
+        rt = bootstrap.runtime_dir()
+        print(json.dumps({
+            "app_version": updates.APP_VERSION,
+            "runtime_dir": str(rt),
+            "frozen": bool(getattr(sys, "frozen", False)),
+            "elevated": bootstrap.is_elevated(),
+            **bootstrap.engine_ready(rt),
+            "accel": bootstrap.windows_accel_status(),
+            "installed": sorted(bootstrap.installed_state(rt)
+                                .get("artifacts", {})),
+        }, indent=2))
         return
 
     if len(sys.argv) > 1 and sys.argv[1] == "--omnidroid":
