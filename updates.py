@@ -34,7 +34,7 @@ import bootstrap
 # The app version this build reports. Bumped when a build is published (see
 # omni-backend/scripts/push-app.mjs); compared against the manifest's
 # `app.version` to decide whether an update exists.
-APP_VERSION = "1.0.12"
+APP_VERSION = "1.0.13"
 
 # Where a downloaded app build is unpacked before it replaces the live one.
 STAGING_DIR = "app-update"
