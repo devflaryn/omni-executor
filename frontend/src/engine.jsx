@@ -95,6 +95,9 @@ export function EngineProvider({ activeTab, showToast, children }) {
   const [busy, setBusy] = useState({}); // name -> what it is doing
   const [progress, setProgress] = useState({}); // scope -> latest engine stderr line
   const [settingUp, setSettingUp] = useState(false);
+  const [pool, setPool] = useState(null); // last `pool status`, or null until asked
+  const [poolBusy, setPoolBusy] = useState(false);
+  const [poolError, setPoolError] = useState(null);
 
   const setBusyFor = useCallback((name, label) => {
     setBusy((prev) => {
@@ -252,6 +255,54 @@ export function EngineProvider({ activeTab, showToast, children }) {
     [clearProgress, refreshList, setBusyFor, showToast]
   );
 
+  // ---- warm pool ----
+
+  /* The pool is an OPTIONAL engine feature, so it is gated on the same
+     handshake as the missing-command banner: main.py reports whether the
+     engine advertises `pool`, and an engine without it makes the control
+     disappear rather than offer a button that ends in an argparse error. */
+  const poolSupported = version?.pool_supported === true;
+
+  const refreshPool = useCallback(async () => {
+    if (!poolSupported) return null;
+    const res = await api("pool_status");
+    setPool(res);
+    return res;
+  }, [poolSupported]);
+
+  /* Warm the pool for the settings the launch bay is holding. Every failure
+     is kept here, on the pool's own status line: nothing about the pool may
+     interrupt what the user is doing, and nothing about it may touch `start`
+     — a launch with a broken pool simply boots the slow way, which is what it
+     did before the pool existed. */
+  const startPool = useCallback(
+    async (size, mode, place, gpu) => {
+      setPoolBusy(true);
+      const res = await api("pool_start", size, mode, place, gpu);
+      setPoolError(res?.ok ? null : errText(res));
+      setPoolBusy(false);
+      await refreshPool();
+      return res;
+    },
+    [refreshPool]
+  );
+
+  const stopPool = useCallback(async () => {
+    setPoolBusy(true);
+    const res = await api("pool_stop");
+    setPoolError(res?.ok ? null : errText(res));
+    setPoolBusy(false);
+    await refreshPool();
+    return res;
+  }, [refreshPool]);
+
+  // First reading, as soon as the handshake says the feature exists. Everything
+  // after this is driven by the launch panel: a start, a stop, a settings
+  // change, or its own slow poll — never a timer in here.
+  useEffect(() => {
+    if (poolSupported) refreshPool();
+  }, [poolSupported, refreshPool]);
+
   const runSetup = useCallback(async () => {
     setSettingUp(true);
     const res = await api("engine_setup");
@@ -390,6 +441,13 @@ export function EngineProvider({ activeTab, showToast, children }) {
     busy,
     progress,
     settingUp,
+    pool,
+    poolSupported,
+    poolBusy,
+    poolError,
+    refreshPool,
+    startPool,
+    stopPool,
     health,
     issue,
     refreshList,

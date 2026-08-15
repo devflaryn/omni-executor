@@ -221,6 +221,16 @@ export default function AccountsView({ active, launch, onLaunch, showToast }) {
                 />
               </div>
 
+              {/* Only on an engine that has the command (engine.jsx gates on
+                  the handshake's advertised list). Its home is here, under the
+                  settings it is warmed for, because those settings are exactly
+                  what decides whether a warm instance is usable at all. */}
+              {engine.poolSupported && (
+                <div className="rule-t pt-3.5">
+                  <WarmPool active={active} launch={launch} onLaunch={onLaunch} />
+                </div>
+              )}
+
               <div className="flex flex-col gap-2">
                 <Button
                   variant="solid"
@@ -270,6 +280,179 @@ export default function AccountsView({ active, launch, onLaunch, showToast }) {
           }}
         />
       )}
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+
+/* Keep one instance warm.
+
+   The engine can hold instances pre-booted to the account-free ready point;
+   a launch then adopts one instead of booting. Measured on this box: 35-60 s
+   of boot against 0.093 s to adopt — and on Windows it is the only fast path
+   there is, because WHPX cannot snapshot a VM.
+
+   The control lives directly under Mode / Graphics / Place ID because those
+   settings decide whether a warm instance is usable AT ALL: a slot is only
+   adopted by a launch that resolves to the same machine, and the place sizes
+   it (the engine floors guest RAM per game — PS99 asks for 3072 MB). So this
+   warms the pool for the settings shown above it, re-warms when they change,
+   and never claims a slot is ready unless it was warmed for what the launch
+   bay says right now — the alternative is a panel reporting "instant" while
+   every launch quietly cold-boots. */
+function WarmPool({ active, launch, onLaunch }) {
+  const engine = useEngine();
+  const { doctor, pool, poolBusy, poolError, refreshPool, startPool, stopPool } = engine;
+
+  const enabled = Boolean(launch.keepWarm);
+  const mode = launch.mode;
+  const place = String(launch.place || "").trim();
+  // Normalised exactly as main.py normalises it. If the two sides disagreed
+  // about what "no policy" means, the receipt would never match the settings
+  // and the pool would re-warm itself forever.
+  const gpu = GPU_INFO[launch.gpu] ? launch.gpu : "";
+  const specKey = `${mode}|${place}|${gpu}`;
+
+  const warmedFor = pool?.warmed_for || null;
+  const warmedKey = warmedFor ? `${warmedFor.mode}|${warmedFor.place}|${warmedFor.gpu}` : null;
+  const matched = warmedKey !== null && warmedKey === specKey;
+  const managerDown = Boolean(pool?.configured) && pool?.manager_alive === false;
+  const needsRestart = Boolean(pool) && (!pool.configured || pool.manager_alive === false);
+
+  // What we last asked the backend to warm, and how many times. Both are refs:
+  // nothing here should re-render, and both survive a status poll.
+  const asked = useRef({ key: null, tries: 0 });
+  const autoStopped = useRef(false);
+
+  // Adopt the live pool's own receipt on arrival, so opening the app onto a
+  // pool that is already correct does not re-issue a start.
+  useEffect(() => {
+    if (asked.current.key === null && warmedKey && pool?.manager_alive) {
+      asked.current = { key: warmedKey, tries: 1 };
+    }
+  }, [pool, warmedKey]);
+
+  useEffect(() => {
+    if (!enabled) return undefined;
+    // Debounced, because Place ID is a free-text field: without this, typing
+    // one id would stop and re-warm the pool once per keystroke, and each of
+    // those is a real virtual machine powered off and booted again.
+    const timer = setTimeout(() => {
+      const first = asked.current.key !== specKey;
+      // One automatic retry per settings change, no more. A pool that will not
+      // come up must never become a subprocess every couple of seconds; the
+      // status line says what is wrong and the toggle is the retry.
+      const retry = needsRestart && !poolError && asked.current.tries < 2;
+      if (!first && !retry) {
+        refreshPool();
+        return;
+      }
+      asked.current = { key: specKey, tries: first ? 1 : asked.current.tries + 1 };
+      startPool(1, mode, place, gpu);
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [enabled, specKey, needsRestart, poolError, mode, place, gpu, refreshPool, startPool]);
+
+  /* The toggle is off, and a pool THIS app warmed is still configured — a stop
+     that did not land, or an app that went away before it could. Give the
+     memory back. Once per mount, and only when there is a receipt: a pool
+     somebody started from the CLI is not this app's to shut down. */
+  useEffect(() => {
+    if (enabled || autoStopped.current) return;
+    if (!pool?.configured || !pool.warmed_for) return;
+    autoStopped.current = true;
+    stopPool();
+  }, [enabled, pool, stopPool]);
+
+  /* The only timer. 30 s because nothing here moves faster than a boot, and
+     only while this panel is on screen and the pool is on; it dies with the
+     component. */
+  useEffect(() => {
+    if (!enabled || !active) return undefined;
+    const timer = setInterval(refreshPool, 30000);
+    return () => clearInterval(timer);
+  }, [enabled, active, refreshPool]);
+
+  const toggle = (on) => {
+    onLaunch({ ...launch, keepWarm: on });
+    if (on) {
+      autoStopped.current = false;
+      asked.current = { key: null, tries: 0 };
+    } else {
+      asked.current = { key: null, tries: 0 };
+      stopPool();
+    }
+  };
+
+  // `ready_matching`, never `ready` — and only when the pool was warmed for the
+  // settings above. A ready slot for other settings is invisible to a launch.
+  const ready = matched ? Number(pool?.ready_matching) || 0 : 0;
+
+  let tone = "off";
+  let status = "Off — every launch boots from cold";
+  if (enabled) {
+    if (poolError) {
+      tone = "fault";
+      status = `Couldn't keep one warm — ${poolError}`;
+    } else if (poolBusy || !pool) {
+      tone = "busy";
+      status = "Checking…";
+    } else if (pool.ok === false) {
+      tone = "fault";
+      status = errText(pool);
+    } else if (managerDown) {
+      // No count in this state, however many slots are up: nothing is tending
+      // them, so "instant" would go on being printed while the pool drains.
+      tone = "fault";
+      status = "The pool manager isn't running — switch this off and on again";
+    } else if (ready > 0) {
+      tone = "live";
+      status = `${ready} ready — the next launch is instant`;
+    } else if (warmedKey && !matched) {
+      tone = "busy";
+      status = "Re-warming for these settings…";
+    } else {
+      tone = "busy";
+      status = "Warming — this first boot still takes a few minutes";
+    }
+  } else if (pool?.configured && pool.warmed_for) {
+    // Off, but a pool THIS app warmed is still holding the memory (the same
+    // condition the auto-stop above acts on). Saying "off" here would be the
+    // one lie this panel can tell that costs gigabytes.
+    tone = poolError ? "fault" : "busy";
+    status = poolError
+      ? `A warm instance is still running — ${poolError}`
+      : "Off — shutting the warm instance down…";
+  }
+
+  const fits = Number.isFinite(doctor?.scratch_fits_instances)
+    ? doctor.scratch_fits_instances
+    : null;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <Toggle
+        id="launch-warm"
+        checked={enabled}
+        onChange={toggle}
+        label="Keep an instance warm"
+        hint="Pre-boots one now, so the next launch skips the boot entirely."
+      />
+      <div className="flex items-center gap-2">
+        <Lamp tone={tone} pulse={tone === "busy"} size={6} />
+        {/* The engine's own failures are prose and can run to paragraphs (a
+            missing base image prints the whole install checklist), so the line
+            stays one line and the full text lives in the tooltip. */}
+        <span title={status} className="truncate font-mono text-[11px] text-ink-3">
+          {status}
+        </span>
+      </div>
+      <p className="text-[11px] leading-snug text-ink-3">
+        A warm instance stays booted while it waits, holding its memory and its disk scratch
+        until you switch this off.
+        {fits != null && ` Free disk here fits about ${fits} instance${fits === 1 ? "" : "s"}.`}
+      </p>
     </div>
   );
 }

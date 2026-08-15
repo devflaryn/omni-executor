@@ -233,6 +233,16 @@ WATCHDOG_GRACE = 60
 # backstop" rule as start/stop applies.
 VIEW_TIMEOUT = 90
 
+# The warm pool's own budgets. Both commands this app runs are short by
+# construction: `pool start` writes the pool config and spawns a DETACHED
+# manager, and `pool status` reads JSON off disk. Neither waits for a boot —
+# that is `pool fill`, which blocks for the full 35-60 s per slot and is
+# therefore never called from here (see Api.pool_start).
+POOL_TIMEOUT = 90
+# `pool stop` powers off every live slot the polite way first (adb shutdown,
+# 60 s each, the same escalation as `stop`), so it needs room for all of them.
+POOL_STOP_TIMEOUT = 300
+
 
 def run_engine(args, progress=None, timeout=None):
     """Run an engine subcommand; return its stdout JSON normalized to a dict.
@@ -1088,6 +1098,7 @@ class Api:
         rep = run_engine(["version", "--json"], timeout=30)
         if isinstance(rep, dict):
             rep["missing_commands"] = self._missing_commands(rep)
+            rep["pool_supported"] = self._supports(rep, "pool")
         return rep
 
     # Engine subcommands this app invokes. Checked against the engine's own
@@ -1108,6 +1119,28 @@ class Api:
             return []
         have = {c for c in advertised if isinstance(c, str)}
         return [c for c in self._REQUIRED_COMMANDS if c not in have]
+
+    # OPTIONAL engine commands: used when the engine has them, and the feature
+    # disappears from the UI when it doesn't. Deliberately NOT in
+    # _REQUIRED_COMMANDS — an engine without `pool` is older, not broken, and
+    # listing it there would turn "no warm pool on this build" into the
+    # version-mismatch banner and a warning about an install that works.
+    _OPTIONAL_COMMANDS = ("pool",)
+
+    @staticmethod
+    def _supports(report, command):
+        """Does this engine advertise `command`?
+
+        Unknown counts as NO here, the opposite of _missing_commands. The
+        asymmetry is deliberate and follows from what each answer costs: for a
+        required command, guessing "missing" would put a false alarm in front
+        of a working install; for an optional one, guessing "present" would put
+        a button in front of the user that ends in an argparse error from a
+        subprocess. Every engine that has `pool` also reports its commands."""
+        advertised = report.get("commands") if isinstance(report, dict) else None
+        if not isinstance(advertised, list):
+            return False
+        return command in {c for c in advertised if isinstance(c, str)}
 
     def engine_doctor(self):
         """Readiness check: engine present, base images registered, QEMU/adb OK."""
@@ -1272,6 +1305,183 @@ class Api:
         result = run_engine(["remove", name, "--json"], progress=self._progress(name), timeout=300)
         self._push("accounts-changed", {})
         return result
+
+    # ---- warm pool ----
+    #
+    # N instances pre-booted to the account-free ready point, so a launch skips
+    # the boot entirely. Measured on this box: the boot stage of a cold farming
+    # launch is 35-60 s, adopting a warm slot is 0.093 s. WHPX cannot snapshot
+    # a VM on Windows, so a pool of live machines is the ONLY fast path there.
+
+    # A slot is a fully booted VM, so the ceiling here is a resource ceiling
+    # rather than an argparse one: each one costs ~2.2-3.2 GB of host RSS and
+    # ~1.3 GB of disk scratch while it waits. Four is already most of a normal
+    # machine; a mistyped 40 has to be refused, not dutifully passed on.
+    POOL_MAX_SIZE = 4
+
+    @staticmethod
+    def _pool_size(size):
+        """(size, None), or (None, error dict) for anything else.
+
+        Bools are rejected explicitly because `isinstance(True, int)` is True
+        in Python: a JS `true` arriving on this bridge would otherwise be
+        accepted as "keep 1 warm" from a caller that meant to pass a flag."""
+        if isinstance(size, bool):
+            n = None
+        elif isinstance(size, int):
+            n = size
+        elif isinstance(size, float) and size.is_integer():
+            n = int(size)      # JSON numbers cross the bridge as floats
+        elif isinstance(size, str) and size.strip().isdigit():
+            n = int(size.strip())
+        else:
+            n = None
+        if n is None or not 1 <= n <= Api.POOL_MAX_SIZE:
+            return None, {
+                "ok": False,
+                "error": "bad_pool_size",
+                "message": f"Keep between 1 and {Api.POOL_MAX_SIZE} instances "
+                           f"warm — each one is a running virtual machine.",
+            }
+        return n, None
+
+    def _pool_mode(self, mode):
+        """(mode, None), or (None, error dict).
+
+        Checked against the engine's OWN mode list rather than _FALLBACK_MODES,
+        because this decides what gets warmed for hours: a name a newer engine
+        added is worth warming, and a name it dropped must fail here with a
+        sentence, not three layers down as argparse's stderr in a subprocess
+        nobody sees. Aliases resolve first for the same reason as in
+        engine_start — settings.json can still name a retired preset."""
+        asked = mode.strip().lower() if isinstance(mode, str) else ""
+        if not asked:
+            return None, {
+                "ok": False,
+                "error": "bad_mode",
+                "message": "Pick a launch mode before keeping an instance warm "
+                           "— a slot is only usable by a launch in the same mode.",
+            }
+        resolved = RETIRED_MODES.get(asked, asked)
+        if resolved not in self.engine_modes():
+            return None, {
+                "ok": False,
+                "error": "bad_mode",
+                "message": f"Unknown launch mode {asked!r}. Choose Gaming or Farming.",
+            }
+        return resolved, None
+
+    def _pool_receipt(self):
+        """What THIS app last warmed the pool for, or None.
+
+        The receipt exists because the engine cannot answer the question. Its
+        pool records the RESOLVED machine (mode, mem, vCPU, panel...), and the
+        place id that chose that mem is not in it — so "is the warm pool still
+        the one my launch settings would use?" is only answerable against what
+        we asked for."""
+        try:
+            saved = self.get_settings().get("pool")
+        except Exception:  # noqa: BLE001 — a settings problem must not break the pool
+            return None
+        spec = saved.get("warmedFor") if isinstance(saved, dict) else None
+        return spec if isinstance(spec, dict) else None
+
+    def _remember_pool(self, spec, size=None):
+        """Record (or clear, with spec=None) the receipt. Best-effort, exactly
+        like the settings migration in get_settings(): an unwritable settings
+        file costs one extra re-warm later, and must not turn a pool that IS
+        running into an error the user has to read."""
+        try:
+            self.save_settings({"pool": {} if spec is None
+                                else {"warmedFor": spec, "size": size,
+                                      "at": time.time()}})
+        except OSError:
+            pass
+
+    def pool_status(self):
+        """What the pool is doing, plus this app's receipt for it.
+
+        The number that means "your next launch is instant" is
+        `ready_matching`, not `ready`: it counts only ready slots whose key
+        matches the pool's configured spec, i.e. the ones a launch can actually
+        adopt. The UI must show that one, and only when `warmed_for` still
+        matches the settings in the launch bay (see pool_start)."""
+        res = run_engine(["pool", "status", "--json"], timeout=POOL_TIMEOUT)
+        if isinstance(res, dict):
+            res["warmed_for"] = self._pool_receipt()
+        return res
+
+    def pool_start(self, size=1, mode=None, place=None, gpu=None):
+        """Keep `size` instances pre-booted for EXACTLY these launch settings.
+
+        `pool start`, never `pool fill`. Start writes the config, spawns the
+        detached manager and returns in a moment; fill boots the slots in the
+        calling process, which is this process, and would hold the UI thread
+        for the whole 35-60 s per slot.
+
+        THE MATCHING RULE, which is the entire point of the feature. A slot is
+        only ever adopted by a launch that resolves to the SAME machine, and
+        `--place` is part of that: the engine raises guest RAM to a per-game
+        floor (PS99 -> 3072 MB) and `mem` is hashed into the slot key. A pool
+        warmed without the place the user is about to launch is INVISIBLE to
+        that launch — every launch cold-boots while `pool status` cheerfully
+        reports slots ready. So the pool is warmed with the same mode/place/gpu
+        the launch bay is holding, and a change to any of them re-warms it.
+
+        RE-WARMING STOPS THE OLD POOL FIRST, and that is not tidiness. `pool
+        start` alone would only overwrite the pool's key; the manager's sweep
+        deletes DEAD slots only (verified liveness is its single gate on
+        deletion), so the slots warmed for the old settings would stay booted,
+        never be adopted by anything, and hold their ~2.2-3.2 GB of RAM and
+        ~1.3 GB of scratch until somebody went looking. A pool for settings
+        nobody is going to launch is pure cost, so it is never left running.
+        """
+        n, error = self._pool_size(size)
+        if error:
+            return error
+        mode, error = self._pool_mode(mode)
+        if error:
+            return error
+        place = str(place).strip() if place is not None else ""
+        # An unrecognised policy is dropped rather than forwarded, the same as
+        # engine_start — and it has to be the same, or the pool would be keyed
+        # on a display policy the launch never asks for.
+        gpu = gpu.strip().lower() if isinstance(gpu, str) else ""
+        if gpu not in self.GPU_POLICIES:
+            gpu = ""
+        wanted = {"mode": mode, "place": place, "gpu": gpu}
+
+        status = run_engine(["pool", "status", "--json"], timeout=POOL_TIMEOUT)
+        configured = status.get("configured") if isinstance(status, dict) else None
+        if configured and self._pool_receipt() != wanted:
+            # Something is warm for other settings (or for settings this app
+            # has no receipt for), and we are about to take the config over.
+            # Leaving those slots live would strand them: see the docstring.
+            run_engine(["pool", "stop", "--json"], timeout=POOL_STOP_TIMEOUT)
+            self._remember_pool(None)
+
+        args = ["pool", "start", "--size", str(n), "--mode", mode, "--json"]
+        if place:
+            args += ["--place", place]
+        if gpu:
+            args += ["--gpu", gpu]
+        res = run_engine(args, progress=self._progress("pool"), timeout=POOL_TIMEOUT)
+        if res.get("ok"):
+            self._remember_pool(wanted, n)
+        return {**res, "warmed_for": self._pool_receipt()}
+
+    def pool_stop(self):
+        """Stop the manager and power off the warm slots — the RAM and the
+        scratch come back now.
+
+        The receipt is cleared only on success. If the stop failed the slots
+        are still up, and forgetting that we warmed them is how a pool nobody
+        wants survives every later chance to notice it (the UI re-tries the
+        stop on mount whenever the toggle is off and a receipt exists)."""
+        res = run_engine(["pool", "stop", "--json"], timeout=POOL_STOP_TIMEOUT)
+        if res.get("ok"):
+            self._remember_pool(None)
+        return res
 
     # ---- viewer ----
 
