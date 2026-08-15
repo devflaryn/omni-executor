@@ -1502,6 +1502,19 @@ class Api:
             progress=self._progress(name),
             timeout=VIEW_TIMEOUT + WATCHDOG_GRACE)
 
+    def engine_hide(self, name):
+        """Hide an instance's window without stopping it.
+
+        The window's own X asks (hide or stop); this is the same 'hide' from
+        the app side, so a window that was hidden can always be brought back
+        by View without the user having to find it on the desktop.
+        """
+        error = self._bad_name(name)
+        if error:
+            return error
+        return run_engine(["view", name, "--hide", "--json"],
+                          timeout=VIEW_TIMEOUT)
+
     # ---- shutdown ----
 
     def _shutdown(self):

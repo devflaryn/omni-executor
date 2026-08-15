@@ -92,3 +92,50 @@ def test_bad_account_name_never_reaches_the_engine(engine):
     res = main.Api().engine_view("../etc; rm -rf")
     assert res["ok"] is False and res["error"] == "bad_account_name"
     assert calls == []
+
+
+HIDDEN = {"ok": True, "name": "alice", "viewer": "window", "hidden": True}
+
+
+def test_hide_runs_the_engines_view_command_with_hide(engine):
+    """Hiding is the same `view` command, with `--hide` -- not a separate
+    engine command -- so it stays a single call the same shape as View."""
+    calls, replies = engine
+    replies.append(HIDDEN)
+    main.Api().engine_hide("alice")
+    view = next(c for c in calls if c and c[0] == "view")
+    assert view[1] == "alice"
+    assert "--hide" in view and "--json" in view
+
+
+def test_hide_does_not_start_the_instance(engine):
+    """Hiding must never boot a stopped instance -- --start must not appear
+    on a hide call, the same discipline View has around --native."""
+    calls, replies = engine
+    replies.append(HIDDEN)
+    main.Api().engine_hide("alice")
+    assert all("--start" not in c for c in calls)
+
+
+def test_hide_is_a_single_call(engine):
+    calls, replies = engine
+    replies.append(HIDDEN)
+    main.Api().engine_hide("alice")
+    assert len([c for c in calls if c and c[0] == "view"]) == 1
+
+
+def test_the_engines_hide_answer_is_handed_back_untouched(engine):
+    calls, replies = engine
+    replies.append(HIDDEN)
+    assert main.Api().engine_hide("alice")["hidden"] is True
+
+    replies.append({"ok": False, "error": "not_running", "message": "boom"})
+    res = main.Api().engine_hide("alice")
+    assert res["ok"] is False and res["message"] == "boom"
+
+
+def test_hide_bad_account_name_never_reaches_the_engine(engine):
+    calls, _ = engine
+    res = main.Api().engine_hide("../etc; rm -rf")
+    assert res["ok"] is False and res["error"] == "bad_account_name"
+    assert calls == []
