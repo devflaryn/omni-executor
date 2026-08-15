@@ -59,6 +59,12 @@ DEFAULT_SETTINGS = {
     "sidebar": "expanded",
     "launch": {"mode": "playable", "multiInstance": False, "minimizeOnLaunch": False},
     "profile": {"name": "Guest", "tag": ""},
+    # Keep the app current without being asked. ON by default: a stale client
+    # is how a machine keeps a bug that was fixed weeks ago, and the two
+    # behaviours behind this flag are both deliberately unobtrusive — apply at
+    # LAUNCH, when nobody is mid-anything, and merely OFFER while the app is
+    # open. See Api._update_tick.
+    "autoUpdate": True,
 }
 
 
@@ -317,6 +323,12 @@ class Api:
     # on the user's other machine.
     HEARTBEAT_SECONDS = 25
 
+    # How often a RUNNING app asks whether a new build has been published.
+    # 30 minutes: the manifest is a few hundred bytes, and the thing being
+    # detected is a human publishing a release, which does not happen on a
+    # scale where a tighter poll would tell anyone anything sooner.
+    UPDATE_POLL_SECONDS = 1800
+
     def __init__(self):
         self._window = None  # set in main() after the window is created
         self._maximized = False
@@ -332,6 +344,8 @@ class Api:
         self._heartbeat_stop = threading.Event()
         self._heartbeat_thread = None
         self._updating = False
+        self._update_stop = threading.Event()
+        self._update_thread = None
 
     # ---- window controls (used by the custom title bar) ----
 
@@ -585,20 +599,147 @@ class Api:
         return updates.check()
 
     def _check_updates_on_launch(self):
-        """Fire the launch-time check on a background thread.
+        """Start the update watcher: check now, then keep checking.
 
         Off the startup path deliberately: the manifest is a network round trip
-        and the window must not wait on it. The result arrives as an event, so
-        a slow or unreachable server costs nothing visible."""
-        def _run():
+        and the window must not wait on it. Every result arrives as an event,
+        so a slow or unreachable server costs nothing visible."""
+        if self._update_thread and self._update_thread.is_alive():
+            return
+        self._update_thread = threading.Thread(target=self._update_watch_loop,
+                                               daemon=True)
+        self._update_thread.start()
+
+    def _update_watch_loop(self):
+        """Check at launch and every UPDATE_POLL_SECONDS after that.
+
+        A release published while someone has the app open used to be invisible
+        until they restarted — which, for the app most likely to be left open
+        for hours, meant the update banner was seen mainly by people who did
+        not need it. The loop is a daemon thread and every iteration is
+        wrapped: a check must never be able to end the process it is checking
+        for.
+        """
+        first = True
+        while not self._update_stop.is_set():
             try:
-                import updates
-                report = updates.check()
-                report["staged"] = updates.staged_info()
-                self._push("update-status", report)
-            except Exception as exc:  # noqa: BLE001 — a check must never break a launch
+                self._update_tick(launch=first)
+            except Exception as exc:  # noqa: BLE001 — never break a running app
                 self._push("update-status", {"ok": False, "error": str(exc)})
-        threading.Thread(target=_run, daemon=True).start()
+            first = False
+            self._update_stop.wait(self.UPDATE_POLL_SECONDS)
+
+    def _update_tick(self, launch=False):
+        """One check, plus whatever it implies.
+
+        `launch` distinguishes the two behaviours the product wants, and the
+        distinction is about what the user is in the middle of:
+
+          at launch    nobody is doing anything yet, so an update applies
+                       ITSELF — download, swap, relaunch — and the user simply
+                       arrives on the new version. That is what "auto-update"
+                       has to mean to be worth having; a prompt at startup is
+                       the thing people click past.
+          while open   they ARE doing something. Downloading is still
+                       automatic (it is invisible and makes the restart
+                       instant), but the restart is theirs to schedule: this
+                       process holds the presence lease and the editor buffer.
+                       The UI gets a banner and a button, never a surprise.
+        """
+        import updates
+        report = updates.check()
+        report["staged"] = updates.staged_info()
+        report["autoUpdate"] = self._auto_update_enabled()
+        self._push("update-status", report)
+
+        if not report.get("ok") or not report.get("app", {}).get("update"):
+            return
+        if not report["app"].get("canApply") or not report["autoUpdate"]:
+            return
+
+        version = report["app"].get("available")
+        staged = report.get("staged")
+        if not staged or staged.get("version") != version:
+            if self._updating:
+                return
+            staged = self._stage_app_quietly(version)
+            if not staged:
+                return
+        if launch and self._may_auto_apply(version):
+            self._push("update-applying", {"version": version})
+            self.update_app_restart()
+
+    def _stage_app_quietly(self, version):
+        """Download and stage a build with no user interaction. Returns the
+        staged info dict, or None if it did not land.
+
+        SYNCHRONOUS, unlike update_app(): the caller is already on the watcher
+        thread and needs to know whether to go on to apply it. `_updating` is
+        still held so the Settings buttons cannot start a second download over
+        the top of this one."""
+        import updates
+        self._updating = True
+        try:
+            updates.stage_app(
+                progress=lambda p: self._push("update-progress",
+                                              {**p, "auto": True}))
+            info = updates.staged_info()
+            if info:
+                self._push("update-done", {"scope": "app", "auto": True,
+                                           "staged": info})
+            return info
+        except Exception as exc:  # noqa: BLE001
+            # Quiet by design: a failed background download is not something to
+            # interrupt anyone about, and the next tick will try again. The UI
+            # still hears about it so Settings can show it.
+            self._push("update-error", {"scope": "app", "auto": True,
+                                        "message": str(exc)})
+            return None
+        finally:
+            self._updating = False
+
+    def _auto_update_enabled(self):
+        try:
+            return self.get_settings().get("autoUpdate", True) is not False
+        except Exception:  # noqa: BLE001
+            return True
+
+    def _may_auto_apply(self, version):
+        """Whether to swap to `version` without being asked.
+
+        The guard here is against a RESTART LOOP, and it is the whole reason
+        this is not just `if launch: apply`. The swap ends with the new build
+        relaunching, which runs this same code again — so if a build is
+        published that cannot actually replace the running one (a locked
+        directory, a partial copy that restores the backup, a version that
+        reports itself as the old one), the app would download, swap, come
+        back as the old version, and do it again, forever, with the user
+        watching their window disappear every thirty seconds.
+
+        So an automatic apply is attempted ONCE per version per machine. The
+        attempt is recorded BEFORE it is made, not after: a swap that takes the
+        process down does not get to come back and write the receipt. If the
+        app is still on the old version next launch, the banner offers the
+        update and a human decides, which is the correct place for a broken
+        update to stop.
+        """
+        import updates
+        try:
+            marker = bootstrap.runtime_dir() / "auto-update-attempted.json"
+            seen = {}
+            if marker.exists():
+                seen = json.loads(marker.read_text(encoding="utf-8"))
+            if seen.get("version") == version:
+                return False
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(json.dumps(
+                {"version": version, "from": updates.APP_VERSION,
+                 "at": time.time()}), encoding="utf-8")
+            return True
+        except OSError:
+            # An unwritable runtime dir means the receipt cannot be kept, and
+            # without the receipt there is no loop protection. Do not apply.
+            return False
 
     def update_runtime(self):
         """Download the changed base images/offsets.
@@ -1101,6 +1242,9 @@ class Api:
         lease simply lapses ~90 s later, which is the honest answer for
         "nothing is reporting on this any more"."""
         self._heartbeat_stop.set()
+        # Stop the update watcher too, so a 30-minute wait cannot hold the
+        # interpreter open past the window closing.
+        self._update_stop.set()
 
 
 def _show_macos_traffic_lights(window):

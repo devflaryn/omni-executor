@@ -9,7 +9,7 @@
               without being asked. */
 
 import { useCallback, useEffect, useState } from "react";
-import { api, onEngineEvent } from "../api.js";
+import { api, onEngineEvent, saveSettings } from "../api.js";
 import { Button, Lamp, Panel, PanelHead } from "./ui.jsx";
 import { CpuIcon } from "./icons.jsx";
 
@@ -25,6 +25,9 @@ export function useUpdates() {
   const [progress, setProgress] = useState(null);
   const [busy, setBusy] = useState(null); // "runtime" | "app" | null
   const [error, setError] = useState(null);
+  // The app is about to replace itself and relaunch — the launch-time
+  // auto-update. Terminal: nothing follows it in this process.
+  const [applying, setApplying] = useState(false);
 
   const refresh = useCallback(async () => {
     const res = await api("update_check");
@@ -39,6 +42,11 @@ export function useUpdates() {
           setStatus(payload);
         } else if (event === "update-progress") {
           setProgress(payload);
+          // A background download the user never asked for still has to look
+          // like something is happening rather than like a stall.
+          if (payload?.auto) setBusy("app");
+        } else if (event === "update-applying") {
+          setApplying(true);
         } else if (event === "update-done") {
           setProgress(null);
           setBusy(null);
@@ -47,7 +55,10 @@ export function useUpdates() {
         } else if (event === "update-error") {
           setProgress(null);
           setBusy(null);
-          setError(payload?.message || "Update failed");
+          // A failed BACKGROUND download is not the user's problem: nobody
+          // asked for it, the next check retries, and an error bar for it
+          // would be the app complaining about its own housekeeping.
+          if (!payload?.auto) setError(payload?.message || "Update failed");
         }
       }),
     [refresh]
@@ -78,36 +89,91 @@ export function useUpdates() {
     if (!res?.ok) setError(res?.message || "Couldn't restart");
   }, []);
 
-  return { status, progress, busy, error, refresh, startRuntime, startApp, restartIntoUpdate };
+  const setAutoUpdate = useCallback(
+    async (on) => {
+      await saveSettings({ autoUpdate: on });
+      refresh();
+    },
+    [refresh]
+  );
+
+  return {
+    status,
+    progress,
+    busy,
+    error,
+    applying,
+    refresh,
+    startRuntime,
+    startApp,
+    restartIntoUpdate,
+    setAutoUpdate,
+  };
 }
 
 /** One line above the content when something is out of date. Deliberately not
-    a modal: an update is never so urgent that it should take the app away. */
+    a modal: an update is never so urgent that it should take the app away.
+
+    The state that matters most is STAGED — a new build is already downloaded
+    and one restart away. With auto-update on, that is the only update state a
+    user normally sees at all: the check, the download and (at launch) the swap
+    all happen without them. While the app is open the restart stays theirs to
+    schedule, because this process holds the presence lease and the editor
+    buffer, so the banner says exactly that and offers exactly one button. */
 export function UpdateBanner({ updates, onOpenSettings }) {
-  const { status, progress, busy, error, startApp, restartIntoUpdate } = updates;
+  const { status, progress, busy, error, applying, startApp, restartIntoUpdate } = updates;
   const runtime = status?.runtime?.update;
   const app = status?.app?.update;
   const staged = status?.staged;
 
-  if (!runtime && !app && !staged && !busy) return null;
-
-  const what = staged
-    ? `Version ${staged.version} is ready to install`
-    : busy === "runtime"
-      ? "Updating base images…"
-      : busy === "app"
-        ? "Downloading the new version…"
-        : app && runtime
-          ? `App ${status.app.available} and new base images are available`
-          : app
-            ? `Version ${status.app.available} is available`
-            : `New base images are available (${fmtBytes(status.runtime.bytes)})`;
+  if (!runtime && !app && !staged && !busy && !applying) return null;
 
   const pct = progress?.percent ? Math.round(progress.percent) : null;
+  const auto = status?.autoUpdate !== false;
+
+  // Applying is terminal — the window is about to close and reopen on the new
+  // version — so it outranks everything and offers no button to press.
+  if (applying) {
+    return (
+      <Strip tone="busy">
+        <span className="truncate text-[12px] text-ink">
+          Updating to {status?.app?.available}… the app will restart on its own.
+        </span>
+      </Strip>
+    );
+  }
+
+  if (staged) {
+    return (
+      <Strip tone="live">
+        <span className="truncate text-[12px] text-ink">
+          <span className="font-medium">Version {staged.version} is ready.</span>{" "}
+          <span className="text-ink-2">Restart to update.</span>
+        </span>
+        <Button variant="solid" size="sm" className="ml-auto shrink-0" onClick={restartIntoUpdate}>
+          Restart now
+        </Button>
+      </Strip>
+    );
+  }
+
+  const what = busy === "runtime"
+    ? "Updating base images…"
+    : busy === "app"
+      ? `Downloading version ${status?.app?.available ?? ""}…`
+      : app && runtime
+        ? `App ${status.app.available} and new base images are available`
+        : app
+          ? `Version ${status.app.available} is available`
+          : `New base images are available (${fmtBytes(status.runtime.bytes)})`;
+
+  // With auto-update on, an app-only update needs no button: it is already
+  // downloading, and a "Download" button that starts a download already in
+  // progress is a button that lies.
+  const selfServing = app && !runtime && auto;
 
   return (
-    <div className="rule-b flex items-center gap-3 bg-accent/8 px-4 py-2">
-      <Lamp tone={busy ? "busy" : "live"} pulse={Boolean(busy)} size={6} />
+    <Strip tone={busy ? "busy" : "live"} pulse={Boolean(busy)}>
       <span className="truncate text-[12px] text-ink">
         {error || what}
         {pct != null && <span className="ml-2 font-mono text-ink-3">{pct}%</span>}
@@ -117,22 +183,42 @@ export function UpdateBanner({ updates, onOpenSettings }) {
           switched tabs — and did nothing visible at all when Settings was
           already open. Only "Details" navigates, because that is what it
           means. */}
-      <Button
-        size="sm"
-        className="ml-auto shrink-0"
-        disabled={Boolean(busy)}
-        onClick={staged ? restartIntoUpdate : app && !runtime ? startApp : onOpenSettings}
-      >
-        {staged ? "Install and restart" : busy ? "Details" : app && !runtime ? "Download" : "Update"}
-      </Button>
+      {!selfServing && (
+        <Button
+          size="sm"
+          className="ml-auto shrink-0"
+          disabled={Boolean(busy)}
+          onClick={app && !runtime ? startApp : onOpenSettings}
+        >
+          {busy ? "Details" : app && !runtime ? "Download" : "Update"}
+        </Button>
+      )}
+    </Strip>
+  );
+}
+
+function Strip({ tone, pulse, children }) {
+  return (
+    <div className="rule-b flex items-center gap-3 bg-accent/8 px-4 py-2">
+      <Lamp tone={tone} pulse={pulse} size={6} />
+      {children}
     </div>
   );
 }
 
 /** The full control, in Settings. */
 export default function UpdatePanel({ updates, showToast }) {
-  const { status, progress, busy, error, refresh, startRuntime, startApp, restartIntoUpdate } =
-    updates;
+  const {
+    status,
+    progress,
+    busy,
+    error,
+    refresh,
+    startRuntime,
+    startApp,
+    restartIntoUpdate,
+    setAutoUpdate,
+  } = updates;
   const [checking, setChecking] = useState(false);
 
   const checkNow = async () => {
@@ -176,6 +262,22 @@ export default function UpdatePanel({ updates, showToast }) {
           <Row label="App version" value={app?.current ?? "—"} />
           <Row label="Latest" value={app?.available ?? "—"} />
         </dl>
+
+        <label className="flex cursor-pointer items-start gap-3">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={status?.autoUpdate !== false}
+            onChange={(e) => setAutoUpdate(e.target.checked)}
+          />
+          <span className="text-[12px] leading-snug text-ink">
+            Update automatically
+            <span className="mt-0.5 block text-[11px] text-ink-3">
+              Installs a new version on launch, when nothing is running yet. While the app is
+              open it only downloads — you choose when to restart.
+            </span>
+          </span>
+        </label>
 
         {status?.ok === false && (
           <p className="text-[11px] text-ink-3">
@@ -227,11 +329,11 @@ export default function UpdatePanel({ updates, showToast }) {
               Version {staged.version} is downloaded and ready.
             </p>
             <p className="mb-3 text-[11px] leading-snug text-ink-3">
-              Installing closes this window and reopens it on the new version. Running
+              Restarting closes this window and reopens it on the new version. Running
               instances are unaffected — they are separate processes and keep running.
             </p>
             <Button variant="solid" size="sm" onClick={restartIntoUpdate}>
-              Install and restart
+              Restart now
             </Button>
           </div>
         )}
