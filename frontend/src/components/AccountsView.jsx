@@ -164,18 +164,17 @@ export default function AccountsView({ active, launch, onLaunch, showToast }) {
                 <p className="text-[11px] leading-snug text-ink-3">{describeMode(launch.mode).note}</p>
               </Field>
 
-              {/* Farming is headless by definition — that is most of what
-                  makes it farming — so none of these four options can change
-                  anything about it. A dropdown that cannot take effect is
-                  worse than no dropdown: it invites a choice, then ignores it.
-                  Gaming is where the trade is real, so that is where it lives. */}
-              {launch.mode === "farming" ? (
-                <Field label="Graphics">
-                  <p className="text-[11px] leading-snug text-ink-3">
-                    Farming always runs headless. Switch to Gaming to choose how it renders.
-                  </p>
-                </Field>
-              ) : (
+              {/* This used to be hidden for farming, on the grounds that
+                  farming is headless by definition so the choice could not
+                  take effect. That stopped being true: measured 2026-08-15 on
+                  PS99, three quarters of a software farming instance's CPU is
+                  llvmpipe rasterising frames nobody looks at (141% -> 72%
+                  guest CPU once the host GPU does it), so farming now defaults
+                  to `auto` and takes the GPU through a window it then hides.
+                  Nothing appears on screen either way — what the setting now
+                  trades is CPU against the VNC-based capture tools, which is a
+                  real choice and belongs to the user. */}
+              {(
                 <Field label="Graphics" htmlFor="launch-gpu">
                   <select
                     id="launch-gpu"
