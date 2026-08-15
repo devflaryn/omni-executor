@@ -102,7 +102,9 @@ need_brew python3 python
 say "3. Python environment"
 PY="$OE/.venv/bin/python"
 if [ -x "$PY" ]; then
-  ok "venv — $($PY -V 2>&1)"
+  # "$PY" quoted: the default checkout path is ~/Desktop/Omni Apps/…, and an
+  # unquoted expansion split it at the space and reported a missing /Users/…/Omni
+  ok "venv — $("$PY" -V 2>&1)"
 elif [ "$CHECK_ONLY" = 1 ]; then
   bad "no .venv"
 else
