@@ -176,7 +176,11 @@ Android's one-time dexopt — allow **~3–15 min**. Ends powered off.
 Cold-boots the instance **headless and detached** — the command returns
 immediately; the VM is not tied to the calling process (PID recorded in
 `accounts/<name>/run.json`). Boot to game ≈ 35 s.
-- `--mode playable|hard|brutal` — RAM/CPU tier (see §7). Default playable.
+- `--mode gaming|farming` — what the instance is FOR (see §7). Default
+  `gaming`. The retired names `playable`/`hard`/`brutal` are still accepted
+  and resolve to `gaming`.
+- `--gpu auto|headless|window|off` — how hard to try for GPU rendering (§7).
+- `--panel WxH|720p|1080p|…` — guest display size for this boot.
 - `--mem MB` — override guest RAM.
 - `--wait` — block until `sys.boot_completed=1` (adb readiness — nothing
   display-dependent), then verify the ARM bridge. Hard timeout: 360 s
@@ -318,24 +322,53 @@ the LAN. (Also recorded as HARD CONSTRAINT #4 in HANDOFF.md.)
 
 ---
 
-## 7. Performance modes and capacity
+## 7. Modes, the GPU, and capacity
 
-Modes are pure RAM/CPU tiers (all headless; counts NEVER capped — host
-free RAM decides):
+**Two modes.** They are not RAM tiers, they are opposite jobs:
 
-| Mode       | Guest RAM | vCPUs | Use |
-|------------|-----------|-------|-----|
-| `playable` | 4 GB      | 4     | default, most comfortable |
-| `hard`     | 3 GB      | 4     | more instances |
-| `brutal`   | 2 GB      | 2     | max instances |
+| Mode      | Guest RAM | vCPUs | GPU policy | Use |
+|-----------|-----------|-------|-----------|-----|
+| `gaming`  | up to 4 GB (host-sized, WHPX-capped) | 4 | `auto` | one instance, maximum frames |
+| `farming` | 2 GB, ballooned to ~896 MB | 1 (2 on x86) | `headless` | many instances, minimum footprint |
 
-Measured on the 32 GB Windows host (Roblox running): ~3.2 GB host-resident
-per instance; **~4–5 concurrent** with normal desktop apps open, **~7–8**
-with them closed. Keep ~2 GB OS headroom; stop adding when free RAM nears
-~3 GB. On Windows/WHPX guest-side trims do NOT reduce host RSS (QEMU
-touches its full `-m`); host-RAM density is what the Linux/KSM port is
-for. Boot is ~35 s cold; instances always cold-boot (no snapshots — by
-design, do not re-add).
+`playable`, `hard` and `brutal` were retired — they were `gaming` with
+different numbers, and `--mem`/`--smp` already say that. The names are still
+accepted so a client that persisted one keeps working.
+
+**The GPU policy** (`--gpu`, config `qemu.gpu`, env `OMNI_GPU`):
+
+| | |
+|---|---|
+| `auto` (default) | reach the GPU whatever it takes, preferring no window |
+| `headless` | never a window; keeps the VNC viewer; GPU only if it can be had windowless |
+| `window` | always open a native QEMU window |
+| `off` | software rendering, headless |
+
+**QEMU refuses a VNC server beside a GL WINDOW** ("Display vnc is incompatible
+with the GL context" — re-verified on 11.0.50 across gtk/sdl × gl=on/es/core).
+So on a host where a window is the only way to a GL context, `auto` and
+`window` cost you `view`, `capture` and autocap — but not `screenshot`, which
+goes through adb.
+
+Whether a host can render **windowless** on the GPU (`-display egl-headless`)
+is a per-platform fact, not a flag: Linux yes, Windows no. On Windows the guest
+renders on the GPU under egl-headless and never scans out — SET_SCANOUT is
+rejected with ERR_INVALID_RESOURCE_ID, `totalFrames = 0`, black screen
+(measured three ways, 2026-08-15). So Windows gets the window under `auto`.
+
+**Measured on the 32 GB Windows host (i7-13700F, RTX 4060), PS99, 1280x800:**
+
+| | |
+|---|---|
+| software (llvmpipe) | 3.2 fps |
+| GPU (virgl, window) | 24.2 fps |
+| cold boot to in-game | 47–90 s |
+
+**No snapshots on Windows, and this is now a measured fact rather than a
+design choice:** QEMU/WHPX registers a migration blocker ("non-migratable
+CPUID feature support, dirty memory tracking support, and XSAVE/XRSTOR
+support"), so the warm-boot cache cannot be populated there at all. It works
+on KVM/HVF. See `omnidroid/migfile.py`.
 
 ---
 
@@ -343,7 +376,7 @@ design, do not re-add).
 
 ### Dev: test a game build on a fresh instance
 ```bash
-qemu-manager test-apk t1 --apk mygame.apk --mode hard
+qemu-manager test-apk t1 --apk mygame.apk --mode gaming
 # -> one JSON line; then poke it:
 qemu-manager screenshot t1
 qemu-manager logcat t1 --tag OmniKiosk

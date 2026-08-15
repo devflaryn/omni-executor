@@ -19,17 +19,55 @@ const EXPECTED_CONTRACT = "1.0";
 // engine_modes() is the source of truth for which ids exist; this only
 // prettifies the ones we know, so a new engine build can surface a new mode
 // without a frontend change.
+// Two modes, and that is the whole list. `playable`, `hard` and `brutal` were
+// retired in the engine (they were all "gaming with different numbers"); they
+// stay here only so an account whose saved launch settings still name one
+// renders as something other than a raw id.
 const MODE_INFO = {
-  playable: { label: "Playable", spec: "4 GB · 4 CPU", note: "Default. Smoothest gameplay." },
-  hard: { label: "Hard", spec: "3 GB · 4 CPU", note: "Leaner memory, same cores." },
-  brutal: { label: "Brutal", spec: "2 GB · 2 CPU", note: "Minimum footprint." },
-  farming: { label: "Farming", spec: "tuned", note: "Optimised for unattended automation." },
+  gaming: {
+    label: "Gaming",
+    spec: "4 GB · 4 CPU · GPU",
+    note: "Default. Everything the host can give one instance.",
+  },
+  farming: {
+    label: "Farming",
+    spec: "2 GB · low RAM",
+    note: "Unattended. Squeezed for running many at once.",
+  },
+  playable: { label: "Gaming", spec: "4 GB · 4 CPU · GPU", note: "Renamed to Gaming." },
+  hard: { label: "Gaming", spec: "4 GB · 4 CPU · GPU", note: "Retired — runs as Gaming." },
+  brutal: { label: "Gaming", spec: "4 GB · 4 CPU · GPU", note: "Retired — runs as Gaming." },
 };
 
-const FALLBACK_MODES = Object.keys(MODE_INFO);
+const FALLBACK_MODES = ["gaming", "farming"];
 
 export function describeMode(id) {
   return MODE_INFO[id] || { label: id, spec: "", note: "" };
+}
+
+// The display/acceleration setting. `auto` is right for almost everyone: you
+// never see a QEMU window either way, because where a window is the only route
+// to a GL context it is opened HIDDEN and the viewer hosts it (measured 58 fps
+// embedded, against 3.2 with software rendering). The other three exist for
+// hosts and situations where that trade should be made differently.
+export const GPU_INFO = {
+  auto: {
+    label: "Automatic (recommended)",
+    note: "Hardware rendering, and you still only ever see this app's viewer.",
+  },
+  headless: {
+    label: "Software rendering",
+    note: "No GPU. Much slower, but the lightest possible on the host — what farming uses.",
+  },
+  window: {
+    label: "Show the QEMU window",
+    note: "For debugging: puts QEMU's own window on screen instead of hiding it.",
+  },
+  off: { label: "No acceleration", note: "Software rendering, GPU untouched." },
+};
+
+export function describeGpu(id) {
+  return GPU_INFO[id] || { label: id, note: "" };
 }
 
 function normalizeModes(list) {
@@ -169,7 +207,7 @@ export function EngineProvider({ activeTab, showToast, children }) {
         return;
       }
       setBusyFor(name, "Starting");
-      const res = await api("engine_start", name, launch.mode, launch.place);
+      const res = await api("engine_start", name, launch.mode, launch.place, launch.gpu);
       setBusyFor(name, null);
       clearProgress(name);
       if (res.ok) {

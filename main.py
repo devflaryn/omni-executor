@@ -57,7 +57,7 @@ DEFAULT_SETTINGS = {
     "theme": "dark",
     "activeTab": "editor",
     "sidebar": "expanded",
-    "launch": {"mode": "playable", "multiInstance": False, "minimizeOnLaunch": False},
+    "launch": {"mode": "gaming", "multiInstance": False, "minimizeOnLaunch": False},
     "profile": {"name": "Guest", "tag": ""},
     # Keep the app current without being asked. ON by default: a stale client
     # is how a machine keeps a bug that was fixed weeks ago, and the two
@@ -1021,7 +1021,11 @@ class Api:
                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         return {"ok": True}
 
-    _FALLBACK_MODES = ["playable", "hard", "brutal", "farming"]
+    # Two modes. The engine reports the same pair from `version --json`; this
+    # only covers an engine too old to report any. The retired names
+    # (playable/hard/brutal) are still ACCEPTED by the engine as aliases, which
+    # is what keeps a saved setting from an older app working after an update.
+    _FALLBACK_MODES = ["gaming", "farming"]
 
     @staticmethod
     def _bad_name(name):
@@ -1167,14 +1171,27 @@ class Api:
         modes = rep.get("modes") if isinstance(rep, dict) else None
         return modes if isinstance(modes, list) and modes else list(self._FALLBACK_MODES)
 
-    def engine_start(self, name, mode=None, place=None):
-        """Cold-boot an instance headless and detached (returns pid + ports)."""
+    GPU_POLICIES = ("auto", "headless", "window", "off")
+
+    def engine_start(self, name, mode=None, place=None, gpu=None):
+        """Cold-boot an instance detached (returns pid + ports).
+
+        `gpu` is the display/acceleration policy (see the engine's `--gpu`).
+        It is offered in the UI because on some hosts it is a REAL trade the
+        user has to make and not something this app can decide for them: QEMU
+        refuses a VNC server beside a GL window, so on a host where a window is
+        the only route to a GL context, `auto` buys ~24 fps and costs the
+        viewer, while `headless` keeps the viewer at ~3 fps. Validated here
+        rather than passed through, so a stale setting cannot turn into an
+        argparse error from a subprocess."""
         error = self._bad_name(name)
         if error:
             return error
         args = ["start", name, "--json", "--timeout", str(BOOT_TIMEOUT)]
         if isinstance(mode, str) and mode.strip():
             args += ["--mode", mode.strip()]
+        if isinstance(gpu, str) and gpu.strip().lower() in self.GPU_POLICIES:
+            args += ["--gpu", gpu.strip().lower()]
         if place is not None and str(place).strip():
             args += ["--place", str(place).strip()]
         result = run_engine(args, progress=self._progress(name),

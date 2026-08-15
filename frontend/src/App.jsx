@@ -18,7 +18,7 @@ const NAV = [
   { id: "settings", label: "Settings", Icon: GearIcon, hint: "3" },
 ];
 
-const DEFAULT_LAUNCH = { mode: "playable", place: "", multiInstance: false };
+const DEFAULT_LAUNCH = { mode: "gaming", gpu: "auto", place: "", multiInstance: false };
 const DEFAULT_PROFILE = { name: "Guest", tag: "" };
 
 export default function App() {

@@ -1,7 +1,7 @@
 /* Instances panel: one row per account, one launch bay on the right. */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { describeMode, errText, useEngine } from "../engine.jsx";
+import { GPU_INFO, describeGpu, describeMode, errText, useEngine } from "../engine.jsx";
 import {
   Button,
   Field,
@@ -145,7 +145,7 @@ export default function AccountsView({ active, launch, onLaunch, showToast }) {
           <Panel className="animate-rise overflow-hidden">
             <PanelHead icon={RocketIcon} title="Launch" />
             <div className="flex flex-col gap-4 p-3.5">
-              <Field label="Performance mode" htmlFor="launch-mode">
+              <Field label="Mode" htmlFor="launch-mode">
                 <select
                   id="launch-mode"
                   value={launch.mode}
@@ -162,6 +162,22 @@ export default function AccountsView({ active, launch, onLaunch, showToast }) {
                   })}
                 </select>
                 <p className="text-[11px] leading-snug text-ink-3">{describeMode(launch.mode).note}</p>
+              </Field>
+
+              <Field label="Graphics" htmlFor="launch-gpu">
+                <select
+                  id="launch-gpu"
+                  value={launch.gpu || "auto"}
+                  onChange={(e) => onLaunch({ ...launch, gpu: e.target.value })}
+                  className="input cursor-pointer"
+                >
+                  {Object.keys(GPU_INFO).map((id) => (
+                    <option key={id} value={id}>
+                      {describeGpu(id).label}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[11px] leading-snug text-ink-3">{describeGpu(launch.gpu || "auto").note}</p>
               </Field>
 
               <Field
