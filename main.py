@@ -67,6 +67,18 @@ DEFAULT_SETTINGS = {
     "autoUpdate": True,
 }
 
+# COMPATIBILITY SHIM, NOT A FEATURE. The engine offers two presets, `gaming`
+# and `farming`; `playable`/`hard`/`brutal` were retired (they were `gaming`
+# with different numbers). But settings.json OUTLIVES the update, and installed
+# 1.0.14 clients persisted `"mode": "playable"` — so after updating, the app
+# hands the engine a name argparse has never heard of and the user gets a
+# subprocess error they can neither read nor act on. Map the dead names onto
+# the live one instead. Nothing may OFFER these names: get_settings() rewrites
+# a stale setting the first time it reads one, so each install stops needing
+# this after one run, and the whole map can be deleted once no client that
+# predates the two-preset release is still in the field.
+RETIRED_MODES = {"playable": "gaming", "hard": "gaming", "brutal": "gaming"}
+
 
 def config_dir() -> Path:
     """Per-user config directory following each OS's convention."""
@@ -383,17 +395,37 @@ class Api:
             saved = {}
         if not isinstance(saved, dict):
             saved = {}
-        return {**DEFAULT_SETTINGS, **saved}
+        settings = {**DEFAULT_SETTINGS, **saved}
+        # Retire a dead preset name at the one point it enters the app, and
+        # write the fix straight back. Translating it silently on every launch
+        # instead would keep the RETIRED_MODES shim load-bearing forever, when
+        # it is only meant to survive the first run after an update. The write
+        # is best-effort: a settings file that can't be written must not stop
+        # the app reading the settings it already has.
+        launch = settings.get("launch")
+        stale = launch.get("mode") if isinstance(launch, dict) else None
+        if isinstance(stale, str) and stale in RETIRED_MODES:
+            settings["launch"] = {**launch, "mode": RETIRED_MODES[stale]}
+            try:
+                self._write_settings(settings)
+            except OSError:
+                pass
+        return settings
+
+    @staticmethod
+    def _write_settings(settings):
+        """Write settings.json via a temp file, so a crash mid-write can't
+        corrupt it."""
+        tmp = SETTINGS_FILE.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+        tmp.replace(SETTINGS_FILE)
 
     def save_settings(self, settings):
         current = self.get_settings()
         if isinstance(settings, dict):
             current.update(settings)
-        # Write to a temp file first so a crash mid-write can't corrupt settings.
-        tmp = SETTINGS_FILE.with_suffix(".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(current, f, indent=2)
-        tmp.replace(SETTINGS_FILE)
+        self._write_settings(current)
         return current
 
     # ---- remote execute (Editor tab) ----
@@ -1022,9 +1054,9 @@ class Api:
         return {"ok": True}
 
     # Two modes. The engine reports the same pair from `version --json`; this
-    # only covers an engine too old to report any. The retired names
-    # (playable/hard/brutal) are still ACCEPTED by the engine as aliases, which
-    # is what keeps a saved setting from an older app working after an update.
+    # only covers an engine too old to report any. It doubles as the set
+    # engine_start() accepts, so a name that is neither of these nor a
+    # RETIRED_MODES alias is refused here rather than three layers down.
     _FALLBACK_MODES = ["gaming", "farming"]
 
     @staticmethod
@@ -1183,13 +1215,26 @@ class Api:
         the only route to a GL context, `auto` buys ~24 fps and costs the
         viewer, while `headless` keeps the viewer at ~3 fps. Validated here
         rather than passed through, so a stale setting cannot turn into an
-        argparse error from a subprocess."""
+        argparse error from a subprocess.
+
+        `mode` gets the same treatment, and needs it more: settings.json can
+        name a preset that no longer exists (see RETIRED_MODES)."""
         error = self._bad_name(name)
         if error:
             return error
         args = ["start", name, "--json", "--timeout", str(BOOT_TIMEOUT)]
         if isinstance(mode, str) and mode.strip():
-            args += ["--mode", mode.strip()]
+            asked = mode.strip().lower()
+            # Resolve the alias BEFORE argv, so what we launch, what we report
+            # in the lease, and what the engine records all say the live name.
+            mode = RETIRED_MODES.get(asked, asked)
+            if mode not in self._FALLBACK_MODES:
+                return {
+                    "ok": False,
+                    "error": "bad_mode",
+                    "message": f"Unknown launch mode {asked!r}. Choose Gaming or Farming.",
+                }
+            args += ["--mode", mode]
         if isinstance(gpu, str) and gpu.strip().lower() in self.GPU_POLICIES:
             args += ["--gpu", gpu.strip().lower()]
         if place is not None and str(place).strip():

@@ -19,30 +19,30 @@ const EXPECTED_CONTRACT = "1.0";
 // engine_modes() is the source of truth for which ids exist; this only
 // prettifies the ones we know, so a new engine build can surface a new mode
 // without a frontend change.
-// Two modes, and that is the whole list. `playable`, `hard` and `brutal` were
-// retired in the engine (they were all "gaming with different numbers"); they
-// stay here only so an account whose saved launch settings still name one
-// renders as something other than a raw id.
+// Two presets, and that is the whole list. They are not two points on a
+// quality slider, they are opposite jobs — all of one host for one session,
+// or the least an instance can run on so the host can hold many — so each one
+// names the thing it gives up as well as the thing it buys.
 const MODE_INFO = {
   gaming: {
     label: "Gaming",
-    spec: "4 GB · 4 CPU · GPU",
-    note: "Default. Everything the host can give one instance.",
+    spec: "GPU · sized to this host",
+    note: "The best hardware acceleration this machine can give one instance. Not for running many at once.",
   },
   farming: {
     label: "Farming",
-    spec: "2 GB · low RAM",
-    note: "Unattended. Squeezed for running many at once.",
+    spec: "Headless · smallest footprint",
+    note: "Unattended, with no fps or picture-quality target: as many instances as the host will hold. Screenshots still work.",
   },
-  playable: { label: "Gaming", spec: "4 GB · 4 CPU · GPU", note: "Renamed to Gaming." },
-  hard: { label: "Gaming", spec: "4 GB · 4 CPU · GPU", note: "Retired — runs as Gaming." },
-  brutal: { label: "Gaming", spec: "4 GB · 4 CPU · GPU", note: "Retired — runs as Gaming." },
 };
 
 const FALLBACK_MODES = ["gaming", "farming"];
 
+// A newer engine can report a mode this build has never heard of. Show its id
+// as it came, and say nothing about what it does — an invented description is
+// worse than none.
 export function describeMode(id) {
-  return MODE_INFO[id] || { label: id, spec: "", note: "" };
+  return MODE_INFO[id] || { label: String(id), spec: "", note: "Reported by the engine." };
 }
 
 // The display/acceleration setting. `auto` is right for almost everyone: you

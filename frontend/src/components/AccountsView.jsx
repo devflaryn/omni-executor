@@ -164,21 +164,34 @@ export default function AccountsView({ active, launch, onLaunch, showToast }) {
                 <p className="text-[11px] leading-snug text-ink-3">{describeMode(launch.mode).note}</p>
               </Field>
 
-              <Field label="Graphics" htmlFor="launch-gpu">
-                <select
-                  id="launch-gpu"
-                  value={launch.gpu || "auto"}
-                  onChange={(e) => onLaunch({ ...launch, gpu: e.target.value })}
-                  className="input cursor-pointer"
-                >
-                  {Object.keys(GPU_INFO).map((id) => (
-                    <option key={id} value={id}>
-                      {describeGpu(id).label}
-                    </option>
-                  ))}
-                </select>
-                <p className="text-[11px] leading-snug text-ink-3">{describeGpu(launch.gpu || "auto").note}</p>
-              </Field>
+              {/* Farming is headless by definition — that is most of what
+                  makes it farming — so none of these four options can change
+                  anything about it. A dropdown that cannot take effect is
+                  worse than no dropdown: it invites a choice, then ignores it.
+                  Gaming is where the trade is real, so that is where it lives. */}
+              {launch.mode === "farming" ? (
+                <Field label="Graphics">
+                  <p className="text-[11px] leading-snug text-ink-3">
+                    Farming always runs headless. Switch to Gaming to choose how it renders.
+                  </p>
+                </Field>
+              ) : (
+                <Field label="Graphics" htmlFor="launch-gpu">
+                  <select
+                    id="launch-gpu"
+                    value={launch.gpu || "auto"}
+                    onChange={(e) => onLaunch({ ...launch, gpu: e.target.value })}
+                    className="input cursor-pointer"
+                  >
+                    {Object.keys(GPU_INFO).map((id) => (
+                      <option key={id} value={id}>
+                        {describeGpu(id).label}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-[11px] leading-snug text-ink-3">{describeGpu(launch.gpu || "auto").note}</p>
+                </Field>
+              )}
 
               <Field
                 label="Place ID"

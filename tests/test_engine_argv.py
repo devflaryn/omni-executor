@@ -63,10 +63,13 @@ def test_start_bare_has_no_mode_or_place(captured):
 
 
 def test_engine_modes_from_version(monkeypatch):
+    # Still a pass-through, so a newer engine can surface a mode this build has
+    # never heard of -- but what an engine now advertises is the live pair, and
+    # the retired names are not in it. See test_launch_modes.py.
     monkeypatch.setattr(main, "run_engine",
                         lambda *a, **k: {"ok": True,
-                                         "modes": ["playable", "farming"]})
-    assert main.Api().engine_modes() == ["playable", "farming"]
+                                         "modes": ["gaming", "farming"]})
+    assert main.Api().engine_modes() == ["gaming", "farming"]
 
 
 def test_engine_modes_fallback_includes_farming(monkeypatch):
