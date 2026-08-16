@@ -453,3 +453,79 @@ def test_tools_live_outside_the_app_dir(fresh):
     not writable without elevation in the first place."""
     assert bootstrap.qemu_dir(fresh).parent == fresh
     assert bootstrap.adb_dir(fresh).parent == fresh
+
+
+# ---------------------------------------------- upgrading a LIVE QEMU safely
+
+def test_a_portable_install_never_extracts_over_the_live_directory(fresh, monkeypatch):
+    """Windows locks a running process's DLLs, so extracting into a QEMU that
+    is currently booting a guest fails part way through and leaves a directory
+    holding some new files and some old. MEASURED: `PermissionError:
+    libatk-1.0-0.dll`, after which the tree still launched and still reported
+    the OLD version -- a half-upgraded tool that looks fine.
+
+    The install must therefore stage into a sibling and swap."""
+    import zipfile
+    dest = bootstrap.qemu_dir(fresh)
+    _make_qemu(dest)
+    (dest / "marker-old.txt").write_text("old")
+
+    blob = fresh / "portable.zip"
+    with zipfile.ZipFile(blob, "w") as zf:
+        zf.writestr("qemu-system-x86_64.exe", "NEW")
+        zf.writestr("qemu-img.exe", "NEW")
+        zf.writestr("marker-new.txt", "new")
+
+    seen = {}
+
+    def fake_download(base, artifact, out, progress=None):
+        seen["extract_target_existed"] = (
+            dest / "marker-old.txt").exists()
+        out.write_bytes(blob.read_bytes())
+
+    monkeypatch.setattr(bootstrap, "download_blob", fake_download)
+    monkeypatch.setattr(bootstrap, "_looks_like_qemu_dir",
+                        lambda p: (p / "qemu-system-x86_64.exe").exists())
+    bootstrap._install_qemu_portable(
+        fresh, {"name": "qemu-portable-win", "sha256": "c" * 64})
+
+    # The swap replaced the tree wholesale rather than merging into it.
+    assert (dest / "marker-new.txt").exists()
+    assert not (dest / "marker-old.txt").exists(), \
+        "old files survived — this was a merge, not a swap"
+    assert not dest.with_name(dest.name + ".new").exists()
+    assert not dest.with_name(dest.name + ".old").exists()
+
+
+def test_a_locked_qemu_directory_leaves_the_working_install_intact(fresh, monkeypatch):
+    """The in-use case itself: if the live directory cannot be moved aside,
+    the upgrade must abort with the OLD install untouched, not a mix."""
+    import zipfile
+    dest = bootstrap.qemu_dir(fresh)
+    _make_qemu(dest)
+    (dest / "marker-old.txt").write_text("old")
+
+    blob = fresh / "portable.zip"
+    with zipfile.ZipFile(blob, "w") as zf:
+        zf.writestr("qemu-system-x86_64.exe", "NEW")
+
+    monkeypatch.setattr(bootstrap, "download_blob",
+                        lambda base, a, out, progress=None:
+                        out.write_bytes(blob.read_bytes()))
+    monkeypatch.setattr(bootstrap, "_looks_like_qemu_dir",
+                        lambda p: (p / "qemu-system-x86_64.exe").exists())
+
+    real_rename = Path.rename
+
+    def locked(self, target):
+        if self == dest:
+            raise OSError(32, "The process cannot access the file")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", locked)
+    with pytest.raises(bootstrap.BootstrapError, match="in use"):
+        bootstrap._install_qemu_portable(
+            fresh, {"name": "qemu-portable-win", "sha256": "c" * 64})
+
+    assert (dest / "marker-old.txt").exists(), "the working install was damaged"
+    assert not dest.with_name(dest.name + ".new").exists()

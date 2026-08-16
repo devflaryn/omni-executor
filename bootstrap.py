@@ -151,6 +151,22 @@ def read_manifest(base_url: str, os_name: str = None, channel: str = "stable") -
     return data
 
 
+def _part_file(staging: Path, artifact: dict) -> Path:
+    """Where a resumable download accumulates.
+
+    KEYED BY sha256, NOT BY NAME. A partial is only resumable against the
+    exact blob it came from, and artifact NAMES are stable across versions --
+    `qemu-portable-win` meant 11.0.50 yesterday and 11.1.0 today. A leftover
+    partial of the old blob is longer than (or simply different from) the new
+    one, so the Range request asks for bytes past its end and the server
+    answers 416: MEASURED, "download failed after 3 attempts ... HTTP Error
+    416: Range Not Satisfiable", with no way out but deleting the file by
+    hand. Rebuilt base images have the same shape of problem.
+    """
+    tag = (artifact.get("sha256") or "nohash")[:12]
+    return staging / f"{artifact['name']}-{tag}.part"
+
+
 def plan_downloads(manifest: dict, installed: dict) -> list:
     """Which artifacts still need fetching.
 
@@ -371,7 +387,7 @@ def ensure_runtime(base_url: str = None, progress=None) -> dict:
         if progress:
             progress({"phase": "start", "artifact": a["name"], "received": 0,
                       "total": int(a.get("bytes") or 0), "percent": 0})
-        tmp = staging / f"{a['name']}.part"
+        tmp = _part_file(staging, a)
         download_blob(base_url, a, tmp, progress)
         place_artifact(a, tmp, rt)
         installed.setdefault("artifacts", {})[a["name"]] = {
@@ -687,24 +703,59 @@ def _install_qemu_portable(rt: Path, artifact: dict, progress=None) -> Path:
     sha256 like any other manifest artifact."""
     staging = rt / "staging"
     staging.mkdir(parents=True, exist_ok=True)
-    tmp = staging / f"{artifact['name']}.part"
-    download_blob(dist_base(), artifact, tmp, progress)
+    tmp = _part_file(staging, artifact)
     dest = qemu_dir(rt)
-    dest.mkdir(parents=True, exist_ok=True)
+
+    # NEVER EXTRACT OVER THE LIVE DIRECTORY. Windows locks the DLLs of a
+    # running process, so extracting into a QEMU that is currently booting a
+    # guest fails PART WAY THROUGH -- measured, `PermissionError:
+    # libatk-1.0-0.dll` -- and leaves a directory holding some files from the
+    # new build and some from the old. That mix still launches and reports the
+    # OLD version, which is the worst possible outcome: a half-upgraded tool
+    # that looks fine.
+    #
+    # So: unpack into a sibling, prove it is complete, and only then swap. A
+    # failure at any point before the swap leaves the working install exactly
+    # as it was.
+    download_blob(dist_base(), artifact, tmp, progress)
+    new = dest.with_name(dest.name + ".new")
+    shutil.rmtree(new, ignore_errors=True)
+    new.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(tmp) as zf:
-        _safe_extract_zip(zf, dest)
+        _safe_extract_zip(zf, new)
     tmp.unlink(missing_ok=True)
-    nested = dest / "qemu"
+    nested = new / "qemu"
     if _looks_like_qemu_dir(nested):
         for item in nested.iterdir():
-            target = dest / item.name
+            target = new / item.name
             if target.exists():
                 shutil.rmtree(target) if target.is_dir() else target.unlink()
             shutil.move(str(item), str(target))
         shutil.rmtree(nested, ignore_errors=True)
-    if not _looks_like_qemu_dir(dest):
+    if not _looks_like_qemu_dir(new):
+        shutil.rmtree(new, ignore_errors=True)
         raise BootstrapError("the portable QEMU archive did not contain a "
                              "complete QEMU install")
+    old = dest.with_name(dest.name + ".old")
+    shutil.rmtree(old, ignore_errors=True)
+    if dest.exists():
+        try:
+            dest.rename(old)
+        except OSError as e:
+            # A guest is running out of this directory. Not an error worth
+            # failing a launch over -- the next one will do it.
+            shutil.rmtree(new, ignore_errors=True)
+            raise BootstrapError(
+                f"QEMU is in use and cannot be replaced right now "
+                f"({e.strerror or e}); it will update next launch") from e
+    try:
+        new.rename(dest)
+    except OSError:
+        if old.exists():                    # put the working one back
+            old.rename(dest)
+        shutil.rmtree(new, ignore_errors=True)
+        raise
+    shutil.rmtree(old, ignore_errors=True)
     return dest
 
 
