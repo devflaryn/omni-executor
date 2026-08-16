@@ -108,7 +108,12 @@ def test_env_override_wins(fresh, tmp_path, monkeypatch):
 def test_plan_needs_admin_without_a_portable_build(fresh, monkeypatch):
     monkeypatch.setattr(bootstrap, "is_elevated", lambda: False)
     plan = bootstrap.qemu_install_plan(fresh, {"artifacts": []})
-    assert plan == {"needed": True, "portable": None, "needs_admin": True}
+    # Field-wise rather than an exact dict: the plan grew an `upgrade` flag
+    # when tools became updatable, and pinning the whole shape makes every
+    # future field a false failure.
+    assert plan["needed"] is True
+    assert plan["portable"] is None
+    assert plan["needs_admin"] is True
 
 
 def test_a_hosted_portable_build_removes_the_admin_prompt(fresh):
@@ -316,9 +321,15 @@ def test_install_qemu_windows_asks_the_tools_channel_itself(fresh, monkeypatch):
     assert bootstrap.install_qemu_windows(fresh) == bootstrap.qemu_dir(fresh)
 
 
-def test_the_tools_channel_is_only_consulted_when_qemu_is_missing(fresh, monkeypatch):
-    """A machine that already has QEMU must not make a network call to learn
-    it does not need one."""
+def test_the_tools_channel_is_consulted_even_when_qemu_exists(fresh, monkeypatch):
+    """REVERSED DELIBERATELY. This used to assert the opposite -- "a machine
+    that already has QEMU must not make a network call to learn it does not
+    need one" -- and that is exactly why tools could never be updated: a
+    machine cannot discover a newer build without asking for one.
+
+    The cost is one small JSON GET, and it is not paid per launch: ensure_tools
+    runs from setup and the first-boot flow, both of which are already talking
+    to the server continuously. The offline case is covered below."""
     asked = []
     monkeypatch.setattr(bootstrap, "tools_manifest",
                         lambda: asked.append(1) or {"artifacts": []})
@@ -328,7 +339,22 @@ def test_the_tools_channel_is_only_consulted_when_qemu_is_missing(fresh, monkeyp
     monkeypatch.setattr(bootstrap, "windows_accel_status",
                         lambda *a, **k: {"whpx_ok": True, "hint": None})
     bootstrap.ensure_tools(fresh)
-    assert asked == []
+    assert asked == [1]
+
+
+def test_an_offline_server_leaves_a_working_qemu_exactly_as_it_is(fresh, monkeypatch):
+    """The other half of the reversal: asking is allowed to fail. A launch with
+    no network must keep the QEMU it has rather than deciding it is stale."""
+    monkeypatch.setattr(bootstrap, "tools_manifest", lambda: {})
+    _make_qemu(bootstrap.qemu_dir(fresh))
+    (bootstrap.adb_dir(fresh)).mkdir(parents=True)
+    (bootstrap.adb_dir(fresh) / "adb.exe").write_bytes(b"MZ")
+    monkeypatch.setattr(bootstrap, "windows_accel_status",
+                        lambda *a, **k: {"whpx_ok": True, "hint": None})
+    monkeypatch.setattr(bootstrap, "run_elevated", lambda *a, **k: pytest.fail(
+        "an offline launch must not elevate to reinstall a working QEMU"))
+    out = bootstrap.ensure_tools(fresh)
+    assert out["installed"] == []
 
 
 def test_an_unreachable_tools_channel_falls_back_to_the_installer(fresh, monkeypatch):

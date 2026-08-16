@@ -155,3 +155,82 @@ def test_resume_after_interruption_uses_range(server, monkeypatch):
     # ...and the retry that finished the job was a genuine Range/resume request.
     assert any(name == "resume-blob" and rng.startswith("bytes=") and not rng.startswith("bytes=0")
                for name, rng in H.range_log), f"expected a non-zero-offset Range request, got {H.range_log}"
+
+
+# --------------------------------------------------- tool install / UPGRADE
+#
+# QEMU used to be presence-checked and never upgraded: `qemu_install_plan`
+# returned needed=False the moment `find_qemu` found anything at all. That is
+# why a machine whose QEMU came from the vendor NSIS installer (or that simply
+# had QEMU already) kept an UNPATCHED binary forever -- and the patched build
+# is the one that honours QEMU_WINDOW_PANEL, so those machines silently got
+# the wrong guest aspect ratio with no signal that anything was stale.
+
+PORTABLE = {"name": "qemu-portable-win", "version": "11.0.50",
+            "sha256": "a" * 64, "kind": "tool", "bytes": 1024}
+PORTABLE_NEW = {**PORTABLE, "version": "11.1.0", "sha256": "b" * 64}
+
+
+def _mf(*artifacts):
+    return {"os": "win", "channel": "stable", "artifacts": list(artifacts)}
+
+
+def test_a_machine_with_no_qemu_still_needs_one(tmp_path):
+    plan = bootstrap.qemu_install_plan(tmp_path, _mf(PORTABLE), installed={})
+    assert plan["needed"] is True
+    assert plan["portable"] == PORTABLE
+
+
+def test_our_managed_qemu_at_the_published_version_is_left_alone(tmp_path):
+    installed = {"tools": {"qemu": {"version": "11.0.50", "sha256": "a" * 64}}}
+    plan = bootstrap.qemu_install_plan(tmp_path, _mf(PORTABLE),
+                                       installed=installed, have_qemu=True)
+    assert plan["needed"] is False
+
+
+def test_a_newer_published_qemu_is_an_upgrade(tmp_path):
+    # THE POINT OF THIS CHANGE. Same machine, server now offers a new build.
+    installed = {"tools": {"qemu": {"version": "11.0.50", "sha256": "a" * 64}}}
+    plan = bootstrap.qemu_install_plan(tmp_path, _mf(PORTABLE_NEW),
+                                       installed=installed, have_qemu=True)
+    assert plan["needed"] is True
+    assert plan["upgrade"] is True
+    assert plan["needs_admin"] is False      # portable route never elevates
+
+
+def test_an_unmanaged_qemu_gets_ours_installed_beside_it(tmp_path):
+    # The vendor-installer / user's-own-QEMU case: we have never recorded a
+    # tool receipt, so whatever is on this machine is not ours and may be
+    # unpatched. find_qemu() prefers our runtime dir, so installing the
+    # published build makes it win WITHOUT touching their system install.
+    plan = bootstrap.qemu_install_plan(tmp_path, _mf(PORTABLE),
+                                       installed={}, have_qemu=True)
+    assert plan["needed"] is True
+    assert plan["needs_admin"] is False
+
+
+def test_no_portable_offered_never_forces_an_elevated_upgrade(tmp_path):
+    # If the server offers no portable build, the only route is the vendor
+    # NSIS installer, which is requireAdministrator. Prompting for UAC on
+    # every launch to "upgrade" is far worse than keeping what works.
+    installed = {"tools": {"qemu": {"version": "11.0.50", "sha256": "a" * 64}}}
+    plan = bootstrap.qemu_install_plan(tmp_path, _mf(), installed=installed,
+                                       have_qemu=True)
+    assert plan["needed"] is False
+
+
+def test_tool_receipts_survive_a_round_trip(tmp_path):
+    bootstrap.record_tool(tmp_path, "qemu", PORTABLE)
+    state = bootstrap.installed_state(tmp_path)
+    assert state["tools"]["qemu"]["sha256"] == "a" * 64
+    assert state["tools"]["qemu"]["version"] == "11.0.50"
+    # and it must not disturb the artifact receipts beside it
+    assert "artifacts" in state
+
+
+def test_recording_a_tool_does_not_make_the_runtime_look_unready(tmp_path):
+    # Readiness is "plan_downloads is empty". Tools are kind: "tool" and must
+    # stay out of that plan however they are recorded, or every machine that
+    # already had QEMU reports un-ready forever.
+    installed = {"artifacts": {}, "tools": {"qemu": {"sha256": "a" * 64}}}
+    assert bootstrap.plan_downloads(_mf(PORTABLE), installed) == []

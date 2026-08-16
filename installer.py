@@ -213,6 +213,33 @@ def install(progress=None) -> Path:
             _register_uninstall(target, version, size_kb)
         except OSError:
             pass          # a missing Apps-&-features entry is not a failed install
+
+        # THE HOST TOOLS, here rather than only at first launch. Setup is the
+        # right place for them: it is the one moment the user is already
+        # watching a progress bar and expecting to be asked for administrator,
+        # and ensure_tools() is idempotent so re-running setup is also how a
+        # machine picks up a NEWER published QEMU.
+        #
+        # That upgrade is the reason this call exists at all. QEMU used to be
+        # installed once and never revisited, so a machine whose QEMU came
+        # from the vendor installer kept an unpatched build for good — and the
+        # patched one is what honours QEMU_WINDOW_PANEL, so the guest's aspect
+        # ratio was wrong with nothing reporting the tool as stale.
+        #
+        # NEVER FATAL. The app installs and runs regardless: it calls
+        # ensure_tools() itself on the first-boot screen, so the worst case
+        # here is that the work happens a few minutes later instead.
+        say("Installing QEMU and adb…")
+        try:
+            rt = bootstrap.runtime_dir()
+            tools = bootstrap.ensure_tools(
+                rt, progress=lambda p: say(
+                    f"Installing {p.get('artifact', 'tools')}…"))
+            got = ", ".join(tools.get("installed") or []) or "already current"
+            say(f"Tools: {got}")
+        except Exception as e:                       # noqa: BLE001
+            say(f"Tools will be installed on first launch ({e}).")
+
         say("Done.", 100)
         return exe
     finally:

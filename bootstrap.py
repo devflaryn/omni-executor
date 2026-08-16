@@ -416,6 +416,7 @@ def ensure_runtime(base_url: str = None, progress=None) -> dict:
 # engine subprocess inherits (run_engine spawns with env=None).
 _QEMU_SUBDIR = "qemu"
 _ADB_SUBDIR = "platform-tools"
+_ADB_ARTIFACT = "adb-win"
 # Everything the engine actually invokes (grep qemu_bin( in omnidroid/engine.py).
 # qemu-io is used by the rooted-system baker; a QEMU install missing it is not
 # a complete one.
@@ -720,26 +721,121 @@ def tools_manifest() -> dict:
         return {}
 
 
-def qemu_install_plan(rt: Path, manifest: dict = None) -> dict:
-    """What installing QEMU on this machine would take, WITHOUT doing it.
+def qemu_install_plan(rt: Path, manifest: dict = None, installed: dict = None,
+                      have_qemu: bool = None) -> dict:
+    """What installing-or-upgrading QEMU here would take, WITHOUT doing it.
 
     Lets the caller decide up front whether administrator rights are needed at
     all, and batch every elevated action into a single prompt. Returns
-    {"needed": bool, "portable": artifact|None, "needs_admin": bool}.
+    {"needed", "upgrade", "portable", "needs_admin"}.
 
-    `manifest` is looked up by NAME, so it does not matter which channel it
-    came from; pass one to avoid a network round trip, or leave it None on a
-    machine that already has QEMU (the common case) and nothing is fetched at
-    all."""
-    if find_qemu(rt) is not None:
-        return {"needed": False, "portable": None, "needs_admin": False}
+    THIS USED TO BE A PRESENCE CHECK — `find_qemu() is not None` and nothing
+    else — so QEMU was installed once and then never updated for the life of
+    the machine. That silently shipped the wrong binary to two whole
+    populations: anyone whose QEMU came from the vendor NSIS installer, and
+    anyone who simply had QEMU already. Both keep an UNPATCHED build, and the
+    patched one is what honours `QEMU_WINDOW_PANEL` — so the guest adopts the
+    window's size instead of the panel it was given and the aspect ratio is
+    wrong, with nothing anywhere reporting that the tool is stale.
+
+    Now it compares a RECEIPT (installed.json's `tools` block, written by
+    record_tool) against the published artifact's sha256. Three cases matter:
+
+      no QEMU at all      install, by whichever route is available
+      our build, current  nothing to do — the common path, still no network
+      anything else       install the published portable build
+
+    That last case covers both the stale-receipt upgrade and the machine whose
+    QEMU is not ours. It does NOT touch their system install: the portable
+    build goes into our own runtime dir, and find_qemu() already prefers that
+    over PATH or Program Files, so ours simply wins.
+
+    ONLY THE PORTABLE ROUTE EVER UPGRADES. The vendor installer is
+    requireAdministrator, and prompting for UAC on every launch to replace a
+    QEMU that already works is far worse than being one version behind — so
+    when the server offers no portable build, a machine that has QEMU is left
+    exactly as it is.
+
+    `manifest` is looked up by NAME, so the channel it came from does not
+    matter. `installed` / `have_qemu` are injectable for tests.
+    """
+    if have_qemu is None:
+        have_qemu = find_qemu(rt) is not None
     portable = None
     for a in (manifest or {}).get("artifacts", []):
         if a.get("name") == _QEMU_PORTABLE_ARTIFACT and a.get("sha256"):
             portable = a
             break
-    return {"needed": True, "portable": portable,
-            "needs_admin": portable is None and not is_elevated()}
+    if not have_qemu:
+        return {"needed": True, "upgrade": False, "portable": portable,
+                "needs_admin": portable is None and not is_elevated()}
+    if portable is None:
+        # Nothing we could install without elevation. See the note above.
+        return {"needed": False, "upgrade": False, "portable": None,
+                "needs_admin": False}
+    if installed is None:
+        installed = installed_state(rt)
+    receipt = (installed.get("tools") or {}).get("qemu") or {}
+    if receipt.get("sha256") == portable.get("sha256"):
+        return {"needed": False, "upgrade": False, "portable": portable,
+                "needs_admin": False}
+    return {"needed": True, "upgrade": True, "portable": portable,
+            "needs_admin": False}
+
+
+def _tool_artifact(manifest: dict, name: str) -> dict | None:
+    """A manifest entry that is a real, verifiable payload — or None.
+
+    An entry with no sha256 is a POINTER (a 302), and a pointer cannot be
+    compared against anything: `adb-win` redirects to Google's "latest" alias,
+    which by definition has no stable identity. Treating one as an upgradable
+    artifact would mean re-downloading it on every single launch forever.
+    """
+    for a in (manifest or {}).get("artifacts", []):
+        if a.get("name") == name and a.get("sha256"):
+            return a
+    return None
+
+
+def adb_install_plan(rt: Path, manifest: dict = None, installed: dict = None,
+                     have_adb: bool = None) -> dict:
+    """Whether adb needs installing or replacing. Mirrors qemu_install_plan.
+
+    TODAY THIS ONLY EVER INSTALLS, and that is a property of the SERVER, not
+    of this code: `adb-win` is published as a redirect with no sha256, so
+    _tool_artifact returns None and a machine that has adb is left alone.
+    Publish a hashed adb artifact the way `qemu-portable-win` is published and
+    upgrades start working here with no further change.
+    """
+    if have_adb is None:
+        have_adb = find_adb(rt) is not None
+    artifact = _tool_artifact(manifest, _ADB_ARTIFACT)
+    if not have_adb:
+        return {"needed": True, "upgrade": False, "artifact": artifact}
+    if artifact is None:
+        return {"needed": False, "upgrade": False, "artifact": None}
+    if installed is None:
+        installed = installed_state(rt)
+    receipt = (installed.get("tools") or {}).get("adb") or {}
+    if receipt.get("sha256") == artifact.get("sha256"):
+        return {"needed": False, "upgrade": False, "artifact": artifact}
+    return {"needed": True, "upgrade": True, "artifact": artifact}
+
+
+def record_tool(rt: Path, name: str, artifact: dict) -> None:
+    """Record which build of a host tool we installed.
+
+    Separate from the `artifacts` receipts on purpose: those drive readiness
+    (`plan_downloads` empty == ready), and a tool must never be able to make a
+    working machine look un-ready. Tools live beside them and are consulted
+    only by their own install plan.
+    """
+    state = installed_state(rt)
+    state.setdefault("tools", {})[name] = {
+        "version": (artifact or {}).get("version"),
+        "sha256": (artifact or {}).get("sha256"),
+    }
+    _write_installed(rt, state)
 
 
 def install_qemu_windows(rt: Path, manifest: dict = None, progress=None) -> Path:
@@ -872,6 +968,14 @@ def ensure_tools(rt: Path, manifest: dict = None, progress=None) -> dict:
         return out
 
     plan = qemu_install_plan(rt, manifest)
+    # A machine that HAS QEMU still has to ask whether the published build is
+    # newer than the one it is carrying -- that question is the entire reason
+    # tools were never updated before. tools_manifest() never raises and
+    # returns {} when the server cannot be reached, so an offline launch keeps
+    # exactly the QEMU it already has instead of failing.
+    if manifest is None and not plan["needed"]:
+        manifest = tools_manifest()
+        plan = qemu_install_plan(rt, manifest)
     if plan["needed"] and plan["portable"] is None and manifest is None:
         # Only now is it worth a round trip: this machine really has no QEMU,
         # and a portable build would save it a UAC prompt. A machine that
@@ -889,7 +993,12 @@ def ensure_tools(rt: Path, manifest: dict = None, progress=None) -> dict:
     # a machine that has none we cannot know whether the feature needs turning
     # on — and DISM's enable is idempotent, so bundling it in is strictly
     # better than a second prompt later.
-    whpx = windows_accel_status() if not plan["needed"] else {"whpx_ok": None}
+    # An UPGRADE is not a from-scratch install: there is a working QEMU here
+    # right now, so WHPX can still be probed. Gating this on plan["needed"]
+    # alone would have made every upgrading machine report whpx_ok=None and
+    # re-run the elevated DISM enable it does not need.
+    can_probe_now = not plan["needed"] or plan.get("upgrade")
+    whpx = windows_accel_status() if can_probe_now else {"whpx_ok": None}
     want_whpx = whpx.get("whpx_ok") is not True
     if plan["needed"] and plan["needs_admin"] and want_whpx:
         if progress:
@@ -912,14 +1021,25 @@ def ensure_tools(rt: Path, manifest: dict = None, progress=None) -> dict:
         _whpx_cache.pop("win", None)
     elif plan["needed"]:
         install_qemu_windows(rt, manifest, progress)
-        out["installed"].append("qemu")
+        out["installed"].append("qemu upgrade" if plan.get("upgrade")
+                                else "qemu")
+    if plan["needed"] and plan.get("portable"):
+        # Write the receipt ONLY for the portable route, because that is the
+        # only one whose exact build we know. The vendor installer serves
+        # whatever its 302 currently points at, so recording a version for it
+        # would be a guess -- and a wrong receipt is worse than none, since it
+        # would suppress the very upgrade this exists to perform.
+        record_tool(rt, "qemu", plan["portable"])
 
-    if find_adb(rt) is None:
+    adb_plan = adb_install_plan(rt, manifest)
+    if adb_plan["needed"]:
         if progress:
             progress({"phase": "start", "artifact": "adb", "received": 0,
                       "total": 0, "percent": 0})
         install_adb_windows(rt, progress)
-        out["installed"].append("adb")
+        out["installed"].append("adb upgrade" if adb_plan["upgrade"] else "adb")
+        if adb_plan["artifact"]:
+            record_tool(rt, "adb", adb_plan["artifact"])
 
     q, a = find_qemu(rt), find_adb(rt)
     out["qemu_dir"] = str(q) if q else None
