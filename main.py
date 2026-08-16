@@ -186,6 +186,46 @@ def _configure_engine_on_launch():
         bootstrap.configure_engine(bootstrap.runtime_dir())
     except Exception as e:  # noqa: BLE001 — engine config must never crash the app launch
         print(f"[omni-exec] engine pre-config skipped: {e}", file=sys.stderr)
+    _refresh_tools_in_background()
+
+
+def _refresh_tools_in_background():
+    """Pick up a newer published QEMU on an ordinary launch.
+
+    ensure_tools() otherwise runs ONLY from bootstrap_start(), and
+    bootstrap_start() runs only while `ready` is false — so an
+    already-installed machine, which is every existing user, would never
+    revisit its tools no matter how many builds were published. That is the
+    same "installed once, stale forever" hole the receipt system was added to
+    close, one level up.
+
+    Two deliberate limits:
+
+      * BACKGROUND THREAD. It makes a network call and may unpack 80 MB; the
+        UI must not wait on either.
+      * NEVER ELEVATES. It runs only when a QEMU already exists, so the plan
+        can only ever be the portable route (needs_admin=False by
+        construction). A launch that silently raised a UAC prompt would be
+        a worse bug than a stale tool.
+    """
+    def work():
+        try:
+            import bootstrap
+            rt = bootstrap.runtime_dir()
+            if bootstrap.find_qemu(rt) is None:
+                return          # a real install — that is bootstrap_start's job
+            plan = bootstrap.qemu_install_plan(rt, bootstrap.tools_manifest())
+            if not plan["needed"] or plan["needs_admin"]:
+                return
+            bootstrap.install_qemu_windows(rt, bootstrap.tools_manifest())
+            bootstrap.record_tool(rt, "qemu", plan["portable"])
+            print(f"[omni-exec] QEMU updated to "
+                  f"{plan['portable'].get('version')}", file=sys.stderr)
+        except Exception as e:  # noqa: BLE001 — a stale tool beats a dead launch
+            print(f"[omni-exec] tool refresh skipped: {e}", file=sys.stderr)
+
+    import threading
+    threading.Thread(target=work, name="tool-refresh", daemon=True).start()
 
 
 def _parse_engine_stdout(stdout, code):
