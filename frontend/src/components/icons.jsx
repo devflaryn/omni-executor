@@ -71,6 +71,17 @@ export const MonitorIcon = (props) => (
   </svg>
 );
 
+/* The same monitor, struck through: "put this window away". The stroke is a
+   separate path so it inherits the same colour and width as the frame rather
+   than reading as a second, unrelated mark. */
+export const MonitorOffIcon = (props) => (
+  <svg {...base} {...props}>
+    <rect x="2" y="3" width="20" height="14" rx="2" />
+    <path d="M8 21h8M12 17v4" />
+    <path d="m3 2 18 18" />
+  </svg>
+);
+
 export const TrashIcon = (props) => (
   <svg {...base} {...props}>
     <path d="M3 6h18" />

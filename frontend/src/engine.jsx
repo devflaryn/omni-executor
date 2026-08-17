@@ -189,8 +189,27 @@ export function EngineProvider({ activeTab, showToast, children }) {
     async (name) => {
       const res = await api("engine_view", name);
       if (!res.ok) showToast(errText(res), "error");
+      // The engine flips run.json's `window_visible`, and the row's button is
+      // drawn off it. Without this the button keeps offering "View" for a
+      // window that is already up until the next poll happens to land.
+      refreshList();
     },
-    [showToast]
+    [refreshList, showToast]
+  );
+
+  /* Take the window off the screen WITHOUT stopping the instance.
+     This exists because the window is no longer something the app puts up at
+     the end of a launch — a watched boot presents it at spawn, so it is on
+     screen for the whole boot and the whole session after it. A window you
+     cannot put away is one whose only exit is Stop, and Stop kills the game.
+     Same engine call the window's own close path uses: `view <name> --hide`. */
+  const hideViewer = useCallback(
+    async (name) => {
+      const res = await api("engine_hide", name);
+      if (!res.ok) showToast(errText(res), "error");
+      refreshList();
+    },
+    [refreshList, showToast]
   );
 
   const start = useCallback(
@@ -456,6 +475,7 @@ export function EngineProvider({ activeTab, showToast, children }) {
     stop,
     remove,
     openViewer,
+    hideViewer,
     runSetup,
     loginBrowser,
     loginToken,

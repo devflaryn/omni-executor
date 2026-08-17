@@ -18,6 +18,7 @@ import {
   InfoIcon,
   LayersIcon,
   MonitorIcon,
+  MonitorOffIcon,
   PlayIcon,
   PlusIcon,
   RocketIcon,
@@ -126,6 +127,7 @@ export default function AccountsView({ active, launch, onLaunch, showToast }) {
                     onStart={() => engine.start(account.name, launch)}
                     onStop={() => engine.stop(account.name)}
                     onOpen={() => engine.openViewer(account.name)}
+                    onHide={() => engine.hideViewer(account.name)}
                     onRemove={() => setRemoveTarget(account)}
                   />
                 ))}
@@ -467,6 +469,7 @@ function AccountRow({
   onStart,
   onStop,
   onOpen,
+  onHide,
   onRemove,
 }) {
   const running = Boolean(account.running);
@@ -482,7 +485,17 @@ function AccountRow({
     status = `${busyLabel}…`;
   } else if (running) {
     tone = "live";
-    status = `VNC ${account.vnc_port ?? "—"} · ADB ${account.adb_port ?? "—"}`;
+    // A GPU boot has NO VNC server — QEMU refuses one beside a GL context —
+    // so printing its vnc_port here named a port nothing was listening on,
+    // which is the first thing anyone debugging "the viewer won't connect"
+    // reaches for. `has_vnc` comes from the engine's own run.json. Say what
+    // the instance actually has: a window, and the size the guest is being
+    // shown at.
+    const client = account.window_client;
+    status =
+      account.has_vnc === false
+        ? `Window ${client ? `${client[0]}×${client[1]}` : "(no VNC)"} · ADB ${account.adb_port ?? "—"}`
+        : `VNC ${account.vnc_port ?? "—"} · ADB ${account.adb_port ?? "—"}`;
   } else if (remote) {
     // Not "off": it IS running, just not here. Showing this row as stopped is
     // what made people launch the same account twice.
@@ -561,10 +574,26 @@ function AccountRow({
                 flips as soon as its run.json exists. Watching the boot is
                 the one thing you most want during it, and disabling this
                 was the difference between "nothing is happening" and
-                seeing Android come up. */}
-            <IconButton label="Open viewer" tone="accent" onClick={onOpen}>
-              <MonitorIcon className="h-4 w-4" />
-            </IconButton>
+                seeing Android come up.
+
+                On a GPU boot the window is ALREADY on screen by the time this
+                row appears — the engine presents it at spawn so the loading
+                animation is visible while Android comes up — so this button
+                becomes "put it away" rather than "bring it out". Hiding never
+                stops the instance; the game keeps running and rendering, and
+                the same button brings it back. `window_visible` comes from the
+                engine's own run.json (account_status), never guessed here: a
+                window this app hid and a window the user never had are the
+                same thing to look at and very different things to click. */}
+            {account.window_visible ? (
+              <IconButton label="Hide the window (the instance keeps running)" onClick={onHide}>
+                <MonitorOffIcon className="h-4 w-4" />
+              </IconButton>
+            ) : (
+              <IconButton label="Open viewer" tone="accent" onClick={onOpen}>
+                <MonitorIcon className="h-4 w-4" />
+              </IconButton>
+            )}
             <IconButton label="Stop instance" onClick={onStop} disabled={Boolean(busyLabel)}>
               <StopIcon className="h-3.5 w-3.5" />
             </IconButton>
