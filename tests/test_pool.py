@@ -381,3 +381,30 @@ def test_the_ui_hides_the_control_behind_that_flag():
     for source in (store, view):
         assert "pool_fill" not in source
         assert 'api("pool_start"' in store and 'api("pool_status"' in store
+
+
+def test_farming_warms_the_pool_without_being_asked():
+    """THE COMPLAINT THIS ANSWERS: "it always cold boots". The pool worked and
+    was off by default, so the mode built for launching fifty instances paid
+    35-60 s of boot on every one of them -- on the one host where a warm pool
+    is the only fast path there is (WHPX cannot snapshot a VM).
+
+    Pinned in the source for the same reason as the test above: there is no JS
+    runner here. Three properties, and the middle one is the whole design --
+
+      * an untouched `keepWarm` follows the MODE (farming on, gaming off),
+      * it is read at RENDER time, so switching gaming -> farming turns the
+        pool on without writing over a preference the user has expressed,
+      * the toggle still stores a real boolean, so an explicit off stays off.
+    """
+    view = _read("frontend", "src", "components", "AccountsView.jsx")
+    assert "export function keepWarmDefault(launch)" in view
+    assert 'launch?.mode === "farming"' in view
+    # Read, not written: the default is derived where it is used.
+    assert "const enabled = keepWarmDefault(launch);" in view
+    # ...and an explicit choice still wins, in both directions.
+    assert "onLaunch({ ...launch, keepWarm: on });" in view
+    # A default that lived in DEFAULT_LAUNCH would be a written value, and
+    # would stop following the mode the moment settings were saved once.
+    app = _read("frontend", "src", "App.jsx")
+    assert "keepWarm" not in app

@@ -287,6 +287,32 @@ export default function AccountsView({ active, launch, onLaunch, showToast }) {
 
 /* -------------------------------------------------------------------------- */
 
+/* Is the pool on? FARMING SAYS YES UNLESS THE USER SAYS OTHERWISE.
+
+   `keepWarm` is deliberately tri-state. `undefined` means "nobody has had an
+   opinion", and the right answer to that depends entirely on the mode:
+
+     farming  is fifty launches, and a cold boot is 35-60 s of every one of
+              them. Leaving the pool off by default made "it always cold
+              boots" the default experience of the mode built for volume, on
+              the one host where a warm pool is the ONLY fast path (WHPX
+              cannot snapshot a VM).
+     gaming   is one instance somebody is about to watch. A warm slot for it
+              is a second guest holding its memory so that one launch can be
+              quick, which is a bad trade for a single player.
+
+   Once the toggle is touched it stores a real boolean and that sticks, in
+   both directions -- so this decides the default, never the setting. Reading
+   the mode at render time (rather than writing a value in when the mode
+   changes) is what lets switching gaming -> farming turn the pool on without
+   overwriting a preference the user has already expressed. */
+export function keepWarmDefault(launch) {
+  if (launch?.keepWarm === undefined || launch?.keepWarm === null) {
+    return launch?.mode === "farming";
+  }
+  return Boolean(launch.keepWarm);
+}
+
 /* Keep one instance warm.
 
    The engine can hold instances pre-booted to the account-free ready point;
@@ -306,7 +332,7 @@ function WarmPool({ active, launch, onLaunch }) {
   const engine = useEngine();
   const { doctor, pool, poolBusy, poolError, refreshPool, startPool, stopPool } = engine;
 
-  const enabled = Boolean(launch.keepWarm);
+  const enabled = keepWarmDefault(launch);
   const mode = launch.mode;
   const place = String(launch.place || "").trim();
   // Normalised exactly as main.py normalises it. If the two sides disagreed
