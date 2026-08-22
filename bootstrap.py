@@ -6,7 +6,7 @@ installed.json. Also installs the host TOOLS the engine shells out to (QEMU
 and adb on Windows) so a fresh machine needs nothing preinstalled. No GUI, no
 engine import — pure stdlib so it is unit-testable.
 """
-import ctypes, hashlib, json, os, re, shutil, subprocess, sys, tarfile, time, urllib.request, urllib.error, zipfile
+import ctypes, hashlib, json, os, re, shutil, subprocess, sys, tarfile, threading, time, urllib.request, urllib.error, zipfile
 from pathlib import Path
 
 APP_DIR_NAME = "OmniExec"
@@ -1180,9 +1180,14 @@ def _qemu_hint() -> str:
 
 
 _WHPX_HINT = (
-    "Windows Hypervisor Platform is turned off, so the Android VM cannot "
-    "start. Omni Executor can turn it on for you — it needs administrator "
-    "permission once, and Windows has to restart afterwards.")
+    "Windows Hypervisor Platform is turned off, so the Android VM has to be "
+    "emulated in software — it will still run, but it will be noticeably "
+    "slower to start. Omni Executor can turn hardware acceleration on for "
+    "you — it needs administrator permission once, and Windows has to "
+    "restart afterwards.\n\n"
+    "If it is still off after that restart, the switch is in your PC's "
+    "BIOS/UEFI setup: look for Intel VT-x, AMD-V or SVM and enable it. "
+    "Windows cannot turn that one on for you.")
 
 _WHPX_NO_QEMU_HINT = (
     "Virtualization support has not been checked yet — QEMU is still being "
@@ -1192,20 +1197,70 @@ _WHPX_NO_QEMU_HINT = (
 _whpx_cache = {}
 
 
-def _whpx_probe(qemu: str, timeout: float = 6.0):
+def _qmp_greeting(proc, window: float) -> bool:
+    """Wait up to `window` seconds for QEMU's QMP greeting on stdout.
+
+    The greeting is written AFTER machine init, which is where accelerator
+    init happens -- so it is a POSITIVE, immediate proof that WHPX came up.
+    Measured at 0.06 s on the dev box.
+
+    Tolerates a process double with no stdout (returns False), so the caller
+    falls through to the slower liveness check rather than failing.
+    """
+    stream = getattr(proc, "stdout", None)
+    if stream is None:
+        return False
+    box = {}
+
+    def read_one():
+        try:
+            box["line"] = stream.readline()
+        except Exception:                # noqa: BLE001 — a probe may not raise
+            box["line"] = ""
+
+    reader = threading.Thread(target=read_one, daemon=True)
+    reader.start()
+    reader.join(window)
+    return str(box.get("line") or "").lstrip().startswith('{"QMP"')
+
+
+def _whpx_probe(qemu: str, timeout: float = 6.0, greeting_window: float = 3.0):
     """True/False/None — can QEMU actually initialize the WHPX accelerator?
 
-    Starts a tiny VM PAUSED (-S). QEMU brings the accelerator up during
-    startup, so a process that is still alive after the timeout has already
-    proved WHPX works; one that exits immediately complaining about whpx has
-    proved it does not. Anything else (a missing BIOS, a broken install) is
-    NOT evidence about WHPX and must stay unknown rather than be reported as
-    "virtualization is off"."""
+    Starts a tiny VM PAUSED (-S) with a QMP monitor on stdio. There are two
+    ways to learn that it worked, and the fast one is checked first:
+
+      * the QMP GREETING appears (~0.06 s). QEMU writes it after machine init,
+        so it proves the accelerator is up. This is the normal path on a
+        healthy host, and it is why this call no longer costs a flat six
+        seconds on every machine that is fine -- which it did, because the only
+        signal used to be "still alive when the timeout expires", i.e. success
+        was measured by waiting out the whole budget.
+      * still ALIVE after `timeout`. Kept as the fallback: it needs nothing
+        from QMP and covers a QEMU build or stub whose stdout we cannot read.
+
+    A process that exits complaining about whpx has proved the feature is off.
+    Anything else (a missing BIOS, a broken install) is NOT evidence about WHPX
+    and must stay unknown rather than be reported as "virtualization is off" --
+    a false "your PC can't do this" is worse than saying nothing.
+
+    NOTE: since the engine now falls back to software emulation instead of
+    refusing to boot (omnidroid/accelprobe.py), a False here means "this will be
+    slow and here is how to fix it", not "this cannot run".
+    """
     proc = subprocess.Popen(
         [qemu, "-accel", "whpx", "-machine", "q35", "-m", "32",
-         "-display", "none", "-nodefaults", "-no-user-config", "-S"],
+         "-display", "none", "-nodefaults", "-no-user-config", "-S",
+         "-qmp", "stdio"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    if _qmp_greeting(proc, greeting_window):
+        proc.kill()                      # never leave a probe VM behind
+        try:
+            proc.wait(timeout=5)
+        except Exception:                # noqa: BLE001
+            pass
+        return True
     try:
         _, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:

@@ -260,6 +260,27 @@ def _parse_engine_stdout(stdout, code):
 # always gets to finish and emit its JSON verdict. The subprocess watchdog is
 # a backstop against a wedged engine, not the normal path.
 BOOT_TIMEOUT = 600
+
+# ...and then they agreed on a number that was still wrong, because BOTH sides
+# were measuring duration. 660 s is generous on the machine it was measured on
+# and nowhere near generous on a weak CPU, a thermally-throttled laptop, a box
+# already running twenty instances, or a PC with no hardware virtualization at
+# all, where the guest is EMULATED and a boot legitimately takes several times
+# as long (the engine falls back to software emulation now rather than refusing
+# to boot -- see omnidroid/accelprobe.py).
+#
+# So the app stopped measuring duration. The engine prints a progress line at
+# least every 15 s for the whole of a boot, which makes SILENCE a signal and
+# length not one. `IdleWatchdog` below is rearmed on every line the engine
+# writes and fires only when the engine has genuinely stopped talking: a wedged
+# engine is caught in about the time it always was, and a slow one is left to
+# finish. `engine_start` no longer sends `--timeout` at all -- the engine waits
+# on the guest's own progress signals and is in a far better position to judge.
+#
+# This is the budget for SILENCE, not for a boot. It has to clear the engine's
+# 15 s cadence by a wide margin, because a host thrashing hard enough to boot
+# slowly is also a host where a progress line can be late.
+ENGINE_IDLE_TIMEOUT = 180
 # Graceful in-guest power-off budget, passed to `stop --timeout`. The engine
 # escalates on its own (adb shutdown -> QMP quit -> kill), so this bounds only
 # the polite first step; the same "engine decides, we only backstop" rule
@@ -284,11 +305,69 @@ POOL_TIMEOUT = 90
 POOL_STOP_TIMEOUT = 300
 
 
+class IdleWatchdog:
+    """Kill the engine when it stops TALKING, not when it takes too long.
+
+    `threading.Timer(timeout, proc.kill)` was an absolute deadline, and an
+    absolute deadline is the wrong instrument here for two reasons:
+
+      1. A boot's length is a property of the user's PC, which we do not know.
+         Every host slower than the one the number was measured on had healthy
+         launches killed.
+      2. The engine spawns QEMU **detached**, so killing the engine does not
+         stop the VM. A wrong kill does not fail cleanly -- it orphans a live
+         instance holding gigabytes, reports failure to the UI, and leaves the
+         user with nothing to click that would stop it.
+
+    Rearmed by `poke()` on every line the engine writes. The engine emits a
+    progress line at least every 15 s throughout a boot, so a window measured in
+    minutes catches a genuinely wedged engine while never catching a slow one.
+    `timeout=None` disarms it entirely and starts no thread.
+    """
+
+    def __init__(self, timeout, on_idle):
+        self._timeout = timeout
+        self._on_idle = on_idle
+        self._last = time.monotonic()
+        self._stop = threading.Event()
+        self._thread = None
+        self.fired = False
+
+    def start(self):
+        if not self._timeout:
+            return self
+        self._last = time.monotonic()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def poke(self):
+        self._last = time.monotonic()
+
+    def cancel(self):
+        self._stop.set()
+
+    def _run(self):
+        # Poll rather than reschedule a Timer per line: a chatty engine would
+        # otherwise create and cancel a thread for every line it prints.
+        step = min(1.0, self._timeout / 4.0)
+        while not self._stop.wait(step):
+            if time.monotonic() - self._last >= self._timeout:
+                self.fired = True
+                try:
+                    self._on_idle()
+                except Exception:
+                    pass
+                return
+
+
 def run_engine(args, progress=None, timeout=None):
     """Run an engine subcommand; return its stdout JSON normalized to a dict.
 
     stderr progress lines are forwarded to `progress`. List results are
     wrapped as {"ok": ..., "accounts": [...]}.
+
+    `timeout` is a SILENCE budget, not a duration: see IdleWatchdog.
     """
     prefix = engine_prefix()
     if prefix is None:
@@ -323,9 +402,14 @@ def run_engine(args, progress=None, timeout=None):
         return {"ok": False, "error": "engine_spawn_failed", "message": str(err)}
 
     stderr_tail = []
+    watchdog = IdleWatchdog(timeout, proc.kill)
 
     def pump_stderr():
         for line in proc.stderr:
+            # EVERY line, before the filtering: the engine talking at all is
+            # what the watchdog is measuring, and a blank line is still the
+            # engine being alive.
+            watchdog.poke()
             line = line.rstrip()
             if not line:
                 continue
@@ -339,17 +423,36 @@ def run_engine(args, progress=None, timeout=None):
 
     threading.Thread(target=pump_stderr, daemon=True).start()
 
-    watchdog = threading.Timer(timeout, proc.kill) if timeout else None
-    if watchdog:
-        watchdog.start()
+    watchdog.start()
     try:
         stdout = proc.stdout.read()
         code = proc.wait()
     finally:
-        if watchdog:
-            watchdog.cancel()
+        watchdog.cancel()
 
     data = _parse_engine_stdout(stdout, code)
+
+    if watchdog.fired and data is None:
+        # SAY WHAT ACTUALLY HAPPENED. The engine spawns QEMU detached, so a
+        # killed engine can leave a fully-running instance behind; reporting a
+        # bare failure would have the user believe nothing was started while
+        # several gigabytes stayed committed. This is deliberately distinct
+        # from a boot that the engine itself gave up on.
+        #
+        # ...and only when there is nothing usable on stdout. The engine writes
+        # its JSON verdict and THEN exits, so an engine that wedges after
+        # printing it has already done the work — throwing that away would
+        # report a failure for a launch that succeeded, which is the same
+        # "the UI says it failed while the VM runs" defect the idle watchdog
+        # exists to stop.
+        return {
+            "ok": False,
+            "error": "engine_unresponsive",
+            "message": (f"The engine stopped reporting progress for "
+                        f"{int(timeout)}s and was stopped. The instance may "
+                        f"still be running — refresh the list, and use Stop if "
+                        f"it appears there."),
+        }
     if isinstance(data, list):
         result = {"ok": code == 0, "accounts": data}
     elif isinstance(data, dict):
@@ -1034,11 +1137,16 @@ class Api:
         # qemu_ok, and nothing in the app ever installed QEMU, so qemu_ok
         # could never become true and the download never began.
         ready = ready and eng.get("tools_ok", False)
-        # WHPX is a hard prerequisite on Windows -- omnidroid boots with
-        # -accel whpx and QEMU just dies if the feature is off -- so the UI
-        # has to be able to say so before the user hits Start. whpx_ok is
-        # tri-state (True/False/None-unknown); only an explicit False is a
-        # blocker, and it never gates a non-Windows host.
+        # WHPX is no longer a PREREQUISITE, and this comment used to say it
+        # was: omnidroid booted with -accel whpx unconditionally and QEMU died
+        # if the feature was off. The engine proves the accelerator now and
+        # falls back to software emulation when the host has none
+        # (omnidroid/accelprobe.py), so an unaccelerated PC runs the product --
+        # slowly, and with a boot wait that tolerates slow (omnidroid/
+        # bootwait.py). What is left for the UI to do is SAY SO, because the
+        # difference is large and the fix is usually one BIOS switch.
+        # whpx_ok stays tri-state (True/False/None-unknown); False is a
+        # warning, never a blocker, and it never applies to a non-Windows host.
         accel = bootstrap.windows_accel_status()
         return {"ok": True, "ready": ready, "installed": installed.get("artifacts", {}),
                 "qemu_ok": eng.get("qemu_ok", False), "qemu_hint": eng.get("qemu_hint"),
@@ -1295,7 +1403,12 @@ class Api:
         error = self._bad_name(name)
         if error:
             return error
-        args = ["start", name, "--json", "--timeout", str(BOOT_TIMEOUT)]
+        # No `--timeout`: the engine waits on the GUEST'S OWN progress signals
+        # (serial log, adb endpoint, dexopt count, QEMU's CPU time) and gives up
+        # on silence rather than on duration, which is the only way a boot can
+        # be judged without knowing how fast the user's PC is. Imposing a number
+        # from here would put the old ceiling straight back.
+        args = ["start", name, "--json"]
         if isinstance(mode, str) and mode.strip():
             asked = mode.strip().lower()
             # Resolve the alias BEFORE argv, so what we launch, what we report
@@ -1313,7 +1426,7 @@ class Api:
         if place is not None and str(place).strip():
             args += ["--place", str(place).strip()]
         result = run_engine(args, progress=self._progress(name),
-                            timeout=BOOT_TIMEOUT + WATCHDOG_GRACE)
+                            timeout=ENGINE_IDLE_TIMEOUT)
         if result.get("ok"):
             # Claim the lease NOW rather than waiting up to a heartbeat period:
             # the in-game exec bridge cannot claim its poll token until this

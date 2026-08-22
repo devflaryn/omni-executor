@@ -81,31 +81,49 @@ def test_version_report_carries_the_field_the_ui_reads():
     assert isinstance(rep["missing_commands"], list)
 
 
-def test_engine_start_gives_the_engine_a_deadline_it_can_meet(captured):
+def test_engine_start_imposes_no_deadline_of_its_own(captured):
     """The executor must not kill the engine before the engine gives up.
 
-    They used to disagree and the executor always lost: its watchdog fired at
-    300 s against the engine's own 360 s budget, so any boot slower than five
-    minutes was killed here first. Since the engine spawns QEMU DETACHED,
-    that orphans a live instance — the UI reports a failed start while the VM
-    runs on. Both numbers now come from one constant."""
+    HISTORY, because this test has now been through both halves of the same
+    mistake. It used to assert the two sides agreed on a NUMBER: the app's
+    watchdog fired at 300 s against the engine's own 360 s budget, so any boot
+    slower than five minutes was killed here first, and since the engine spawns
+    QEMU DETACHED that orphans a live instance — the UI reports a failed start
+    while the VM runs on. Agreeing on 600 fixed the disagreement and left the
+    real defect in place: a boot's length is a property of the USER'S PC, and no
+    constant compiled into this app knows what that is. A weak CPU, a throttled
+    laptop, twenty instances on one box, or a PC with no hardware
+    virtualization at all (the engine emulates rather than refusing to boot now)
+    all take longer than any number anybody measured here.
+
+    So the app stopped sending one. The engine waits on the guest's own progress
+    signals and gives up on SILENCE; this side's watchdog is a silence budget
+    too (see IdleWatchdog), rearmed by every line the engine prints.
+    """
     main.Api().engine_start("acct")
     argv = next(a for a in captured if a and a[0] == "start")
-    assert "--timeout" in argv, "engine must be given an explicit deadline"
-    engine_budget = int(argv[argv.index("--timeout") + 1])
-    assert engine_budget == main.BOOT_TIMEOUT
-    # our own kill must come strictly later than the engine's own give-up
-    assert main.BOOT_TIMEOUT + main.WATCHDOG_GRACE > engine_budget
+    assert "--timeout" not in argv, (
+        "the app is imposing a boot deadline on the engine again — that is the "
+        "ceiling this was removed to get rid of")
 
 
-def test_engine_start_deadline_exceeds_the_engines_normal_boot_budget():
-    """Guards the actual regression: 300 < the engine's NORMAL_BOOT_TIMEOUT."""
+def test_the_app_side_budget_is_silence_not_duration():
+    """It has to clear the engine's 15 s progress cadence by a wide margin, and
+    must not be anywhere near the length of a boot."""
+    assert main.ENGINE_IDLE_TIMEOUT >= 60
+    assert main.ENGINE_IDLE_TIMEOUT <= 600
+
+
+def test_the_engine_no_longer_carries_a_default_boot_deadline():
+    """The other half of the same change, asserted against the engine itself:
+    the product boot path must not invent a wall-clock budget."""
     try:
         from omnidroid import engine as omni
     except Exception:
         import pytest
         pytest.skip("omnidroid not importable here")
-    assert main.BOOT_TIMEOUT >= omni.NORMAL_BOOT_TIMEOUT
+    assert omni.default_boot_cap(first_boot=False) is None
+    assert omni.default_boot_cap(first_boot=True) is None
 
 
 def test_engine_stop_also_agrees_on_one_deadline(captured):

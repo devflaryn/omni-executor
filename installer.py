@@ -169,20 +169,17 @@ def install(progress=None) -> Path:
         # file from an older build is exactly the kind of thing that loads
         # instead of its replacement and is impossible to diagnose.
         say("Installing…")
+        old = None
         if target.exists():
             _stop_running(target)
-            old = target.with_name(target.name + ".old")
-            shutil.rmtree(old, ignore_errors=True)
-            try:
-                target.rename(old)
-            except OSError:
-                shutil.rmtree(target, ignore_errors=True)
-                old = None
-        else:
-            old = None
+            old = _clear_target(target)
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
-            shutil.copytree(source, target)
+            # dirs_exist_ok because `target` may still BE THERE: an empty
+            # directory Windows will not let go of is the ordinary case (see
+            # _clear_target). Its contents are gone either way, so this is
+            # still a replace and not a merge.
+            shutil.copytree(source, target, dirs_exist_ok=True)
         except Exception:
             if old and old.exists():          # put the working one back
                 shutil.rmtree(target, ignore_errors=True)
@@ -245,6 +242,70 @@ def install(progress=None) -> Path:
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
+
+def _clear_target(target: Path):
+    r"""Empty out an existing install so the new one replaces it, not merges.
+
+    Returns the renamed-aside directory to roll back to, or None.
+
+    THREE ESCALATING MOVES, because on Windows the first two are allowed to
+    fail for reasons that have nothing to do with us:
+
+      1. Rename the whole directory aside. Best case -- atomic, and it leaves a
+         copy to roll back to if the download turns out to be bad.
+      2. Failing that, delete it outright.
+      3. Failing THAT, delete its CONTENTS and leave the directory itself.
+
+    Step 3 is the one this function exists for. A directory handle held open by
+    Explorer, a shell sitting in it, or an indexer is enough to make both a
+    rename and a delete of the DIRECTORY fail with "used by another process",
+    while deleting the files inside it still works perfectly. The install is
+    then completely safe -- nothing stale survives -- and only the empty folder
+    remains.
+
+    THE BUG THIS REPLACES. The old code did `shutil.rmtree(target,
+    ignore_errors=True)` and carried on as if it had worked. When the directory
+    was locked, the rmtree silently did nothing and the next line --
+    `shutil.copytree(source, target)` without `dirs_exist_ok` -- raised
+
+        [WinError 183] Cannot create a file when that file already exists:
+        'C:\Users\<user>\AppData\Local\Programs\OmniExecutor'
+
+    which names a directory the user can plainly see exists, gives them nothing
+    to act on, and made every reinstall attempt fail identically. Reported from
+    a real machine 2026-08-18, where the holder was a leftover
+    OmniExecutorSetup.exe from a previous failed run.
+    """
+    old = target.with_name(target.name + ".old")
+    shutil.rmtree(old, ignore_errors=True)
+    try:
+        target.rename(old)
+        return old
+    except OSError:
+        pass
+    try:
+        shutil.rmtree(target)
+        return None
+    except OSError:
+        pass
+    # The directory itself will not go. Empty it instead -- that is what
+    # actually matters, and it almost always succeeds where the two above did
+    # not.
+    for child in target.iterdir():
+        try:
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+        except OSError:
+            # One undeletable leftover is a real problem: it is exactly the
+            # stale file that would load instead of its replacement.
+            raise InstallError(
+                f"{child} is in use, so it cannot be replaced. Close "
+                f"{APP_NAME} (and any window open in its folder) and run this "
+                f"installer again; a reboot always clears it."
+            )
+    return None
 
 def _stop_running(target: Path):
     """Close a running copy before replacing it, or the copy fails on a locked

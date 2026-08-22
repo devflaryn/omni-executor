@@ -146,14 +146,18 @@ export default function BootstrapView({ onReady }) {
           actually fine would be worse than saying nothing. */}
       {status?.whpx_ok === false && (
         <div className="max-w-md rounded-lg border border-amber-600/40 bg-amber-950/20 p-4 text-[13px]">
+          {/* "will be slow", not "is broken". The engine falls back to
+              software emulation rather than refusing to boot, so this is a
+              speed warning with an offer attached — wording it as a blocker
+              would send away a user whose machine works. */}
           <p className="mb-2 font-medium text-amber-400">
-            Virtualization needs turning on
+            This PC is running the VM without hardware acceleration
           </p>
           <p className="mb-3 whitespace-pre-line text-ink-2">
             {status.whpx_hint}
           </p>
           <Button size="sm" variant="solid" disabled={enabling} onClick={onEnable}>
-            {enabling ? "Waiting for permission…" : "Turn it on"}
+            {enabling ? "Waiting for permission…" : "Turn on acceleration"}
           </Button>
         </div>
       )}
