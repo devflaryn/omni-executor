@@ -34,7 +34,7 @@ import bootstrap
 # The app version this build reports. Bumped when a build is published (see
 # omni-backend/scripts/push-app.mjs); compared against the manifest's
 # `app.version` to decide whether an update exists.
-APP_VERSION = "1.0.22"
+APP_VERSION = "1.0.24"
 
 # Where a downloaded app build is unpacked before it replaces the live one.
 STAGING_DIR = "app-update"
@@ -329,12 +329,30 @@ def _executable_in(build: Path):
 # ------------------------------------------------- the swap (child process)
 
 def apply_staged_app(target_dir, wait_pid, timeout=90, log=print):
-    """Replace `target_dir` with the build this process is running from.
+    r"""Replace `target_dir` with the build this process is running from.
 
-    Runs in the STAGED copy, launched by launch_apply() from the old one. The
-    old directory is renamed aside rather than deleted, and put back if the
-    copy fails â€” a half-copied application directory is the one outcome worse
-    than not updating.
+    Runs in the STAGED copy, launched by launch_apply() from the old one.
+
+    FILE BY FILE, never `target -> target.old`, and that distinction is the
+    whole of this function's history. The rename is the obvious swap and it
+    does not work: Windows refuses to rename a directory while any process
+    holds a handle inside it, and this app leaves such processes behind on
+    purpose. update_app_restart() says outright that QEMU is detached and the
+    VMs outlive the window; each instance also has a `_windowlock` (and a
+    viewer) that is omni-exec.exe running out of the install directory for as
+    long as its window is on screen, and every one of them inherits that
+    directory as its working directory. So every user with an instance up got
+
+        [WinError 32] ... \Programs\OmniExecutor
+                       -> \Programs\OmniExecutor.old
+
+    and a PyInstaller crash dialog instead of an update. Three times in this
+    machine's own update.log (2026-08-16, -18, -22) before it was read.
+
+    bootstrap.replace_tree does the same job without ever renaming or deleting
+    a directory, and puts every file back if any part of it fails: a
+    half-copied application directory is still the one outcome worse than not
+    updating.
     """
     target = Path(target_dir)
     source = app_dir()
@@ -352,19 +370,9 @@ def apply_staged_app(target_dir, wait_pid, timeout=90, log=print):
     # Windows can hold a file briefly after the process is gone.
     time.sleep(1.0)
 
-    backup = target.with_name(target.name + ".old")
-    shutil.rmtree(backup, ignore_errors=True)
-    log(f"[update] {target} -> {backup}")
-    target.rename(backup)
-    try:
-        log(f"[update] installing {source}")
-        shutil.copytree(source, target)
-    except Exception:
-        log("[update] copy failed; restoring the previous build")
-        shutil.rmtree(target, ignore_errors=True)
-        backup.rename(target)
-        raise
-    shutil.rmtree(backup, ignore_errors=True)
+    log(f"[update] replacing {target} with {source}")
+    report = bootstrap.replace_tree(source, target, log=log)
+    log(f"[update] {report['files']} file(s) installed")
 
     # The staging dir has served its purpose. Leaving it costs ~90 MB and, more
     # to the point, leaves a receipt the new build would read on its next

@@ -1720,22 +1720,50 @@ def _apply_update_mode(argv):
     updates.launch_apply). It is a mode of the app rather than a separate
     helper binary so there is nothing extra to ship, sign or keep in step —
     and because the code that knows how to lay this build out is right here.
+
+    Returns a process exit code, and NEVER raises. A windowed PyInstaller
+    build turns an uncaught exception into "Failed to execute script 'main'"
+    over a Python traceback, and that is precisely what a user saw the three
+    times the swap failed: an alarming dialog about a program they never
+    launched, naming files they have no reason to know about, and no way back
+    to the app that was in fact still installed and perfectly fine.
     """
     import updates
-    target, pid = argv[2], argv[3]
-    try:
-        updates.apply_staged_app(target, pid)
-    except Exception as exc:  # noqa: BLE001
-        # Nobody is watching a detached console; leave a trace where the app
-        # (and the next support question) will look.
+
+    def note(line):
+        """Leave a trace where the app -- and the next support question --
+        will look. Nobody is watching a detached console."""
         try:
-            log = bootstrap.runtime_dir() / "update.log"
-            with open(log, "a", encoding="utf-8") as f:
-                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} apply-update "
-                        f"failed: {exc}\n")
+            with open(bootstrap.runtime_dir() / "update.log", "a",
+                      encoding="utf-8") as f:
+                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}\n")
         except OSError:
             pass
-        raise
+
+    target, pid = argv[2], argv[3]
+    try:
+        updates.apply_staged_app(target, pid, log=note)
+    except Exception as exc:  # noqa: BLE001 — this is the last line of defence
+        note(f"apply-update failed: {exc}")
+        _fatal_dialog(
+            "Omni Executor could not update",
+            f"The update could not be installed, so the version you already "
+            f"have has been left exactly as it was.\n\n{exc}\n\n"
+            f"It will try again next time. Closing every Omni Executor window "
+            f"first — instance windows included — is usually enough.")
+        # Put the user back where they were. apply_staged_app is all-or-
+        # nothing, so the existing install is intact and launchable.
+        exe = updates._executable_in(Path(target))
+        if exe is not None:
+            try:
+                subprocess.Popen(
+                    [str(exe)], stdin=subprocess.DEVNULL,
+                    **({"creationflags": 0x00000008} if sys.platform == "win32"
+                       else {"start_new_session": True}))
+            except OSError:
+                pass
+        return 1
+    return 0
 
 
 # Windows stamps every file extracted from a DOWNLOADED zip with this
@@ -1815,8 +1843,18 @@ def _fatal_dialog(title, message):
 
 def main():
     if len(sys.argv) > 3 and sys.argv[1] == "--apply-update":
-        _apply_update_mode(sys.argv)
-        return
+        return _apply_update_mode(sys.argv)
+
+    # The other half of the file-by-file swap (bootstrap.replace_tree): the
+    # build we replaced is PARKED in a `.omni-replaced-*` folder rather than
+    # deleted, because a DLL that was still loaded at swap time can be renamed
+    # but not removed. Now is when it can go -- whatever was holding it
+    # belonged to the previous build, and the previous build is gone.
+    if getattr(sys, "frozen", False):
+        try:
+            bootstrap.sweep_replaced(Path(sys.executable).resolve().parent)
+        except OSError:
+            pass
 
     # Before anything imports the CLR. webview.start() is what pulls in the
     # WinForms backend, so this only has to beat the bottom of this function —

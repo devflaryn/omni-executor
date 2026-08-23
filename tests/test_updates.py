@@ -270,3 +270,107 @@ def test_a_published_app_build_does_not_make_an_installed_runtime_look_incomplet
     installed = {"artifacts": {"base-x86": {"sha256": "e" * 64}}}
     # Everything installable is installed -> nothing to do -> ready.
     assert bootstrap.plan_downloads(manifest, installed) == []
+
+
+# ------------------------------------------------------------- the swap
+
+def _seed(root, files):
+    for rel, text in files.items():
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+    return root
+
+
+def test_the_swap_survives_an_install_folder_that_cannot_be_renamed(
+        tmp_path, monkeypatch):
+    r"""THE REPORTED FAILURE, end to end.
+
+        [WinError 32] The process cannot access the file because it is being
+        used by another process: '...\Programs\OmniExecutor'
+            -> '...\Programs\OmniExecutor.old'
+
+    Logged three times on one machine (2026-08-16, -18, -22) and surfaced as a
+    PyInstaller crash dialog each time. The holder is ordinary: QEMU is spawned
+    detached and outlives the app by design, every instance runs a `_windowlock`
+    that is omni-exec.exe out of the install folder, and all of them inherit
+    that folder as their working directory -- so anyone with an instance up
+    could never update. The swap must not depend on moving the directory.
+    """
+    import os
+    staged = _seed(tmp_path / "staged" / "omni-exec",
+                   {"omni-exec.exe": "v2", "_internal/py.dll": "v2 dll"})
+    target = _seed(tmp_path / "OmniExecutor",
+                   {"omni-exec.exe": "v1", "_internal/py.dll": "v1 dll",
+                    "_internal/dropped-in-v2.pyd": "stale"})
+
+    real_rename = os.rename
+
+    def no_directory_moves(src, dst, *a, **k):
+        if Path(src).is_dir():
+            raise OSError(32, "used by another process")
+        return real_rename(src, dst, *a, **k)
+
+    monkeypatch.setattr(os, "rename", no_directory_moves)
+    monkeypatch.setattr(updates, "app_dir", lambda: staged)
+    monkeypatch.setattr(updates.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(updates, "discard_staged", lambda: None)
+    monkeypatch.setattr(updates.subprocess, "Popen", lambda *a, **k: None)
+
+    result = updates.apply_staged_app(target, 999999, log=lambda _m: None)
+
+    assert result["ok"] is True
+    assert (target / "omni-exec.exe").read_text(encoding="utf-8") == "v2"
+    assert (target / "_internal" / "py.dll").read_text(encoding="utf-8") == "v2 dll"
+    assert not (target / "_internal" / "dropped-in-v2.pyd").exists(), \
+        "a replace, not a merge"
+
+
+def test_a_failed_swap_leaves_the_working_build_in_place(tmp_path, monkeypatch):
+    """What the user is promised when it does go wrong: the version they
+    already have, exactly as it was."""
+    staged = _seed(tmp_path / "staged" / "omni-exec",
+                   {"omni-exec.exe": "v2", "_internal/py.dll": "v2 dll"})
+    target = _seed(tmp_path / "OmniExecutor",
+                   {"omni-exec.exe": "v1", "_internal/py.dll": "v1 dll"})
+
+    monkeypatch.setattr(updates, "app_dir", lambda: staged)
+    monkeypatch.setattr(updates.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(bootstrap.shutil, "copy2",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError(28, "no space")))
+
+    with pytest.raises(OSError):
+        updates.apply_staged_app(target, 999999, log=lambda _m: None)
+
+    assert (target / "omni-exec.exe").read_text(encoding="utf-8") == "v1"
+    assert (target / "_internal" / "py.dll").read_text(encoding="utf-8") == "v1 dll"
+
+
+def test_a_failed_swap_never_reaches_the_interpreter(tmp_path, monkeypatch):
+    """`--apply-update` runs in a windowed build with no console, so an
+    exception escaping it is the "Failed to execute script 'main'" traceback
+    dialog the user was shown. It must be a message and a relaunch instead."""
+    import main
+
+    target = _seed(tmp_path / "OmniExecutor", {"omni-exec.exe": "v1"})
+    shown, launched = [], []
+
+    monkeypatch.setattr(main, "_fatal_dialog",
+                        lambda title, msg: shown.append((title, msg)))
+    monkeypatch.setattr(main.bootstrap, "runtime_dir", lambda: tmp_path)
+    monkeypatch.setattr(updates, "apply_staged_app",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            OSError(32, "used by another process")))
+    monkeypatch.setattr(updates, "_executable_in",
+                        lambda t: Path(t) / "omni-exec.exe")
+    monkeypatch.setattr(main.subprocess, "Popen",
+                        lambda cmd, **k: launched.append(cmd))
+
+    code = main._apply_update_mode(["omni-exec.exe", "--apply-update",
+                                    str(target), "999999"])
+
+    assert code == 1
+    assert shown, "the user is told, in a dialog, not a traceback"
+    assert launched, "and put back on the version they already had"
+    assert "used by another process" in (tmp_path / "update.log").read_text(
+        encoding="utf-8"), "and it is still written down"

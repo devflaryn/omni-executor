@@ -291,6 +291,175 @@ def _discard(path: Path) -> None:
             f"copy of the app may be updating at the same time.") from e
 
 
+# ------------------------------------------- replacing an installed app tree
+#
+# Windows will not rename or delete a DIRECTORY while any process holds a
+# handle inside it, and this app deliberately leaves such processes behind:
+# the per-instance `_windowlock` aspect lock and the VNC viewer are detached
+# copies of omni-exec.exe launched FROM the install directory and designed to
+# outlive the window that started them, and every QEMU inherits that directory
+# as its working directory. So `install-dir -> install-dir.old` -- the obvious
+# way to swap a build -- fails with
+#
+#     [WinError 32] The process cannot access the file because it is being
+#     used by another process: '...\Programs\OmniExecutor'
+#         -> '...\Programs\OmniExecutor.old'
+#
+# for any user who has an instance running, which is most of them. Recorded
+# three times in update.log on the dev machine (2026-08-16, -18, -22) before
+# anyone read it; the app's own comment in update_app_restart() says outright
+# that VMs outlive the process, which is exactly what makes it the normal case
+# rather than an edge one.
+#
+# FILES are different. Renaming a file whose image is loaded, or which is open
+# for reading, is allowed -- it is how every self-updating program on Windows
+# works. So this replaces a build one file at a time and never touches a
+# directory: existing files are parked in a subdirectory, the new ones are
+# copied in, and anything the old build had that the new one does not is gone
+# because it was parked, not because a tree was deleted.
+
+_TRASH_PREFIX = ".omni-replaced-"
+
+
+def _tree_files(root: Path, skip_prefix: str = None) -> list:
+    """Every file under `root`, as paths relative to it. Directories are not
+    listed: this module never acts on one."""
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        if skip_prefix:
+            dirnames[:] = [d for d in dirnames if not d.startswith(skip_prefix)]
+        for name in filenames:
+            out.append(Path(dirpath, name).relative_to(root))
+    return out
+
+
+def replace_tree(source: Path, target: Path, log=None) -> dict:
+    r"""Make `target` hold exactly what `source` holds. Returns a small report.
+
+    A REPLACE, not a merge: a file the old build had and the new one does not
+    is removed, because a leftover that loads instead of its replacement is the
+    kind of bug nobody ever diagnoses.
+
+    ALL OR NOTHING. Every existing file is parked before a single new one is
+    written, and if any part of it fails the parked files go back exactly where
+    they were -- a half-copied application directory is the one outcome worse
+    than not updating at all.
+
+    What it will NOT do is rename or delete a directory, for the reason above.
+    The cost is a `.omni-replaced-*` folder left inside the target whenever the
+    old files were still locked when the swap finished (a loaded DLL can be
+    renamed but not deleted). sweep_replaced() clears those on a later launch,
+    when nothing is holding them any more.
+    """
+    source, target = Path(source), Path(target)
+    say = log if callable(log) else (lambda _m: None)
+    if not source.is_dir():
+        raise BootstrapError(f"there is nothing to install from: {source}")
+    target.mkdir(parents=True, exist_ok=True)
+    # Anything a PREVIOUS swap had to leave behind. Now is a good moment: that
+    # build has not run since, so whatever was holding its files is gone.
+    sweep_replaced(target, log=log)
+
+    # Inside the target on purpose. A rename only ever works within one volume,
+    # and this is the one directory guaranteed to be on the same volume as the
+    # files being moved.
+    trash = target / f"{_TRASH_PREFIX}{int(time.time())}"
+    n = 0
+    while trash.exists():            # a leftover the sweep above could not take
+        n += 1
+        trash = target / f"{_TRASH_PREFIX}{int(time.time())}-{n}"
+    trash.mkdir(parents=True)
+
+    moved = []                       # (parked, original) -- the rollback list
+    try:
+        for rel in _tree_files(target, skip_prefix=_TRASH_PREFIX):
+            original, parked = target / rel, trash / rel
+            parked.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.rename(original, parked)
+            except OSError as e:
+                raise BootstrapError(
+                    f"{original} is in use and cannot be replaced ({e}). Close "
+                    f"Omni Executor and anything running out of its folder, "
+                    f"then try again; a reboot always clears it.") from e
+            moved.append((parked, original))
+        if moved:
+            say(f"[replace] parked {len(moved)} file(s) in {trash.name}")
+
+        copied = 0
+        for rel in _tree_files(source):
+            dest = target / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source / rel, dest)
+            copied += 1
+        say(f"[replace] wrote {copied} file(s) to {target}")
+    except BaseException:
+        say("[replace] failed -- putting the previous build back")
+        for parked, original in reversed(moved):
+            try:
+                original.parent.mkdir(parents=True, exist_ok=True)
+                # replace, not rename: a file we had already copied over the
+                # top of this one has to lose.
+                os.replace(parked, original)
+            except OSError:
+                pass
+        shutil.rmtree(trash, ignore_errors=True)
+        raise
+
+    # Empty directories the new build has no use for. Best effort by
+    # definition -- one that is some process's working directory will not go,
+    # and an empty folder harms nothing.
+    _prune_empty_dirs(target, keep=source)
+
+    shutil.rmtree(trash, ignore_errors=True)
+    leftover = trash.exists()
+    if leftover:
+        say(f"[replace] {trash.name} is still held; it will be swept later")
+    return {"files": copied, "parked": len(moved),
+            "leftover": str(trash) if leftover else None}
+
+
+def _prune_empty_dirs(target: Path, keep: Path) -> None:
+    for dirpath, dirnames, filenames in os.walk(target, topdown=False):
+        here = Path(dirpath)
+        if here == target:
+            continue
+        rel = here.relative_to(target)
+        if any(part.startswith(_TRASH_PREFIX) for part in rel.parts):
+            continue
+        if (keep / rel).is_dir():
+            continue
+        try:
+            here.rmdir()
+        except OSError:
+            pass
+
+
+def sweep_replaced(target: Path, log=None) -> int:
+    """Delete the parked leftovers replace_tree could not remove at the time.
+
+    A DLL that was still loaded during the swap can be renamed but not deleted
+    until the process holding it exits, so it is left behind rather than
+    failing an update that otherwise worked. This is the other half: call it at
+    startup, when the previous build's helpers are long gone. Returns how many
+    folders it cleared."""
+    target = Path(target)
+    cleared = 0
+    try:
+        entries = list(target.iterdir())
+    except OSError:
+        return 0
+    for child in entries:
+        if not child.name.startswith(_TRASH_PREFIX) or not child.is_dir():
+            continue
+        shutil.rmtree(child, ignore_errors=True)
+        if not child.exists():
+            cleared += 1
+            if log:
+                log(f"[replace] swept {child.name}")
+    return cleared
+
+
 def place_artifact(artifact: dict, tmp_path: Path, rt: Path) -> None:
     dest_dir = rt / artifact["dest"]
     dest_dir.mkdir(parents=True, exist_ok=True)
