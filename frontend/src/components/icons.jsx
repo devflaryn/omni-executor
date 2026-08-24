@@ -207,3 +207,16 @@ export const LayersIcon = (props) => (
     <path d="m3 12.5 9 5 9-5M3 17l9 5 9-5" />
   </svg>
 );
+
+export const HomeIcon = (props) => (
+  <svg {...base} {...props}>
+    <path d="m3 10 9-7 9 7v10a2 2 0 0 1-2 2h-4v-7h-6v7H5a2 2 0 0 1-2-2z" />
+  </svg>
+);
+
+export const CheckSquareIcon = (props) => (
+  <svg {...base} {...props}>
+    <rect x="3" y="3" width="18" height="18" rx="3" />
+    <path d="m8 12 3 3 5-6" />
+  </svg>
+);

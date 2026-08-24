@@ -24,7 +24,7 @@ hiddenimports = []
 # This app's own modules — see OmniExecutor-win.spec: declared for the record,
 # not out of need. Kept identical to the Windows spec on purpose (tests/
 # test_packaging.py asserts the two agree).
-hiddenimports += ["accountsync", "cloud", "bootstrap", "updates"]
+hiddenimports += ["accountsync", "cloud", "bootstrap", "updates", "windowchrome"]
 hiddenimports += collect_submodules("omnidroid")
 # Selenium drives the "add account" browser login (omnidroid/accounts.py). It is
 # imported LAZILY inside the login functions, so PyInstaller's static analysis
@@ -35,6 +35,32 @@ hiddenimports += collect_submodules("selenium")
 # The built-in VNC viewer (omnidroid/vncview.py) imports tkinter and PIL INSIDE
 # its run function, so the frozen viewer died with "Pillow is required".
 hiddenimports += ["tkinter", "PIL.Image", "PIL.ImageTk"]
+
+# ---------------------------------------------------------------- dev mode
+# DEV MODE IS NOT SHIPPED. `devserver` (omni-executor) and `omnidroid.devserver`
+# redirect every call bound for http://72.62.59.232 to a local omni-backend, so
+# an update can be exercised end to end before it is published. Every call site
+# imports them in a try/except and falls back to the production server, which
+# means keeping them OUT of the bundle is the whole enforcement: a customer's
+# copy has no code to switch on, with or without an env var or a dropped-in
+# dev.json.
+#
+# collect_submodules("omnidroid") returns omnidroid.devserver, so it is filtered
+# from hiddenimports as well as excluded -- a name that is both hidden-imported
+# and excluded is PyInstaller's to arbitrate, and this is not a thing to leave
+# to a version bump.
+#
+# Set OMNI_DEV_BUILD=1 to build a bundle that KEEPS them (that is the point of
+# the feature). Never set it for a build that gets published.
+DEV_MODULES = ["devserver", "omnidroid.devserver"]
+DEV_BUILD = os.environ.get("OMNI_DEV_BUILD", "").strip().lower() in ("1", "true", "yes", "on")
+if DEV_BUILD:
+    print("*** OMNI_DEV_BUILD=1: bundling dev mode (%s). DO NOT PUBLISH. ***"
+          % ", ".join(DEV_MODULES))
+    dev_excludes = []
+else:
+    hiddenimports = [h for h in hiddenimports if h not in DEV_MODULES]
+    dev_excludes = list(DEV_MODULES)
 
 datas = [
     (os.path.join(PROJECT_DIR, "frontend", "dist"), "frontend/dist"),
@@ -53,7 +79,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=dev_excludes,
     noarchive=False,
     cipher=block_cipher,
 )

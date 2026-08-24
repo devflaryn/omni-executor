@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, bootstrapStatus, hasBackend, loadSettings, saveSettings } from "./api.js";
 import { EngineProvider, useEngine } from "./engine.jsx";
+import { EditorStoreProvider } from "./editorStore.jsx";
 import Sidebar from "./components/Sidebar.jsx";
-import WindowBar from "./components/WindowBar.jsx";
+import TitleBar, { ResizeEdges } from "./components/TitleBar.jsx";
+import HomeView from "./components/HomeView.jsx";
 import EditorView from "./components/EditorView.jsx";
 import AccountsView from "./components/AccountsView.jsx";
 import SettingsView from "./components/SettingsView.jsx";
@@ -10,19 +12,23 @@ import BootstrapView from "./components/BootstrapView.jsx";
 import AuthView from "./components/AuthView.jsx";
 import { UpdateBanner, useUpdates } from "./components/UpdateBanner.jsx";
 import Toast from "./components/Toast.jsx";
-import { CodeIcon, GearIcon, UsersIcon } from "./components/icons.jsx";
+import { CodeIcon, GearIcon, HomeIcon, UsersIcon } from "./components/icons.jsx";
 
 const NAV = [
-  { id: "editor", label: "Editor", Icon: CodeIcon, hint: "1" },
-  { id: "accounts", label: "Instances", Icon: UsersIcon, hint: "2" },
-  { id: "settings", label: "Settings", Icon: GearIcon, hint: "3" },
+  { id: "home", label: "Home", Icon: HomeIcon, hint: "1" },
+  { id: "editor", label: "Editor", Icon: CodeIcon, hint: "2" },
+  { id: "accounts", label: "Instances", Icon: UsersIcon, hint: "3" },
+  { id: "settings", label: "Settings", Icon: GearIcon, hint: "4" },
 ];
 
 const DEFAULT_LAUNCH = { mode: "gaming", gpu: "auto", place: "", multiInstance: false };
 const DEFAULT_PROFILE = { name: "Guest", tag: "" };
 
 export default function App() {
-  const [tab, setTab] = useState("editor");
+  const [tab, setTab] = useState("home");
+  // Home's "Add account" opens the Instances tab's dialog: a counter, so each
+  // press opens it again even if the last one was dismissed.
+  const [addRequest, setAddRequest] = useState(0);
   const [theme, setTheme] = useState("dark");
   const [compact, setCompact] = useState(false);
   const [profile, setProfile] = useState(DEFAULT_PROFILE);
@@ -30,7 +36,7 @@ export default function App() {
   const [toast, setToast] = useState(null);
   // Window chrome: nothing in a browser, native traffic lights on macOS,
   // our own buttons on Windows/Linux. Resolved once from the backend.
-  const [chrome, setChrome] = useState({ desktop: false, mac: false });
+  const [chrome, setChrome] = useState({ desktop: false, mac: false, platform: "browser" });
   // First-boot gate: null = unknown (render nothing yet), false = show
   // BootstrapView, true = runtime ready (or no backend — dev/browser).
   const [ready, setReady] = useState(null);
@@ -59,7 +65,11 @@ export default function App() {
         return;
       }
       const platform = await api("get_platform");
-      setChrome({ desktop: true, mac: platform === "darwin" });
+      setChrome({
+        desktop: true,
+        mac: platform === "darwin",
+        platform: platform === "darwin" ? "mac" : platform === "win32" ? "windows" : "linux",
+      });
       await refreshAuth();
       const s = await bootstrapStatus();
       setReady(Boolean(s?.ready));
@@ -111,7 +121,7 @@ export default function App() {
     saveSettings({ launch: next });
   }, []);
 
-  // Ctrl/Cmd+1..3 jumps between sections, as long as you aren't typing.
+  // Ctrl/Cmd+1..4 jumps between sections, as long as you aren't typing.
   useEffect(() => {
     const onKey = (e) => {
       if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
@@ -128,62 +138,88 @@ export default function App() {
   if (ready === null || auth === null) return null;
   // Sign-in comes BEFORE the runtime download: the multi-gigabyte base images
   // are worth fetching only for someone who can actually use them, and the
-  // license check is the cheap question to ask first.
-  if (!auth.signedIn) {
+  // license check is the cheap question to ask first. Both gates sit under
+  // the same titlebar as the app: the window must be movable and closable
+  // before anyone has signed in.
+  const gate = !auth.signedIn ? (
+    <AuthView apiBase={auth.apiBase} deviceName={auth.device?.name} onSignedIn={() => refreshAuth()} />
+  ) : ready === false ? (
+    <BootstrapView onReady={() => setReady(true)} />
+  ) : null;
+  if (gate) {
     return (
-      <AuthView
-        apiBase={auth.apiBase}
-        deviceName={auth.device?.name}
-        onSignedIn={() => refreshAuth()}
-      />
+      <div className="flex h-screen flex-col overflow-hidden bg-canvas font-sans text-ink antialiased select-none">
+        <ResizeEdges chrome={chrome} />
+        <TitleBar
+          title="Omni Executor"
+          subtitle={!auth.signedIn ? "Sign in" : "Setup"}
+          chrome={chrome}
+          leading={chrome.mac ? <span className="w-[64px]" aria-hidden="true" /> : null}
+        />
+        <div className="flex min-h-0 flex-1 flex-col">{gate}</div>
+      </div>
     );
   }
-  if (ready === false) return <BootstrapView onReady={() => setReady(true)} />;
 
   return (
     <EngineProvider activeTab={tab} showToast={showToast}>
-      <div className="flex h-screen overflow-hidden bg-canvas font-sans text-ink antialiased select-none">
-        <Sidebar
-          nav={NAV}
-          tab={tab}
-          onTab={switchTab}
-          collapsed={compact}
-          onCollapse={applyCompact}
-          mac={chrome.mac}
-        />
+      <EditorStoreProvider>
+        <div className="flex h-screen overflow-hidden bg-canvas font-sans text-ink antialiased select-none">
+          <ResizeEdges chrome={chrome} />
+          <Sidebar
+            nav={NAV}
+            tab={tab}
+            onTab={switchTab}
+            collapsed={compact}
+            onCollapse={applyCompact}
+            chrome={chrome}
+          />
 
-        <div className="flex min-w-0 flex-1 flex-col">
-          <ContextBar tab={tab} profile={profile} chrome={chrome} />
-          <UpdateBanner updates={updates} onOpenSettings={() => switchTab("settings")} />
+          <div className="flex min-w-0 flex-1 flex-col">
+            <ContextBar tab={tab} profile={profile} chrome={chrome} />
+            <UpdateBanner updates={updates} onOpenSettings={() => switchTab("settings")} />
 
-          {/* Every view stays mounted so the editor keeps its buffer and the
-              instances list keeps its selection; only visibility changes. */}
-          <main className="flex min-h-0 flex-1 flex-col">
-            <EditorView active={tab === "editor"} showToast={showToast} />
-            <AccountsView
-              active={tab === "accounts"}
-              launch={launch}
-              onLaunch={updateLaunch}
-              showToast={showToast}
-            />
-            <SettingsView
-              active={tab === "settings"}
-              theme={theme}
-              onTheme={applyTheme}
-              compact={compact}
-              onCompact={applyCompact}
-              profile={profile}
-              onProfile={updateProfile}
-              showToast={showToast}
-              auth={auth}
-              onAuthChange={refreshAuth}
-              updates={updates}
-            />
-          </main>
+            {/* Every view stays mounted so the editor keeps its buffer and the
+                instances list keeps its selection; only visibility changes. */}
+            <main className="flex min-h-0 flex-1 flex-col">
+              <HomeView
+                active={tab === "home"}
+                profile={profile}
+                launch={launch}
+                onGo={switchTab}
+                onAddAccount={() => {
+                  switchTab("accounts");
+                  setAddRequest((n) => n + 1);
+                }}
+                showToast={showToast}
+              />
+              <EditorView active={tab === "editor"} showToast={showToast} />
+              <AccountsView
+                active={tab === "accounts"}
+                launch={launch}
+                onLaunch={updateLaunch}
+                showToast={showToast}
+                addRequest={addRequest}
+              />
+              <SettingsView
+                active={tab === "settings"}
+                theme={theme}
+                onTheme={applyTheme}
+                compact={compact}
+                onCompact={applyCompact}
+                profile={profile}
+                onProfile={updateProfile}
+                showToast={showToast}
+                auth={auth}
+                onAuthChange={refreshAuth}
+                updates={updates}
+              />
+            </main>
+          </div>
+
+          <Toast toast={toast} />
         </div>
-
-        <Toast toast={toast} />
-      </div>
+      </EditorStoreProvider>
     </EngineProvider>
   );
 }
@@ -200,7 +236,11 @@ function ContextBar({ tab, profile, chrome }) {
         }`
       : tab === "editor"
         ? `Engine ${health.label.toLowerCase()}`
-        : profile.name || "Guest";
+        : tab === "home"
+          ? running.length
+            ? `${running.length} running`
+            : `Engine ${health.label.toLowerCase()}`
+          : profile.name || "Guest";
 
-  return <WindowBar title={nav?.label ?? "Omni Executor"} subtitle={subtitle} chrome={chrome} />;
+  return <TitleBar title={nav?.label ?? "Omni Executor"} subtitle={subtitle} chrome={chrome} />;
 }

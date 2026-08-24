@@ -212,53 +212,103 @@ export function EngineProvider({ activeTab, showToast, children }) {
     [refreshList, showToast]
   );
 
+  /* `bulk` is set by startMany: several instances were asked for at once, so
+     the single-instance guard does not apply (the intent IS many) and the
+     viewer is not popped for each one — a farm of windows is not a thing
+     anyone wants opened for them. */
   const start = useCallback(
-    async (name, launch) => {
+    async (name, launch, { bulk = false } = {}) => {
       const account = accounts.find((a) => a.name === name);
-      if (account?.running) return openViewer(name);
+      if (account?.running) return bulk ? true : openViewer(name);
       const far = presence[name];
       if (far?.state === "running" && !far.isLocal) {
         // Same Roblox account in two places logs one of them out. Say where it
         // already is rather than silently starting a session that will fight
         // the other one.
         showToast(`${name} is already ${far.label.toLowerCase()}. Stop it there first.`, "error");
-        return;
+        return false;
       }
-      if (!launch.multiInstance && accounts.some((a) => a.running && a.name !== name)) {
+      if (!bulk && !launch.multiInstance && accounts.some((a) => a.running && a.name !== name)) {
         showToast("Another instance is already running. Turn on Multi-instance to run several.", "error");
-        return;
+        return false;
       }
       setBusyFor(name, "Starting");
       const res = await api("engine_start", name, launch.mode, launch.place, launch.gpu);
       setBusyFor(name, null);
       clearProgress(name);
       if (res.ok) {
-        showToast(
-          res.first_boot ? `${name} is booting — first boot takes a while` : `${name} is running`,
-          "success"
-        );
+        if (!bulk) {
+          showToast(
+            res.first_boot ? `${name} is booting — first boot takes a while` : `${name} is running`,
+            "success"
+          );
+        }
         await refreshList();
         refreshPresence();
-        openViewer(name);
-      } else {
-        showToast(errText(res), "error");
-        refreshList();
+        if (!bulk) openViewer(name);
+        return true;
       }
+      showToast(bulk ? `${name}: ${errText(res)}` : errText(res), "error");
+      refreshList();
+      return false;
     },
     [accounts, clearProgress, openViewer, presence, refreshList, refreshPresence, setBusyFor, showToast]
   );
 
+  /* Launch several. Each start is its own bridge call on its own thread, so
+     they run concurrently; the stagger just keeps N QEMU spawns from landing
+     in the same millisecond. Resolves when the last one has reported. */
+  const startMany = useCallback(
+    async (names, launch) => {
+      const list = names.filter((n, i) => names.indexOf(n) === i);
+      if (!list.length) return { ok: 0, failed: 0 };
+      const results = await Promise.all(
+        list.map(
+          (name, i) =>
+            new Promise((resolve) =>
+              setTimeout(() => start(name, launch, { bulk: true }).then(resolve), i * 1200)
+            )
+        )
+      );
+      const ok = results.filter(Boolean).length;
+      const failed = list.length - ok;
+      showToast(
+        failed === 0
+          ? `Launching ${ok} ${ok === 1 ? "instance" : "instances"}`
+          : `${ok} launched, ${failed} failed`,
+        failed === 0 ? "success" : "error"
+      );
+      return { ok, failed };
+    },
+    [start, showToast]
+  );
+
   const stop = useCallback(
-    async (name) => {
+    async (name, { bulk = false } = {}) => {
       setBusyFor(name, "Stopping");
       const res = await api("engine_stop", name);
       setBusyFor(name, null);
       clearProgress(name);
-      showToast(res.ok ? `Stopped ${name}` : errText(res), res.ok ? "success" : "error");
+      if (!bulk || !res.ok) showToast(res.ok ? `Stopped ${name}` : errText(res), res.ok ? "success" : "error");
       refreshList();
       refreshPresence();
+      return Boolean(res.ok);
     },
     [clearProgress, refreshList, refreshPresence, setBusyFor, showToast]
+  );
+
+  const stopMany = useCallback(
+    async (names) => {
+      if (!names.length) return { ok: 0, failed: 0 };
+      const results = await Promise.all(names.map((n) => stop(n, { bulk: true })));
+      const ok = results.filter(Boolean).length;
+      showToast(
+        ok === names.length ? `Stopped ${ok} ${ok === 1 ? "instance" : "instances"}` : `Stopped ${ok} of ${names.length}`,
+        ok === names.length ? "success" : "error"
+      );
+      return { ok, failed: names.length - ok };
+    },
+    [stop, showToast]
   );
 
   const remove = useCallback(
@@ -472,7 +522,9 @@ export function EngineProvider({ activeTab, showToast, children }) {
     refreshList,
     refreshDoctor,
     start,
+    startMany,
     stop,
+    stopMany,
     remove,
     openViewer,
     hideViewer,

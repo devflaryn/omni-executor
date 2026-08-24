@@ -59,7 +59,7 @@ export default function AuthView({ onSignedIn, apiBase, deviceName }) {
   const isRegister = mode === "register";
 
   return (
-    <div className="flex h-screen w-screen items-center justify-center bg-canvas p-8 text-ink">
+    <div className="flex min-h-0 flex-1 items-center justify-center bg-canvas p-8 text-ink">
       <div className="w-full max-w-[340px]">
         <div className="mb-7 flex flex-col items-center gap-2">
           <CpuIcon className="h-5 w-5 text-accent" />

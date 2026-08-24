@@ -8,10 +8,14 @@
 
 import { useEngine } from "../engine.jsx";
 import { Lamp } from "./ui.jsx";
+import { useWindowDrag } from "./TitleBar.jsx";
 import { ChevronLeftIcon, ChevronRightIcon } from "./icons.jsx";
 
-export default function Sidebar({ nav, tab, onTab, collapsed, onCollapse, mac }) {
+export default function Sidebar({ nav, tab, onTab, collapsed, onCollapse, chrome }) {
   const { health } = useEngine();
+  const mac = Boolean(chrome?.mac);
+  // The identity block and the empty rail move the window, like a titlebar.
+  const drag = useWindowDrag(chrome);
 
   return (
     <aside
@@ -21,13 +25,14 @@ export default function Sidebar({ nav, tab, onTab, collapsed, onCollapse, mac })
       {/* macOS: the native traffic lights float over this corner, so clear
           a strip for them (it doubles as extra drag surface). The collapsed
           rail is also a touch wider there so the lights never cross its edge. */}
-      {mac && <div className="pywebview-drag-region h-9 shrink-0" />}
+      {mac && <div className="h-9 shrink-0" {...drag} />}
 
       {/* Identity — doubles as the window drag handle on this side. */}
       <div
-        className={`pywebview-drag-region flex h-12 shrink-0 items-center gap-2.5 ${
+        className={`flex h-12 shrink-0 items-center gap-2.5 ${
           collapsed ? "justify-center px-0" : "px-4"
         }`}
+        {...drag}
       >
         <span
           className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[7px] bg-accent
@@ -86,7 +91,7 @@ export default function Sidebar({ nav, tab, onTab, collapsed, onCollapse, mac })
         })}
       </nav>
 
-      <div className="pywebview-drag-region flex-1" />
+      <div className="flex-1" {...drag} />
 
       {/* Engine readout */}
       <div className={`rule-t ${collapsed ? "px-2 py-3" : "px-3.5 py-3"}`}>
@@ -98,7 +103,7 @@ export default function Sidebar({ nav, tab, onTab, collapsed, onCollapse, mac })
           {!collapsed && (
             <span className="min-w-0 leading-none">
               <span className="silk block text-[8.5px] text-ink-3">Engine</span>
-              <span className="mt-[4px] block truncate text-[11.5px] text-ink-2">{health.label}</span>
+              <span className="mt-[3px] block truncate text-[11.5px] leading-[1.3] text-ink-2">{health.label}</span>
             </span>
           )}
         </div>

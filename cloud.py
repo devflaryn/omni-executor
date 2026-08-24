@@ -37,6 +37,15 @@ from pathlib import Path
 # local server without a rebuild.
 DEFAULT_API_BASE = "http://72.62.59.232"
 
+# DEV MODE, ABSENT FROM RELEASE BUILDS. Both PyInstaller specs exclude
+# `devserver`, so in a shipped bundle this import fails and api_base() returns
+# the production server exactly as it did before the module existed. See
+# devserver.py.
+try:
+    import devserver
+except ImportError:  # pragma: no cover - the production path
+    devserver = None
+
 HTTP_TIMEOUT = 20
 
 
@@ -196,7 +205,10 @@ def api_base(settings=None) -> str:
         candidate = settings.get("apiBase")
         if isinstance(candidate, str) and candidate.strip():
             base = candidate.strip()
-    return (base or DEFAULT_API_BASE).rstrip("/")
+    base = (base or DEFAULT_API_BASE).rstrip("/")
+    # Last, so it also catches an OMNI_API_BASE/settings value that names the
+    # production server explicitly -- and leaves any OTHER host alone.
+    return devserver.redirect(base) if devserver else base
 
 
 def _headers(with_auth=True):

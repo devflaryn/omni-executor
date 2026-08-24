@@ -35,8 +35,12 @@ a = Analysis(
     # The app's dependencies, none of which the stub needs. Excluded rather
     # than left to chance: bootstrap.py is pure stdlib, but a stray transitive
     # import would otherwise quietly triple the download the user waits on.
+    # `devserver` is listed unconditionally, with no OMNI_DEV_BUILD escape: the
+    # stub is the file on the download page, it is the ONE artifact a stranger
+    # runs, and it has no dev use -- there is nothing to test locally about
+    # "download the published build". See devserver.py.
     excludes=["webview", "selenium", "PIL", "omnidroid", "clr", "pythonnet",
-              "clr_loader", "numpy", "cryptography", "requests"],
+              "clr_loader", "numpy", "cryptography", "requests", "devserver"],
     noarchive=False,
     cipher=block_cipher,
 )

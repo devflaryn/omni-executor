@@ -20,17 +20,17 @@
     "Cascadia Code", "SF Mono", "JetBrains Mono", "Fira Code", Consolas,
     "DejaVu Sans Mono", monospace;
 
-  /* Sheet */
-  --color-canvas: #0a0a0a;
-  --color-surface: #111111;
-  --color-raised: #181818;
-  --color-line: #262626;
-  --color-line-soft: #1c1c1c;
+  /* Sheet — graphite, not black: a slate-grey ground the content sits on. */
+  --color-canvas: #17181b;
+  --color-surface: #1d1e22;
+  --color-raised: #25262b;
+  --color-line: #31333a;
+  --color-line-soft: #282a30;
 
   /* Text */
-  --color-ink: #ececec;
-  --color-ink-2: #9c9c9c;
-  --color-ink-3: #626262;
+  --color-ink: #ebebed;
+  --color-ink-2: #a1a3aa;
+  --color-ink-3: #6c6f78;
 
   /* Accent — white: selection, primary action, "work in progress" */
   --color-accent: #fafafa;
@@ -41,12 +41,16 @@
   --color-live: #6fb583;
   --color-danger: #d96161;
 
-  /* Lua syntax — grey steps and weight, no hue */
-  --color-code-kw: #ffffff;
-  --color-code-fn: #f2f2f2;
-  --color-code-str: #a6a6a6;
-  --color-code-num: #cccccc;
-  --color-code-com: #575757;
+  /* Lua syntax — a restrained coloured set: each token class gets one hue,
+     the ink stays the ink for plain variables. */
+  --color-code-kw: #c58af9;
+  --color-code-fn: #7cb4ff;
+  --color-code-prop: #6fd3c5;
+  --color-code-var: #e4e4e8;
+  --color-code-str: #9ccc86;
+  --color-code-num: #e6b46c;
+  --color-code-com: #6b6f7a;
+  --color-code-op: #a8abb5;
 
   --animate-rise: rise 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
   --animate-fade: fade 0.35s ease both;
@@ -90,11 +94,14 @@ html.light {
   --color-live: #33814f;
   --color-danger: #bf4a41;
 
-  --color-code-kw: #000000;
-  --color-code-fn: #1c1c1c;
-  --color-code-str: #6f6f6f;
-  --color-code-num: #454545;
-  --color-code-com: #a8a8a8;
+  --color-code-kw: #8a3fc5;
+  --color-code-fn: #1f66c9;
+  --color-code-prop: #0f8a7c;
+  --color-code-var: #232323;
+  --color-code-str: #3b8a2f;
+  --color-code-num: #b26a00;
+  --color-code-com: #9a9ea8;
+  --color-code-op: #5a5d66;
 }
 
 @layer base {
@@ -126,8 +133,7 @@ html.light {
 }
 
 @layer components {
-  /* Lua tokens emitted by the highlighter in lua.js.
-     Monochrome: weight separates keywords from prose, grey steps do the rest. */
+  /* Lua tokens emitted by the highlighter in lua.js. One hue per class. */
   .tok-kw {
     @apply font-semibold text-code-kw;
   }
@@ -141,7 +147,16 @@ html.light {
     @apply text-code-com italic;
   }
   .tok-fn {
-    @apply font-medium text-code-fn;
+    @apply text-code-fn;
+  }
+  .tok-var {
+    @apply text-code-var;
+  }
+  .tok-prop {
+    @apply text-code-prop;
+  }
+  .tok-op {
+    @apply text-code-op;
   }
 
   /* Floating hairlines — the app's structural device. Every divider is inset
@@ -222,6 +237,36 @@ html.light {
   .chip {
     @apply silk shrink-0 rounded border border-line px-1.5 py-[3px] text-ink-3;
   }
+
+  /* Tick box: the sheet's own, not the OS's. */
+  .check {
+    @apply h-4 w-4 cursor-pointer appearance-none rounded-[4px] border border-line bg-raised
+      transition-colors duration-150 outline-none
+      checked:border-accent checked:bg-accent
+      focus-visible:ring-2 focus-visible:ring-accent/55 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas;
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: 12px;
+  }
+  .check:checked {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230c0c0c' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 12 5 5 9-10'/%3E%3C/svg%3E");
+  }
+  html.light .check:checked {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fafafa' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 12 5 5 9-10'/%3E%3C/svg%3E");
+  }
+
+  /* Stat tile on Home: a quiet plate the number sits on. */
+  .tile {
+    @apply ring-focus flex flex-col gap-1 rounded-xl border border-line bg-surface px-4 py-3.5
+      text-left transition-colors duration-150 hover:border-ink-3/60 hover:bg-raised;
+  }
+}
+
+/* Native-window resize handles drawn over the web content (Windows/Linux,
+   see TitleBar.jsx). Invisible; only the cursor gives them away. */
+.resize-edge {
+  position: fixed;
+  z-index: 90;
 }
 
 /* Exact editor metrics — the gutter, highlight layer and textarea must agree

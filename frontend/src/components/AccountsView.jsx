@@ -37,16 +37,23 @@ function initials(name) {
   return chars.join("").toUpperCase();
 }
 
-export default function AccountsView({ active, launch, onLaunch, showToast }) {
+export default function AccountsView({ active, launch, onLaunch, showToast, addRequest = 0 }) {
   const engine = useEngine();
   const { accounts, busy, progress, backend, issue, settingUp, modes } = engine;
 
   const [selected, setSelected] = useState(null);
+  // Ticked rows, for bulk launch/stop. Separate from `selected` (the row the
+  // launch bay describes): ticking is a plan, selecting is a look.
+  const [checked, setChecked] = useState(() => new Set());
   const [query, setQuery] = useState("");
   const [adding, setAdding] = useState(false);
-  const [removeTarget, setRemoveTarget] = useState(null);
 
   const usable = backend === true;
+
+  // Home's "Add account" lands here.
+  useEffect(() => {
+    if (addRequest > 0) setAdding(true);
+  }, [addRequest]);
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -59,8 +66,47 @@ export default function AccountsView({ active, launch, onLaunch, showToast }) {
     if (!selected && accounts.length === 1) setSelected(accounts[0].name);
   }, [accounts, selected]);
 
+  // Drop ticks for accounts that no longer exist.
+  useEffect(() => {
+    setChecked((prev) => {
+      const next = new Set([...prev].filter((n) => accounts.some((a) => a.name === n)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [accounts]);
+
   const selectedAccount = accounts.find((a) => a.name === selected) || null;
   const selectedBusy = selected ? busy[selected] : null;
+
+  /* No confirmation dialog: Remove removes. engine.remove stops a running
+     instance first and the toast reports what happened. */
+  const removeAccount = async (account) => {
+    const ok = await engine.remove(account.name);
+    if (ok && selected === account.name) setSelected(null);
+  };
+
+  const toggleChecked = (name, on) =>
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (on ?? !next.has(name)) next.add(name);
+      else next.delete(name);
+      return next;
+    });
+  const allVisibleChecked = visible.length > 0 && visible.every((a) => checked.has(a.name));
+  const toggleAll = () =>
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (allVisibleChecked) visible.forEach((a) => next.delete(a.name));
+      else visible.forEach((a) => next.add(a.name));
+      return next;
+    });
+
+  const checkedAccounts = accounts.filter((a) => checked.has(a.name));
+  const bulk = checkedAccounts.length > 0;
+  const bulkStopped = checkedAccounts.filter(
+    (a) => !a.running && a.where?.state !== "running" && !busy[a.name]
+  );
+  const bulkRunning = checkedAccounts.filter((a) => a.running && !busy[a.name]);
+  const bulkBusy = checkedAccounts.some((a) => busy[a.name]);
 
   return (
     <div className={`min-h-0 flex-1 overflow-y-auto px-5 py-5 ${active ? "" : "hidden"}`}>
@@ -95,6 +141,21 @@ export default function AccountsView({ active, launch, onLaunch, showToast }) {
               count={accounts.length}
               right={
                 <>
+                  {accounts.length > 0 && (
+                    <label
+                      className="mr-1 flex cursor-pointer items-center gap-1.5 text-[11.5px] text-ink-3 select-none hover:text-ink-2"
+                      title="Tick every instance in the list"
+                    >
+                      <input
+                        type="checkbox"
+                        className="check"
+                        checked={allVisibleChecked}
+                        onChange={toggleAll}
+                        aria-label="Select all instances"
+                      />
+                      {checked.size ? `${checked.size} selected` : "Select all"}
+                    </label>
+                  )}
                   <div className="relative hidden sm:block">
                     <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-ink-3" />
                     <input
@@ -121,6 +182,8 @@ export default function AccountsView({ active, launch, onLaunch, showToast }) {
                     key={account.name}
                     account={account}
                     selected={selected === account.name}
+                    checked={checked.has(account.name)}
+                    onCheck={(on) => toggleChecked(account.name, on)}
                     busyLabel={busy[account.name]}
                     progressLine={busy[account.name] ? progress[account.name] : null}
                     onSelect={() => setSelected(account.name)}
@@ -128,7 +191,7 @@ export default function AccountsView({ active, launch, onLaunch, showToast }) {
                     onStop={() => engine.stop(account.name)}
                     onOpen={() => engine.openViewer(account.name)}
                     onHide={() => engine.hideViewer(account.name)}
-                    onRemove={() => setRemoveTarget(account)}
+                    onRemove={() => removeAccount(account)}
                   />
                 ))}
               </ul>
@@ -233,34 +296,81 @@ export default function AccountsView({ active, launch, onLaunch, showToast }) {
               )}
 
               <div className="flex flex-col gap-2">
-                <Button
-                  variant="solid"
-                  size="lg"
-                  className="w-full"
-                  onClick={() => selectedAccount && engine.start(selectedAccount.name, launch)}
-                  disabled={!selectedAccount || Boolean(selectedBusy)}
-                >
-                  {selectedAccount?.running ? (
-                    <>
-                      <MonitorIcon className="h-4 w-4" />
-                      Open viewer
-                    </>
-                  ) : (
-                    <>
+                {bulk ? (
+                  <>
+                    {/* Several rows are ticked: the bay's Mode / Graphics /
+                        Place apply to all of them. A bulk launch is
+                        multi-instance by definition, whatever the toggle says. */}
+                    <Button
+                      variant="solid"
+                      size="lg"
+                      className="w-full"
+                      onClick={() => engine.startMany(bulkStopped.map((a) => a.name), launch)}
+                      disabled={!bulkStopped.length || bulkBusy}
+                    >
                       <PlayIcon className="h-3.5 w-3.5" />
-                      Launch
-                    </>
-                  )}
-                </Button>
-                <p className="text-center text-[11px] leading-snug text-ink-3">
-                  {selectedBusy
-                    ? `${selectedBusy} ${selectedAccount.name}…`
-                    : selectedAccount
-                      ? selectedAccount.running
-                        ? `${selectedAccount.name} is running`
-                        : `${selectedAccount.name} is selected`
-                      : "Pick an instance from the list"}
-                </p>
+                      Launch {bulkStopped.length} {bulkStopped.length === 1 ? "instance" : "instances"}
+                    </Button>
+                    {bulkRunning.length > 0 && (
+                      <Button
+                        size="lg"
+                        className="w-full"
+                        onClick={() => engine.stopMany(bulkRunning.map((a) => a.name))}
+                        disabled={bulkBusy}
+                      >
+                        <StopIcon className="h-3.5 w-3.5" />
+                        Stop {bulkRunning.length} running
+                      </Button>
+                    )}
+                    <p className="text-center text-[11px] leading-snug text-ink-3">
+                      {bulkBusy
+                        ? "Working on the selection…"
+                        : bulkStopped.length
+                          ? `${checked.size} selected · ${describeMode(launch.mode).label} mode, all at once`
+                          : `${checked.size} selected · all already running`}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setChecked(new Set())}
+                      className="ring-focus mx-auto rounded px-1 text-[11px] text-ink-3 underline-offset-2 hover:text-ink hover:underline"
+                    >
+                      Clear selection
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <Button
+                      variant="solid"
+                      size="lg"
+                      className="w-full"
+                      onClick={() => selectedAccount && engine.start(selectedAccount.name, launch)}
+                      disabled={!selectedAccount || Boolean(selectedBusy)}
+                    >
+                      {selectedAccount?.running ? (
+                        <>
+                          <MonitorIcon className="h-4 w-4" />
+                          Open viewer
+                        </>
+                      ) : (
+                        <>
+                          <PlayIcon className="h-3.5 w-3.5" />
+                          Launch
+                        </>
+                      )}
+                    </Button>
+                    <p className="text-center text-[11px] leading-snug text-ink-3">
+                      {selectedBusy
+                        ? `${selectedBusy} ${selectedAccount.name}…`
+                        : selectedAccount
+                          ? selectedAccount.running
+                            ? `${selectedAccount.name} is running`
+                            : `${selectedAccount.name} is selected`
+                          : accounts.length > 1
+                            ? "Pick an instance, or tick several to launch them together"
+                            : "Pick an instance from the list"}
+                    </p>
+                  </>
+                )}
               </div>
             </div>
           </Panel>
@@ -269,18 +379,6 @@ export default function AccountsView({ active, launch, onLaunch, showToast }) {
 
       {adding && <AddAccountModal onClose={() => setAdding(false)} onAdded={setSelected} />}
 
-      {removeTarget && (
-        <RemoveModal
-          account={removeTarget}
-          onClose={() => setRemoveTarget(null)}
-          onConfirm={async () => {
-            const name = removeTarget.name;
-            setRemoveTarget(null);
-            const ok = await engine.remove(name);
-            if (ok && selected === name) setSelected(null);
-          }}
-        />
-      )}
     </div>
   );
 }
@@ -489,6 +587,8 @@ function WarmPool({ active, launch, onLaunch }) {
 function AccountRow({
   account,
   selected,
+  checked,
+  onCheck,
   busyLabel,
   progressLine,
   onSelect,
@@ -542,10 +642,19 @@ function AccountRow({
           onSelect();
         }
       }}
-      className={`ring-focus rule-b flex cursor-pointer items-center gap-3 rounded-lg px-3.5 py-3
+      className={`ring-focus rule-b group flex cursor-pointer items-center gap-3 rounded-lg px-3 py-3
                   transition-colors duration-150 last:after:hidden hover:bg-raised/70
                   ${selected ? "bg-accent/8" : ""}`}
     >
+      <input
+        type="checkbox"
+        className={`check shrink-0 transition-opacity ${checked ? "opacity-100" : "opacity-40 group-hover:opacity-100"}`}
+        checked={checked}
+        onChange={(e) => onCheck(e.target.checked)}
+        onClick={(e) => e.stopPropagation()}
+        onDoubleClick={(e) => e.stopPropagation()}
+        aria-label={`Select ${account.name}`}
+      />
       <span
         className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border font-mono
                     text-[11px] font-bold transition-colors duration-150
@@ -766,49 +875,6 @@ function AddAccountModal({ onClose, onAdded }) {
           </Button>
         </div>
       </form>
-    </Modal>
-  );
-}
-
-function RemoveModal({ account, onClose, onConfirm }) {
-  const [typed, setTyped] = useState("");
-  const inputRef = useRef(null);
-  const matches = typed === account.name;
-
-  return (
-    <Modal
-      title="Remove account"
-      tone="danger"
-      onClose={onClose}
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button variant="danger" onClick={onConfirm} disabled={!matches}>
-            Remove and delete data
-          </Button>
-        </>
-      }
-    >
-      <p className="text-[12.5px] leading-relaxed text-ink-2">
-        Removing <span className="font-mono font-semibold text-ink">{account.name}</span> deletes its
-        Android instance, storage and saves. This cannot be undone
-        {account.running ? "; the instance is running and will be stopped first" : ""}.
-      </p>
-      <div className="mt-3.5">
-        <Field label="Type the account name to confirm" htmlFor="confirm-name">
-          <input
-            id="confirm-name"
-            ref={inputRef}
-            value={typed}
-            onChange={(e) => setTyped(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && matches && onConfirm()}
-            className="input font-mono"
-            placeholder={account.name}
-            autoComplete="off"
-            spellCheck={false}
-          />
-        </Field>
-      </div>
     </Modal>
   );
 }

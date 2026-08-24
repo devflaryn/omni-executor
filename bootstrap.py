@@ -9,6 +9,15 @@ engine import — pure stdlib so it is unit-testable.
 import ctypes, hashlib, json, os, re, shutil, subprocess, sys, tarfile, threading, time, urllib.request, urllib.error, zipfile
 from pathlib import Path
 
+# DEV MODE, ABSENT FROM RELEASE BUILDS. Every PyInstaller spec here excludes
+# `devserver`, so in a shipped app AND in the setup stub this import fails and
+# dist_base() resolves the production server exactly as it did before the
+# module existed. See devserver.py.
+try:
+    import devserver as _devserver
+except ImportError:  # pragma: no cover - the production path
+    _devserver = None
+
 APP_DIR_NAME = "OmniExec"
 MANIFEST_PATH = "/omni/dist/manifest"
 _CHUNK = 1 << 20
@@ -90,7 +99,15 @@ class BootstrapError(Exception):
 
 
 def dist_base() -> str:
-    return os.environ.get("OMNI_EXEC_BASE", "http://72.62.59.232").rstrip("/")
+    """Where the update manifest and every artifact blob come from.
+
+    Redirected to the local omni-backend in dev mode, so `installed.json`, the
+    manifest, the QEMU/adb blobs and the app-update artifact are all exercised
+    against a backend you can edit -- which is the only way to test an update
+    before it is published. See devserver.py.
+    """
+    base = os.environ.get("OMNI_EXEC_BASE", "http://72.62.59.232").rstrip("/")
+    return _devserver.redirect(base) if _devserver else base
 
 
 def current_os() -> str:

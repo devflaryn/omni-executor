@@ -39,6 +39,7 @@ import time
 from pathlib import Path
 
 import webview
+import windowchrome
 
 APP_NAME = "omni-executor"
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -49,13 +50,21 @@ IS_MAC = sys.platform == "darwin"
 # Override with the OMNI_EXEC_BASE env var or a settings.json "execBase" value.
 OMNI_EXEC_BASE = os.environ.get("OMNI_EXEC_BASE", "http://72.62.59.232")
 
+# DEV MODE, ABSENT FROM RELEASE BUILDS. Both PyInstaller specs exclude
+# `devserver`, so a shipped app has no such module and _exec_base() resolves the
+# production server exactly as it did before. See devserver.py.
+try:
+    import devserver as _devserver
+except ImportError:  # pragma: no cover - the production path
+    _devserver = None
+
 # Some Windows installs register .js as text/plain, which makes the webview
 # refuse to load ES modules.
 mimetypes.add_type("text/javascript", ".js")
 
 DEFAULT_SETTINGS = {
     "theme": "dark",
-    "activeTab": "editor",
+    "activeTab": "home",
     "sidebar": "expanded",
     "launch": {"mode": "gaming", "multiInstance": False, "minimizeOnLaunch": False},
     "profile": {"name": "Guest", "tag": ""},
@@ -94,6 +103,9 @@ def config_dir() -> Path:
 
 
 SETTINGS_FILE = config_dir() / "settings.json"
+# Open editor tabs (name, contents, caret) -- its own file, because script
+# bodies are large and churn on every keystroke while settings barely change.
+EDITOR_FILE = config_dir() / "editor.json"
 
 # ------------------------------------------------------------- engine bridge
 
@@ -384,6 +396,15 @@ def run_engine(args, progress=None, timeout=None):
         # to resolve, since it isn't installed/on sys.path otherwise.
         sibling = PROJECT_DIR.parent / "omnidroid"
         env = {**os.environ, "PYTHONPATH": str(sibling)}
+    # Dev mode, absent from release builds (see devserver.py). Engine
+    # subprocesses inherit os.environ, so an OMNI_DEV_SERVER set in the shell
+    # already reaches them -- but dev.json does not, and a redirected app
+    # driving a guest that still calls the production server is the one
+    # half-applied state this feature must not produce. Export it explicitly.
+    if _devserver:
+        dev = _devserver.dev_server()
+        if dev and not os.environ.get(_devserver.DEV_ENV):
+            env = {**(env or os.environ), _devserver.DEV_ENV: dev}
 
     try:
         proc = subprocess.Popen(
@@ -497,6 +518,9 @@ class Api:
     def __init__(self):
         self._window = None  # set in main() after the window is created
         self._maximized = False
+        # Windows only: the WndProc subclass that removes the OS caption while
+        # keeping the OS frame (see windowchrome.py). None elsewhere.
+        self._chrome = None
         self._bootstrapping = False
         # Set once WHPX has been turned on but Windows has not restarted yet.
         # Sticky for the process: DISM already reported the reboot, and the
@@ -527,12 +551,53 @@ class Api:
         """Maximize or restore the window; returns the resulting maximized state."""
         if not self._window:
             return False
+        if self._chrome:
+            # Ask the OS rather than trust a flag: Win+Up, a snap or a drag to
+            # the top edge all change the state without passing through here.
+            self._maximized = self._chrome.is_maximized()
         self._maximized = not self._maximized
         if self._maximized:
             self._window.maximize()
         else:
             self._window.restore()
         return self._maximized
+
+    def get_window_state(self):
+        maximized = self._chrome.is_maximized() if self._chrome else self._maximized
+        return {"maximized": bool(maximized)}
+
+    def begin_window_drag(self):
+        """The titlebar was pressed: start the NATIVE move loop, so snapping,
+        drag-to-top and the window manager's own gestures all apply."""
+        return self._begin_native("caption")
+
+    def begin_window_resize(self, edge):
+        """A resize edge over the web content was pressed (the top edge, on
+        Windows/Linux -- the others are the OS frame's own)."""
+        if edge not in windowchrome.EDGE_HIT_TEST or edge == "caption":
+            return False
+        return self._begin_native(edge)
+
+    def _begin_native(self, edge):
+        if not self._window:
+            return False
+        if self._chrome:
+            return self._chrome.begin_drag(edge)
+        if IS_MAC:
+            return windowchrome.mac_begin_drag(self._window) if edge == "caption" else False
+        if sys.platform.startswith("linux"):
+            return windowchrome.gtk_begin_drag(self._window, edge)
+        return False
+
+    def titlebar_double_click(self):
+        """What the OS does when its own caption is double-clicked."""
+        if not self._window:
+            return False
+        if self._chrome:
+            return self._chrome.double_click()
+        if IS_MAC:
+            return windowchrome.mac_double_click(self._window)
+        return self.toggle_maximize()
 
     def close(self):
         if self._window:
@@ -581,6 +646,28 @@ class Api:
         self._write_settings(current)
         return current
 
+    # ---- editor tabs (persisted whole; the frontend owns the shape) ----
+
+    def get_editor_state(self):
+        try:
+            with open(EDITOR_FILE, encoding="utf-8") as f:
+                state = json.load(f)
+        except (OSError, ValueError):
+            return None
+        return state if isinstance(state, dict) else None
+
+    def save_editor_state(self, state):
+        if not isinstance(state, dict):
+            return {"ok": False, "error": "bad_state"}
+        tmp = EDITOR_FILE.with_suffix(".tmp")
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(state, f)
+            tmp.replace(EDITOR_FILE)
+        except OSError as exc:
+            return {"ok": False, "error": "write_failed", "message": str(exc)}
+        return {"ok": True}
+
     # ---- remote execute (Editor tab) ----
 
     def _exec_base(self):
@@ -591,7 +678,10 @@ class Api:
                 base = saved["execBase"].strip()
         except Exception:
             pass
-        return base.rstrip("/")
+        base = base.rstrip("/")
+        # Dev mode, absent from release builds (see devserver.py). Last, so it
+        # also catches an execBase that names the production server outright.
+        return _devserver.redirect(base) if _devserver else base
 
     def execute_script(self, name, script):
         """Run a Luau script in the LIVE game session for `name` — MANUAL only,
@@ -1928,21 +2018,33 @@ def main():
         width=1024,
         height=720,
         min_size=(680, 460),
-        background_color="#0a0a0a",  # matches the dark sheet, prevents a white flash on startup
-        # Frameless everywhere: Windows/Linux get the frontend's own controls
-        # on the right; macOS re-shows the native traffic lights on the left.
+        background_color="#17181b",  # matches the dark sheet, prevents a white flash on startup
+        # The frontend draws the titlebar everywhere; the WINDOW stays the
+        # OS's. Windows: windowchrome puts the frame styles back on the HWND
+        # and keeps the client area full-window, so snap, double-click,
+        # shadows and native move/size loops all work. macOS: frameless is a
+        # titled window with a transparent titlebar (the traffic lights come
+        # back below). Linux: undecorated, the WM is asked to move/resize.
         frameless=True,
-        easy_drag=False,  # dragging is limited to .pywebview-drag-region elements
+        easy_drag=False,  # dragging is the frontend's call (begin_window_drag)
     )
     api._window = window
 
     if IS_MAC:
         window.events.shown += lambda *a: _show_macos_traffic_lights(window)
+    elif windowchrome.IS_WIN:
+        def _install_chrome(*_args):
+            api._chrome = windowchrome.install_windows(window)
+        window.events.shown += _install_chrome
 
-    # Keep the maximize state in sync when the OS changes it (e.g. Win+Up snap).
+    # Keep the maximize state in sync when the OS changes it (e.g. Win+Up snap),
+    # and tell the titlebar so its button glyph follows.
+    def _window_state(maximized):
+        api._maximized = maximized
+        api._push("window-state", {"maximized": maximized})
     try:
-        window.events.maximized += lambda *a: setattr(api, "_maximized", True)
-        window.events.restored += lambda *a: setattr(api, "_maximized", False)
+        window.events.maximized += lambda *a: _window_state(True)
+        window.events.restored += lambda *a: _window_state(False)
     except AttributeError:
         pass  # older pywebview without these events; manual toggling still works
 
