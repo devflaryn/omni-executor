@@ -2,8 +2,10 @@
    the accounts, the cookies and the ability to run a script all belong to a
    user now, not to a machine.
 
-   Two modes on one screen rather than two screens, because the difference is a
-   single field — registering also takes a license key. */
+   Signing up is FREE and asks for no license key — a key is redeemed later, in
+   Settings, to put the account on a plan. So the one field registering adds is
+   the username: the name the app greets you by, and the one thing here that has
+   to be unique across every Omni account. */
 
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
@@ -14,11 +16,15 @@ const INPUT =
   "h-9 w-full rounded-lg border border-line bg-raised px-3 text-[13px] text-ink " +
   "outline-none placeholder:text-ink-3 focus:border-accent focus:ring-2 focus:ring-accent/30";
 
+// Kept in step with the server's own rule (auth.controller.js): checking it
+// here only saves a round trip, it is never what enforces it.
+const USERNAME_OK = /^[A-Za-z0-9_]{3,24}$/;
+
 export default function AuthView({ onSignedIn, apiBase, deviceName }) {
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const firstField = useRef(null);
@@ -27,7 +33,7 @@ export default function AuthView({ onSignedIn, apiBase, deviceName }) {
     firstField.current?.focus();
   }, []);
 
-  // Switching mode must clear the error: a "that key is already redeemed" left
+  // Switching mode must clear the error: a "that username is taken" left
   // hanging over the sign-in form reads as though sign-in itself failed.
   const switchMode = (next) => {
     setMode(next);
@@ -41,15 +47,15 @@ export default function AuthView({ onSignedIn, apiBase, deviceName }) {
       setError("Email and password are required.");
       return;
     }
-    if (mode === "register" && !key.trim()) {
-      setError("A license key is required to register.");
+    if (mode === "register" && !USERNAME_OK.test(username.trim())) {
+      setError("Pick a username: 3–24 letters, numbers or underscores.");
       return;
     }
     setBusy(true);
     setError(null);
     const res =
       mode === "register"
-        ? await api("auth_register", email.trim(), password, key.trim())
+        ? await api("auth_register", email.trim(), username.trim(), password)
         : await api("auth_login", email.trim(), password);
     setBusy(false);
     if (res?.ok) onSignedIn?.(res);
@@ -65,7 +71,7 @@ export default function AuthView({ onSignedIn, apiBase, deviceName }) {
           <CpuIcon className="h-5 w-5 text-accent" />
           <h1 className="text-[15px] font-semibold tracking-tight">Omni Executor</h1>
           <p className="text-[11.5px] text-ink-3">
-            {isRegister ? "Create your account" : "Sign in to continue"}
+            {isRegister ? "Create your free account" : "Sign in to continue"}
           </p>
         </div>
 
@@ -83,6 +89,24 @@ export default function AuthView({ onSignedIn, apiBase, deviceName }) {
             />
           </Field>
 
+          {/* Between email and password rather than after both: it is part of
+              who you are, not a credential, and a form that asks for a password
+              and then keeps going reads as though it is not finished. */}
+          {isRegister && (
+            <Field label="Username" htmlFor="auth-username" hint="Your display name. 3–24 characters, must be unique.">
+              <input
+                id="auth-username"
+                className={INPUT}
+                autoComplete="off"
+                spellCheck={false}
+                maxLength={24}
+                placeholder="berat"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+              />
+            </Field>
+          )}
+
           <Field label="Password" htmlFor="auth-password">
             <input
               id="auth-password"
@@ -94,20 +118,6 @@ export default function AuthView({ onSignedIn, apiBase, deviceName }) {
               onChange={(e) => setPassword(e.target.value)}
             />
           </Field>
-
-          {isRegister && (
-            <Field label="License key" htmlFor="auth-key" hint="30-day, 90-day or lifetime.">
-              <input
-                id="auth-key"
-                className={`${INPUT} font-mono tracking-wide`}
-                placeholder="OMNI-XXXX-XXXX-XXXX"
-                value={key}
-                // Keys are printed and dictated in upper case; accepting lower
-                // case silently and then rejecting it would be needless friction.
-                onChange={(e) => setKey(e.target.value.toUpperCase())}
-              />
-            </Field>
-          )}
 
           {error && (
             <p className="rounded-lg border border-danger/35 bg-danger/8 px-3 py-2 text-[12px] text-danger">
@@ -122,7 +132,7 @@ export default function AuthView({ onSignedIn, apiBase, deviceName }) {
             disabled={busy}
             onClick={submit}
           >
-            {busy ? "Working…" : isRegister ? "Create account" : "Sign in"}
+            {busy ? "Working…" : isRegister ? "Create free account" : "Sign in"}
           </Button>
           {/* A form with one button submits on Enter only if that button is a
               real submit; the shared Button renders type="button". */}
@@ -130,13 +140,13 @@ export default function AuthView({ onSignedIn, apiBase, deviceName }) {
         </form>
 
         <p className="mt-5 text-center text-[12px] text-ink-3">
-          {isRegister ? "Already have an account?" : "Have a license key?"}{" "}
+          {isRegister ? "Already have an account?" : "No account?"}{" "}
           <button
             type="button"
             className="text-accent hover:underline"
             onClick={() => switchMode(isRegister ? "login" : "register")}
           >
-            {isRegister ? "Sign in" : "Register"}
+            {isRegister ? "Sign in" : "Create one, free"}
           </button>
         </p>
 

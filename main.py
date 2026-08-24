@@ -802,11 +802,12 @@ class Api:
         if not saved.get("token"):
             return {**base, "signedIn": False}
         out = {**base, "signedIn": True, "email": saved.get("email"),
+               "username": saved.get("username"),
                "subscription": saved.get("subscription") or {}, "stale": True}
         try:
             fresh = cloud.me()
-            out.update(email=fresh.get("email"), subscription=fresh.get("subscription") or {},
-                       stale=False)
+            out.update(email=fresh.get("email"), username=fresh.get("username"),
+                       subscription=fresh.get("subscription") or {}, stale=False)
         except cloud.CloudError as exc:
             if exc.status == 401:
                 cloud.sign_out()
@@ -820,13 +821,31 @@ class Api:
         except Exception:  # noqa: BLE001
             return cloud.api_base()
 
-    def auth_register(self, email, password, key):
+    def auth_register(self, email, username, password):
+        """Create a free account. Sign-up takes no license key — see
+        keys_redeem for how an account gets a plan."""
         try:
-            data = cloud.register(email, password, key)
+            data = cloud.register(email, username, password)
         except cloud.CloudError as exc:
             return {"ok": False, "error": exc.error or "register_failed", "message": exc.message}
         self._after_sign_in()
         return {"ok": True, **data}
+
+    def keys_redeem(self, code):
+        """Redeem a license key against the signed-in account: adds the key's
+        days to whatever is left, or converts to lifetime."""
+        if not cloud.signed_in():
+            return {"ok": False, "error": "signed_out", "message": "Sign in first."}
+        if not (code or "").strip():
+            return {"ok": False, "error": "no_code", "message": "Enter a key first."}
+        try:
+            subscription = cloud.redeem(code)
+        except cloud.CloudError as exc:
+            return {"ok": False, "error": exc.error or "redeem_failed", "message": exc.message}
+        # The fresh subscription rides back on the response, and the caller
+        # re-asks auth_status (same as sign-out does) so the Home greeting stops
+        # saying "Free" on an account that just went premium.
+        return {"ok": True, "subscription": subscription}
 
     def auth_login(self, email, password):
         try:

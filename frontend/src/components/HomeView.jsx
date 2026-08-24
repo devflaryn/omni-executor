@@ -22,10 +22,26 @@ import {
   UsersIcon,
 } from "./icons.jsx";
 
+/* Who to greet.
+
+   The Omni account's username first — that is the identity the whole app hangs
+   off, and it is unique. `profile.name` is the local Settings display name and
+   only wins if the user actually set one, since it defaults to "Guest" and
+   greeting a signed-in account as Guest is worse than saying nothing. An
+   account made before usernames existed has none, so the email's local part is
+   the last stop before the bare greeting. */
+function displayName(auth, profile) {
+  const local = profile?.name?.trim();
+  if (local && local !== "Guest") return local;
+  if (auth?.username) return auth.username;
+  const email = auth?.email || "";
+  return email.includes("@") ? email.slice(0, email.indexOf("@")) : "";
+}
+
 function greeting(name) {
   const h = new Date().getHours();
   const part = h < 5 ? "Good night" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
-  return name && name !== "Guest" ? `${part}, ${name}` : part;
+  return name ? `${part}, ${name}` : part;
 }
 
 function ago(ts) {
@@ -36,7 +52,7 @@ function ago(ts) {
   return `${Math.round(s / 86400)} d ago`;
 }
 
-export default function HomeView({ active, profile, launch, onGo, onAddAccount, showToast }) {
+export default function HomeView({ active, auth, profile, launch, onGo, onAddAccount, showToast }) {
   const engine = useEngine();
   const editor = useEditorStore();
   const { accounts, running, runningElsewhere, busy, health } = engine;
@@ -74,7 +90,10 @@ export default function HomeView({ active, profile, launch, onGo, onAddAccount, 
         {/* Greeting + engine */}
         <div className="flex items-end justify-between gap-4 px-1">
           <div>
-            <h2 className="text-[22px] font-semibold tracking-[-0.01em] text-ink">{greeting(profile?.name)}</h2>
+            <h2 className="flex flex-wrap items-center gap-2.5 text-[22px] font-semibold tracking-[-0.01em] text-ink">
+              {greeting(displayName(auth, profile))}
+              <TierBadge subscription={auth?.subscription} onGo={onGo} />
+            </h2>
             <p className="mt-1 text-[12.5px] text-ink-3">
               {accounts.length === 0
                 ? "Add an account to get an instance of your own."
@@ -215,6 +234,36 @@ export default function HomeView({ active, profile, launch, onGo, onAddAccount, 
         </div>
       </div>
     </div>
+  );
+}
+
+/* The tier, next to the name it applies to.
+
+   A chip rather than another word in the sentence: "Good night, berat Premium"
+   parses as a two-word name for a beat, and the whole point of the badge is to
+   be readable at a glance without being read. Premium takes the accent colour
+   and its remaining days as a tooltip; Free stays in the quiet chip default and
+   is a button through to Settings, where the key that changes it is redeemed. */
+function TierBadge({ subscription, onGo }) {
+  const premium = subscription?.tier === "premium";
+  const days = subscription?.daysRemaining;
+  const title = premium
+    ? subscription.plan === "lifetime"
+      ? "Lifetime plan"
+      : `${subscription.planLabel || subscription.plan} · ${days} day${days === 1 ? "" : "s"} left`
+    : "Free plan — redeem a key in Settings to go premium";
+
+  if (premium) {
+    return (
+      <span className="chip border-premium/45 bg-premium/8 text-premium" title={title}>
+        Premium
+      </span>
+    );
+  }
+  return (
+    <button type="button" className="chip ring-focus hover:text-ink-2" title={title} onClick={() => onGo("settings")}>
+      Free
+    </button>
   );
 }
 

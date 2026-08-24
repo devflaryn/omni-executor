@@ -259,6 +259,8 @@ export default function SettingsView({
 function OmniAccountPanel({ auth, onAuthChange, showToast }) {
   const [device, setDevice] = useState(auth?.device?.name || "");
   const [syncing, setSyncing] = useState(false);
+  const [key, setKey] = useState("");
+  const [redeeming, setRedeeming] = useState(false);
   const nameTimer = useRef(null);
 
   useEffect(() => {
@@ -266,13 +268,37 @@ function OmniAccountPanel({ auth, onAuthChange, showToast }) {
   }, [auth?.device?.name]);
 
   const sub = auth?.subscription || {};
-  const planLine = !sub.plan
-    ? "No plan"
-    : sub.plan === "lifetime"
-      ? "Lifetime"
-      : sub.active
-        ? `${sub.planLabel || sub.plan} · ${sub.daysRemaining} day${sub.daysRemaining === 1 ? "" : "s"} left`
-        : `${sub.planLabel || sub.plan} · expired`;
+  const premium = sub.tier === "premium";
+  // Free is the resting state now, not a failure — an account with no plan and
+  // an account whose plan lapsed are both simply "Free", and the expired case
+  // still says so because "your 90 days ran out" is the useful half of it.
+  const planLine = premium
+    ? sub.plan === "lifetime"
+      ? "Premium · lifetime"
+      : `Premium · ${sub.daysRemaining} day${sub.daysRemaining === 1 ? "" : "s"} left`
+    : sub.plan
+      ? `Free · ${sub.planLabel || sub.plan} expired`
+      : "Free";
+
+  const redeem = async () => {
+    if (redeeming || !key.trim()) return;
+    setRedeeming(true);
+    const res = await api("keys_redeem", key.trim());
+    setRedeeming(false);
+    if (!res?.ok) {
+      showToast(res?.message || "That key could not be redeemed", "error");
+      return;
+    }
+    setKey("");
+    const next = res.subscription || {};
+    showToast(
+      next.plan === "lifetime"
+        ? "Redeemed — this account is on the lifetime plan"
+        : `Redeemed — premium for ${next.daysRemaining} more day${next.daysRemaining === 1 ? "" : "s"}`,
+      "success"
+    );
+    onAuthChange?.();
+  };
 
   const renameDevice = (next) => {
     setDevice(next);
@@ -321,16 +347,50 @@ function OmniAccountPanel({ auth, onAuthChange, showToast }) {
         title="Omni account"
         right={
           <span className="flex items-center gap-2 text-[11.5px] text-ink-2">
-            <Lamp tone={sub.active ? "live" : "fault"} size={6} />
+            {/* "off", not "fault": free is a normal state of a working
+                account, and a red lamp would read as something being broken. */}
+            <Lamp tone={premium ? "live" : "off"} size={6} />
             {planLine}
           </span>
         }
       />
       <div className="flex flex-col gap-4 p-4">
         <dl className="grid grid-cols-2 gap-x-4 gap-y-2.5 font-mono text-[11.5px]">
+          <Row label="Username" value={auth?.username || "—"} />
           <Row label="Signed in" value={auth?.email || "—"} />
           <Row label="Server" value={(auth?.apiBase || "").replace(/^https?:\/\//, "") || "—"} />
         </dl>
+
+        {/* The only place a key is entered. It used to be on the sign-up form,
+            where it decided whether you got an account at all; now it buys time
+            on an account you already have, which is a Settings action. */}
+        <Field
+          label="License key"
+          htmlFor="redeem-key"
+          hint={
+            premium
+              ? "Redeeming again stacks the days onto what is left, or converts to lifetime."
+              : "Have a key? Redeem it to go premium."
+          }
+        >
+          <div className="flex gap-2">
+            <input
+              id="redeem-key"
+              className="input font-mono tracking-wide"
+              placeholder="OMNI-XXXX-XXXX-XXXX"
+              value={key}
+              spellCheck={false}
+              disabled={redeeming}
+              // Keys are printed and dictated in upper case; accepting lower
+              // case silently and then rejecting it would be needless friction.
+              onChange={(e) => setKey(e.target.value.toUpperCase())}
+              onKeyDown={(e) => e.key === "Enter" && redeem()}
+            />
+            <Button variant="solid" onClick={redeem} disabled={redeeming || !key.trim()}>
+              {redeeming ? "Redeeming…" : "Redeem"}
+            </Button>
+          </div>
+        </Field>
 
         <Field
           label="This device"

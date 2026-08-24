@@ -40,6 +40,12 @@
   /* Status lamps — the only colour in the app */
   --color-live: #6fb583;
   --color-danger: #d96161;
+  /* Premium. Its own token rather than a borrowed one: --color-code-num is a
+     near-identical gold, but it means "a number in a Lua buffer", and a UI that
+     reuses it would drift the day the editor palette is retuned. Desaturated to
+     sit with live/danger — a pure #ffd700 would be the loudest thing on a sheet
+     whose accent is off-white. */
+  --color-premium: #d8b45f;
 
   /* Lua syntax — a restrained coloured set: each token class gets one hue,
      the ink stays the ink for plain variables. */
@@ -93,6 +99,9 @@ html.light {
 
   --color-live: #33814f;
   --color-danger: #bf4a41;
+  /* Darkened hard for the light sheet: the dark theme's #d8b45f is legible on
+     #17181b and near-invisible on #f7f7f7. Same move live/danger make. */
+  --color-premium: #8a6410;
 
   --color-code-kw: #8a3fc5;
   --color-code-fn: #1f66c9;

@@ -3,8 +3,11 @@
 Everything in this module talks to omni-backend (`/api/v1/...`). It exists
 because three things stopped being per-machine facts:
 
-  * WHO you are. The app is licensed, so it needs a login — register with
-    email + password + a license key, sign in with email + password.
+  * WHO you are. Everything below belongs to an Omni user, so the app needs a
+    login — register with email + username + password, sign in with email +
+    password. Registering is FREE and takes no license key; a key is redeemed
+    later (`redeem`) to put the account on a plan. The username is the name the
+    app greets you by and is unique across all accounts.
   * WHICH Roblox accounts are yours. Cookies used to live only in the local
     omnidroid `accounts.json`, which made the *computer* the unit of ownership.
     They now live (encrypted) against your Omni user, so signing in on another
@@ -14,7 +17,7 @@ because three things stopped being per-machine facts:
     is running on the machine you are looking at.
 
 Storage on disk (per-user config dir, same place as settings.json):
-    auth.json    {token, email, subscription, saved}   — deleted on sign-out
+    auth.json    {token, email, username, subscription, saved}  — deleted on sign-out
     device.json  {deviceId, deviceName}                — survives sign-out
 
 The token is a bearer credential and the local account store holds
@@ -266,9 +269,11 @@ def request(method, path, payload=None, base=None, with_auth=True, timeout=HTTP_
 
 # --------------------------------------------------------------- auth flows
 
-def register(email, password, key):
+def register(email, username, password):
+    """Create a free account. No license key: sign-up costs nothing, and the
+    plan is added afterwards with `redeem`."""
     res = request("POST", "/api/v1/auth/sign-up",
-                  {"email": email, "password": password, "key": key},
+                  {"email": email, "username": username, "password": password},
                   with_auth=False)
     return _adopt(res)
 
@@ -279,15 +284,33 @@ def login(email, password):
     return _adopt(res)
 
 
+def redeem(code):
+    """Put a license key's time on THIS account.
+
+    The server stacks the new days onto whatever is left rather than replacing
+    it, and upgrades to lifetime in place, so redeeming early never burns time.
+    It answers with the same subscription shape `me()` returns, which is what
+    lets the caller repaint the tier without a second round trip."""
+    res = request("POST", "/api/v1/keys/redeem", {"code": (code or "").strip().upper()})
+    sub = (res.get("data") or {}).get("subscription") or {}
+    cur = auth()
+    if cur.get("token"):
+        cur["subscription"] = sub
+        _save_auth(cur)
+    return sub
+
+
 def _adopt(res):
     data = res.get("data") or {}
     tok = data.get("token")
     if not tok:
         raise CloudError("The server did not return a session token")
+    user = data.get("user") or {}
     saved = {
         "token": tok,
-        "email": (data.get("user") or {}).get("email"),
-        "userId": str((data.get("user") or {}).get("_id") or ""),
+        "email": user.get("email"),
+        "username": user.get("username"),
+        "userId": str(user.get("_id") or ""),
         "subscription": data.get("subscription") or {},
         "saved": time.time(),
     }
@@ -301,12 +324,18 @@ def me():
     'the server is unreachable' (stay signed in, work offline)."""
     res = request("GET", "/api/v1/auth/me")
     data = res.get("data") or {}
+    user = data.get("user") or {}
     cur = auth()
-    cur["email"] = (data.get("user") or {}).get("email") or cur.get("email")
+    cur["email"] = user.get("email") or cur.get("email")
+    # `or cur.get(...)` for the username too: an account created before
+    # usernames existed has none, and overwriting a good cached value with the
+    # server's null would make the greeting flicker back to the fallback.
+    cur["username"] = user.get("username") or cur.get("username")
     cur["subscription"] = data.get("subscription") or {}
     if cur.get("token"):
         _save_auth(cur)
-    return {"email": cur.get("email"), "subscription": cur.get("subscription")}
+    return {"email": cur.get("email"), "username": cur.get("username"),
+            "subscription": cur.get("subscription")}
 
 
 # ----------------------------------------------------- cloud account store
