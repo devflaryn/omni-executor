@@ -6,7 +6,8 @@
    are on right now" is a glance, not a number to read. Everything else on the
    page is quiet: three tiles, one row of actions, two lists. */
 
-import { useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { api } from "../api.js";
 import { useEngine } from "../engine.jsx";
 import { useEditorStore } from "../editorStore.jsx";
 import { Button, Lamp, PanelHead } from "./ui.jsx";
@@ -16,6 +17,7 @@ import {
   GearIcon,
   PlayIcon,
   PlusIcon,
+  RocketIcon,
   StopIcon,
   UsersIcon,
 } from "./icons.jsx";
@@ -135,6 +137,9 @@ export default function HomeView({ active, profile, launch, onGo, onAddAccount, 
           </Button>
         </div>
 
+        {/* Autoexec — every script here runs in every instance at start */}
+        <AutoexecCard active={active} showToast={showToast} />
+
         {/* Lists */}
         <div className="grid items-start gap-6 lg:grid-cols-2">
           <section>
@@ -241,6 +246,68 @@ function InstrumentStrip({ accounts, busy }) {
         ))}
       </div>
     </div>
+  );
+}
+
+/* Autoexec: the scripts every instance runs at session start. Sits above the
+   Recent scripts list because it is standing configuration — what WILL run,
+   everywhere, every launch — rather than a history of what was edited. */
+function AutoexecCard({ active, showToast }) {
+  const [scripts, setScripts] = useState([]);
+
+  const refresh = useCallback(async () => {
+    const res = await api("list_autoexec");
+    if (res?.ok) setScripts(res.scripts || []);
+  }, []);
+
+  useEffect(() => {
+    if (active) refresh();
+  }, [active, refresh]);
+
+  const openFolder = async () => {
+    const res = await api("open_autoexec_folder");
+    showToast?.(
+      res?.ok
+        ? "Opened autoexec folder — drop .lua files here to auto-run them at start"
+        : `Could not open folder: ${res?.message || res?.error || "unknown"}`,
+      res?.ok ? "info" : "error"
+    );
+    setTimeout(refresh, 1200);
+  };
+
+  return (
+    <section className="rounded-xl border border-line bg-surface p-4">
+      <div className="flex items-center gap-2.5">
+        <RocketIcon className="h-4 w-4 text-accent" />
+        <h3 className="text-[13px] font-semibold text-ink">Autoexec</h3>
+        <span className="hidden text-[11px] text-ink-3 sm:inline">runs in every instance at start</span>
+        <span className="ml-auto flex items-center gap-2">
+          <Button size="sm" onClick={refresh}>Refresh</Button>
+          <Button variant="solid" size="sm" onClick={openFolder}>Open folder</Button>
+        </span>
+      </div>
+      {scripts.length ? (
+        <ul className="mt-3 flex flex-wrap gap-1.5">
+          {scripts.map((s, i) => (
+            <li
+              key={s.name}
+              title={`${s.name} — runs #${i + 1}`}
+              className="flex items-center gap-1.5 rounded-md border border-line bg-raised px-2 py-1
+                         font-mono text-[11px] text-ink-2"
+            >
+              <span className="text-ink-3">{i + 1}.</span>
+              <span className="text-ink">{s.name}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="mt-3 text-[12px] leading-snug text-ink-3">
+          No autoexec scripts yet. Click <span className="text-ink-2">Open folder</span> and drop
+          <span className="font-mono text-ink-2"> .lua</span> files in — they run in filename order,
+          in every instance, right after it starts.
+        </p>
+      )}
+    </section>
   );
 }
 

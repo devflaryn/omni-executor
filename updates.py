@@ -31,10 +31,16 @@ from pathlib import Path
 
 import bootstrap
 
-# The app version this build reports. Bumped when a build is published (see
-# omni-backend/scripts/push-app.mjs); compared against the manifest's
-# `app.version` to decide whether an update exists.
-APP_VERSION = "1.0.24"
+# The app version this build reports. MUST be bumped IN THIS FILE before a
+# build is published, and to the SAME number push-app.mjs publishes -- they are
+# two halves of one release and a drift between them is silent and vicious: a
+# build whose APP_VERSION lags the published manifest reports itself as the old
+# version forever, so check() sees an update every launch, "updates", relaunches
+# a build that STILL claims the old version, and offers the same update again --
+# the swap succeeds every time and nothing ever changes. push-app.mjs now reads
+# this constant and refuses to publish a mismatched version, which is what makes
+# the two move together. Compared against the manifest's `app.version`.
+APP_VERSION = "1.0.27"
 
 # Where a downloaded app build is unpacked before it replaces the live one.
 STAGING_DIR = "app-update"

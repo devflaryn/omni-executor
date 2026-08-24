@@ -749,6 +749,26 @@ class Api:
             pass
         return str(d)
 
+    def list_autoexec(self):
+        """The scripts currently in the autoexec folder, in the order they run
+        (filename order). Powers the Home widget so the user can see at a glance
+        what every instance will execute at start."""
+        from pathlib import Path
+        d = Path(self.autoexec_dir())
+        skip = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".zip", ".gz",
+                ".exe", ".dll", ".so", ".ico", ".bmp", ".ttf", ".otf"}
+        out = []
+        try:
+            for p in sorted(d.iterdir()):
+                if p.is_file() and p.suffix.lower() not in skip:
+                    try:
+                        out.append({"name": p.name, "bytes": p.stat().st_size})
+                    except OSError:
+                        out.append({"name": p.name, "bytes": 0})
+        except OSError:
+            pass
+        return {"ok": True, "dir": str(d), "scripts": out}
+
     def open_autoexec_folder(self):
         """Open the autoexec folder in the OS file manager. Every file here is
         run, in filename order, in EVERY instance at session start -- drop a
@@ -971,9 +991,14 @@ class Api:
             staged = self._stage_app_quietly(version)
             if not staged:
                 return
-        if launch and self._may_auto_apply(version):
-            self._push("update-applying", {"version": version})
-            self.update_app_restart()
+        # The build is downloaded and one restart away. We do NOT swap silently:
+        # the user asked for a popup that says an update is ready and lets THEM
+        # click restart (a window that vanishes on its own at startup is exactly
+        # what people find alarming). The staged state rides update-status /
+        # update-done to the frontend, which shows the modal; this event marks
+        # that it was a launch-time find so the modal opens on its own.
+        self._push("update-ready", {"version": version, "staged": staged,
+                                    "launch": bool(launch)})
 
     def _stage_app_quietly(self, version):
         """Download and stage a build with no user interaction. Returns the
@@ -1009,43 +1034,6 @@ class Api:
             return self.get_settings().get("autoUpdate", True) is not False
         except Exception:  # noqa: BLE001
             return True
-
-    def _may_auto_apply(self, version):
-        """Whether to swap to `version` without being asked.
-
-        The guard here is against a RESTART LOOP, and it is the whole reason
-        this is not just `if launch: apply`. The swap ends with the new build
-        relaunching, which runs this same code again — so if a build is
-        published that cannot actually replace the running one (a locked
-        directory, a partial copy that restores the backup, a version that
-        reports itself as the old one), the app would download, swap, come
-        back as the old version, and do it again, forever, with the user
-        watching their window disappear every thirty seconds.
-
-        So an automatic apply is attempted ONCE per version per machine. The
-        attempt is recorded BEFORE it is made, not after: a swap that takes the
-        process down does not get to come back and write the receipt. If the
-        app is still on the old version next launch, the banner offers the
-        update and a human decides, which is the correct place for a broken
-        update to stop.
-        """
-        import updates
-        try:
-            marker = bootstrap.runtime_dir() / "auto-update-attempted.json"
-            seen = {}
-            if marker.exists():
-                seen = json.loads(marker.read_text(encoding="utf-8"))
-            if seen.get("version") == version:
-                return False
-            marker.parent.mkdir(parents=True, exist_ok=True)
-            marker.write_text(json.dumps(
-                {"version": version, "from": updates.APP_VERSION,
-                 "at": time.time()}), encoding="utf-8")
-            return True
-        except OSError:
-            # An unwritable runtime dir means the receipt cannot be kept, and
-            # without the receipt there is no loop protection. Do not apply.
-            return False
 
     def update_runtime(self):
         """Download the changed base images/offsets.
@@ -2046,9 +2034,9 @@ def main():
         "Omni Executor",
         url=str(index),
         js_api=api,
-        width=1024,
-        height=720,
-        min_size=(680, 460),
+        width=1380,
+        height=840,
+        min_size=(720, 480),
         background_color="#17181b",  # matches the dark sheet, prevents a white flash on startup
         # The frontend draws the titlebar everywhere; the WINDOW stays the
         # OS's. Windows: windowchrome puts the frame styles back on the HWND

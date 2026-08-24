@@ -10,7 +10,7 @@ import AccountsView from "./components/AccountsView.jsx";
 import SettingsView from "./components/SettingsView.jsx";
 import BootstrapView from "./components/BootstrapView.jsx";
 import AuthView from "./components/AuthView.jsx";
-import { UpdateBanner, useUpdates } from "./components/UpdateBanner.jsx";
+import { UpdateBanner, UpdateModal, useUpdates } from "./components/UpdateBanner.jsx";
 import Toast from "./components/Toast.jsx";
 import { CodeIcon, GearIcon, HomeIcon, UsersIcon } from "./components/icons.jsx";
 
@@ -48,6 +48,9 @@ export default function App() {
   // Launch-time update state. main.py pushes an "update-status" event on every
   // start, so this is populated without the UI asking.
   const updates = useUpdates();
+  // The staged-update version the user said "Later" to this session, so the
+  // startup popup does not reappear on every tick after it is dismissed.
+  const [updateDismissed, setUpdateDismissed] = useState(null);
 
   const refreshAuth = useCallback(async () => {
     const status = await api("auth_status");
@@ -88,7 +91,10 @@ export default function App() {
       const nextTheme = settings.theme === "light" ? "light" : "dark";
       setTheme(nextTheme);
       document.documentElement.classList.toggle("light", nextTheme === "light");
-      if (NAV.some((n) => n.id === settings.activeTab)) setTab(settings.activeTab);
+      // Always open on Home. The active tab is no longer restored across
+      // launches: Home is the overview (accounts, running, autoexec, recent
+      // scripts), which is what a fresh launch should land on rather than
+      // wherever the last session happened to leave off.
       setCompact(settings.sidebar === "compact");
       if (settings.profile) setProfile({ ...DEFAULT_PROFILE, ...settings.profile });
       if (settings.launch) setLaunch({ ...DEFAULT_LAUNCH, ...settings.launch });
@@ -166,6 +172,13 @@ export default function App() {
       <EditorStoreProvider>
         <div className="flex h-screen overflow-hidden bg-canvas font-sans text-ink antialiased select-none">
           <ResizeEdges chrome={chrome} />
+          {(updates.applying ||
+            (updates.status?.staged && updates.status.staged.version !== updateDismissed)) && (
+            <UpdateModal
+              updates={updates}
+              onDismiss={() => setUpdateDismissed(updates.status?.staged?.version || true)}
+            />
+          )}
           <Sidebar
             nav={NAV}
             tab={tab}

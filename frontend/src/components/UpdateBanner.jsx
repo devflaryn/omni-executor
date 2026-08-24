@@ -206,6 +206,73 @@ function Strip({ tone, pulse, children }) {
   );
 }
 
+/** Startup popup: a new build is downloaded and one restart away.
+
+    Shown as a modal (not the passive strip) because the user asked to be TOLD
+    at launch, with the choice in their hands — "Restart now" applies the staged
+    build; "Later" dismisses it for this session and leaves the strip behind so
+    it is still one click away. It only appears once a build is actually STAGED,
+    so its button applies instantly instead of kicking off a download. */
+export function UpdateModal({ updates, onDismiss }) {
+  const { status, applying, restartIntoUpdate, error } = updates;
+  const staged = status?.staged;
+  if (applying) {
+    return (
+      <Backdrop>
+        <Card>
+          <h2 className="text-[15px] font-semibold text-ink">Updating…</h2>
+          <p className="mt-2 text-[12.5px] leading-snug text-ink-2">
+            Installing version {status?.app?.available}. The app will restart on its own.
+          </p>
+        </Card>
+      </Backdrop>
+    );
+  }
+  if (!staged) return null;
+  return (
+    <Backdrop>
+      <Card>
+        <div className="flex items-center gap-2.5">
+          <Lamp tone="live" size={7} />
+          <h2 className="text-[15px] font-semibold text-ink">Update found</h2>
+        </div>
+        <p className="mt-2.5 text-[12.5px] leading-snug text-ink-2">
+          <span className="font-medium text-ink">Version {staged.version}</span> is downloaded
+          and ready. Restarting closes this window and reopens it on the new version — running
+          instances are separate processes and keep going.
+        </p>
+        {error && (
+          <p className="mt-3 rounded-lg border border-danger/35 bg-danger/8 px-3 py-2 text-[12px] text-danger">
+            {error}
+          </p>
+        )}
+        <div className="mt-5 flex justify-end gap-2">
+          <Button size="sm" onClick={onDismiss}>Later</Button>
+          <Button variant="solid" size="sm" onClick={restartIntoUpdate}>
+            Restart &amp; apply
+          </Button>
+        </div>
+      </Card>
+    </Backdrop>
+  );
+}
+
+function Backdrop({ children }) {
+  return (
+    <div className="fixed inset-0 z-[9000] flex items-center justify-center bg-black/45 p-6 backdrop-blur-sm">
+      {children}
+    </div>
+  );
+}
+
+function Card({ children }) {
+  return (
+    <div className="animate-rise w-full max-w-[380px] rounded-2xl border border-line bg-surface p-5 shadow-2xl">
+      {children}
+    </div>
+  );
+}
+
 /** The full control, in Settings. */
 export default function UpdatePanel({ updates, showToast }) {
   const {
