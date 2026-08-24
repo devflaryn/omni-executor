@@ -66,7 +66,7 @@ DEFAULT_SETTINGS = {
     "theme": "dark",
     "activeTab": "home",
     "sidebar": "expanded",
-    "launch": {"mode": "gaming", "multiInstance": False, "minimizeOnLaunch": False},
+    "launch": {"mode": "gaming", "minimizeOnLaunch": False},
     "profile": {"name": "Guest", "tag": ""},
     # Keep the app current without being asked. ON by default: a stale client
     # is how a machine keeps a bug that was fixed weeks ago, and the two

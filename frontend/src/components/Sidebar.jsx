@@ -1,18 +1,16 @@
-/* Left rail: identity, navigation, and a permanent engine readout.
+/* Left rail: identity and navigation.
 
    The rail has no background of its own — it sits on the same sheet as the
    rest of the app, separated only by a floating spine that fades out before
-   it reaches the top or bottom edge. It collapses to icons only; the engine
-   lamp survives the collapse because "is the engine alive" is the one thing
-   you should never have to open a panel to find out. */
+   it reaches the top or bottom edge. It collapses to icons only. Engine
+   health is not repeated here: the context bar already carries it on every
+   screen that can act on it, and a second permanent readout was one more
+   thing to read on a rail whose job is "where am I".  */
 
-import { useEngine } from "../engine.jsx";
-import { Lamp } from "./ui.jsx";
 import { useWindowDrag } from "./TitleBar.jsx";
 import { ChevronLeftIcon, ChevronRightIcon } from "./icons.jsx";
 
 export default function Sidebar({ nav, tab, onTab, collapsed, onCollapse, chrome }) {
-  const { health } = useEngine();
   const mac = Boolean(chrome?.mac);
   // The identity block and the empty rail move the window, like a titlebar.
   const drag = useWindowDrag(chrome);
@@ -92,22 +90,6 @@ export default function Sidebar({ nav, tab, onTab, collapsed, onCollapse, chrome
       </nav>
 
       <div className="flex-1" {...drag} />
-
-      {/* Engine readout */}
-      <div className={`rule-t ${collapsed ? "px-2 py-3" : "px-3.5 py-3"}`}>
-        <div
-          className={`flex items-center gap-2.5 ${collapsed ? "justify-center" : ""}`}
-          title={collapsed ? `Engine: ${health.label}` : undefined}
-        >
-          <Lamp tone={health.tone} pulse={health.tone === "busy"} />
-          {!collapsed && (
-            <span className="min-w-0 leading-none">
-              <span className="silk block text-[8.5px] text-ink-3">Engine</span>
-              <span className="mt-[3px] block truncate text-[11.5px] leading-[1.3] text-ink-2">{health.label}</span>
-            </span>
-          )}
-        </div>
-      </div>
 
       <div className={`rule-t ${collapsed ? "px-2 py-2" : "px-2.5 py-2"}`}>
         <button

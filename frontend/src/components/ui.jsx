@@ -37,7 +37,7 @@ export function Panel({ className = "", children, ...rest }) {
 
 export function PanelHead({ icon: Icon, title, count, right }) {
   return (
-    <header className="rule-b flex h-11 items-center gap-2 px-3.5">
+    <header className="rule-b flex h-11 shrink-0 items-center gap-2 px-3.5">
       {Icon && <Icon className="h-3.5 w-3.5 text-ink-3" />}
       <h2 className="silk text-ink-2">{title}</h2>
       {count != null && (

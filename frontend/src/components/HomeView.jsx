@@ -137,32 +137,36 @@ export default function HomeView({ active, profile, launch, onGo, onAddAccount, 
           </Button>
         </div>
 
-        {/* Autoexec — every script here runs in every instance at start */}
-        <AutoexecCard active={active} showToast={showToast} />
-
-        {/* Lists */}
+        {/* Lists. The left column is the two script lists, stacked: Autoexec
+            on top because it is standing configuration — what WILL run,
+            everywhere, every launch — and Recent scripts under it because that
+            is only a history of what was edited. */}
         <div className="grid items-start gap-6 lg:grid-cols-2">
-          <section>
-            <PanelHead icon={FileIcon} title="Recent scripts" count={editor.tabs.length} />
-            <ul className="py-1">
-              {recent.map((tab) => (
-                <li key={tab.id}>
-                  <button
-                    type="button"
-                    onClick={() => openScript(tab.id)}
-                    className="ring-focus rule-b flex w-full items-center gap-3 rounded-lg px-3.5 py-2.5 text-left
-                               transition-colors duration-150 last:after:hidden hover:bg-raised/70"
-                  >
-                    <FileIcon className="h-3.5 w-3.5 shrink-0 text-ink-3" />
-                    <span className="min-w-0 flex-1 truncate font-mono text-[12.5px] text-ink">{tab.name}</span>
-                    <span className="shrink-0 font-mono text-[10.5px] text-ink-3">
-                      {tab.content.split("\n").length} ln · {ago(tab.updatedAt)}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </section>
+          <div className="flex flex-col gap-6">
+            <AutoexecList active={active} showToast={showToast} />
+
+            <section>
+              <PanelHead icon={FileIcon} title="Recent scripts" count={editor.tabs.length} />
+              <ul className="py-1">
+                {recent.map((tab) => (
+                  <li key={tab.id}>
+                    <button
+                      type="button"
+                      onClick={() => openScript(tab.id)}
+                      className="ring-focus rule-b flex w-full items-center gap-3 rounded-lg px-3.5 py-2.5 text-left
+                                 transition-colors duration-150 last:after:hidden hover:bg-raised/70"
+                    >
+                      <FileIcon className="h-3.5 w-3.5 shrink-0 text-ink-3" />
+                      <span className="min-w-0 flex-1 truncate font-mono text-[12.5px] text-ink">{tab.name}</span>
+                      <span className="shrink-0 font-mono text-[10.5px] text-ink-3">
+                        {tab.content.split("\n").length} ln · {ago(tab.updatedAt)}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          </div>
 
           <section>
             <PanelHead
@@ -249,10 +253,15 @@ function InstrumentStrip({ accounts, busy }) {
   );
 }
 
-/* Autoexec: the scripts every instance runs at session start. Sits above the
-   Recent scripts list because it is standing configuration — what WILL run,
-   everywhere, every launch — rather than a history of what was edited. */
-function AutoexecCard({ active, showToast }) {
+/* Autoexec: the scripts every instance runs at session start.
+
+   Built exactly like Recent scripts below it — a PanelHead over a list of
+   rows on the bare sheet, no card — because the two are the same kind of
+   thing seen from two angles: scripts that will run, and scripts that were
+   edited. The only difference the row carries is the run order, which is what
+   an autoexec folder is actually FOR: the number on the left is the position
+   the file takes in the sequence, not decoration. */
+function AutoexecList({ active, showToast }) {
   const [scripts, setScripts] = useState([]);
 
   const refresh = useCallback(async () => {
@@ -276,36 +285,48 @@ function AutoexecCard({ active, showToast }) {
   };
 
   return (
-    <section className="rounded-xl border border-line bg-surface p-4">
-      <div className="flex items-center gap-2.5">
-        <RocketIcon className="h-4 w-4 text-accent" />
-        <h3 className="text-[13px] font-semibold text-ink">Autoexec</h3>
-        <span className="hidden text-[11px] text-ink-3 sm:inline">runs in every instance at start</span>
-        <span className="ml-auto flex items-center gap-2">
-          <Button size="sm" onClick={refresh}>Refresh</Button>
-          <Button variant="solid" size="sm" onClick={openFolder}>Open folder</Button>
-        </span>
-      </div>
+    <section>
+      <PanelHead
+        icon={RocketIcon}
+        title="Autoexec"
+        count={scripts.length}
+        right={
+          <>
+            <Button size="sm" onClick={refresh}>
+              Refresh
+            </Button>
+            <Button variant="solid" size="sm" onClick={openFolder}>
+              Open folder
+            </Button>
+          </>
+        }
+      />
       {scripts.length ? (
-        <ul className="mt-3 flex flex-wrap gap-1.5">
+        <ul className="py-1">
           {scripts.map((s, i) => (
-            <li
-              key={s.name}
-              title={`${s.name} — runs #${i + 1}`}
-              className="flex items-center gap-1.5 rounded-md border border-line bg-raised px-2 py-1
-                         font-mono text-[11px] text-ink-2"
-            >
-              <span className="text-ink-3">{i + 1}.</span>
-              <span className="text-ink">{s.name}</span>
+            <li key={s.name}>
+              <div
+                title={`${s.name} — runs #${i + 1} in every instance at start`}
+                className="rule-b flex w-full items-center gap-3 rounded-lg px-3.5 py-2.5 text-left
+                           last:after:hidden"
+              >
+                <span className="w-3.5 shrink-0 text-right font-mono text-[10.5px] text-ink-3">
+                  {i + 1}
+                </span>
+                <span className="min-w-0 flex-1 truncate font-mono text-[12.5px] text-ink">{s.name}</span>
+                <span className="shrink-0 font-mono text-[10.5px] text-ink-3">every instance</span>
+              </div>
             </li>
           ))}
         </ul>
       ) : (
-        <p className="mt-3 text-[12px] leading-snug text-ink-3">
-          No autoexec scripts yet. Click <span className="text-ink-2">Open folder</span> and drop
-          <span className="font-mono text-ink-2"> .lua</span> files in — they run in filename order,
-          in every instance, right after it starts.
-        </p>
+        <div className="px-3.5 py-8 text-center">
+          <p className="text-[12.5px] text-ink-2">No autoexec scripts yet.</p>
+          <p className="mx-auto mt-1 max-w-[40ch] text-[11.5px] leading-relaxed text-ink-3">
+            Open the folder and drop <span className="font-mono text-ink-2">.lua</span> files in — they
+            run in filename order, in every instance, right after it starts.
+          </p>
+        </div>
       )}
     </section>
   );

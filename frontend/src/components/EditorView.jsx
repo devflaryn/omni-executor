@@ -113,10 +113,10 @@ export default function EditorView({ active, showToast }) {
           onRename={store.renameTab}
         />
 
-        {/* Toolbar */}
+        {/* Toolbar. It used to restate the active tab's name under the tab
+            bar, one line below the tab already showing it; the file icon moved
+            onto the tab itself and the restatement went. */}
         <div className="rule-b flex h-11 shrink-0 items-center gap-2 px-3.5">
-          <FileIcon className="h-3.5 w-3.5 text-ink-3" />
-          <span className="truncate font-mono text-[12px] text-ink-2">{activeTab?.name || "—"}</span>
           <div className="ml-auto flex items-center gap-1">
             <select
               value={target}
@@ -126,7 +126,7 @@ export default function EditorView({ active, showToast }) {
                          font-mono text-[11px] text-ink-2 outline-none focus:border-accent/60"
             >
               <option value={ALL}>
-                {runningAccounts.length ? `All (${runningAccounts.length} running)` : "All — none running"}
+                {runningAccounts.length ? `All (${runningAccounts.length} running)` : "None"}
               </option>
               {runningAccounts.map((a) => (
                 <option key={a.name} value={a.name}>
@@ -269,6 +269,7 @@ function TabBar({ tabs, activeId, onSelect, onClose, onNew, onRename }) {
                         ${selected ? "bg-surface text-ink" : "text-ink-3 hover:bg-raised/60 hover:text-ink-2"}`}
             title={tab.name}
           >
+            <FileIcon className={`h-3 w-3 shrink-0 ${selected ? "text-ink-2" : "text-ink-3"}`} />
             {isEditing ? (
               <input
                 autoFocus

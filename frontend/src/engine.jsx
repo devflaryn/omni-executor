@@ -228,10 +228,11 @@ export function EngineProvider({ activeTab, showToast, children }) {
         showToast(`${name} is already ${far.label.toLowerCase()}. Stop it there first.`, "error");
         return false;
       }
-      if (!bulk && !launch.multiInstance && accounts.some((a) => a.running && a.name !== name)) {
-        showToast("Another instance is already running. Turn on Multi-instance to run several.", "error");
-        return false;
-      }
+      // Running several at once is the normal case, not an opt-in: there used
+      // to be a Multi-instance toggle gating this, and every account it
+      // blocked was one the machine could have run. The only launch this still
+      // refuses is the same ROBLOX account twice (checked above), because that
+      // one genuinely logs itself out.
       setBusyFor(name, "Starting");
       const res = await api("engine_start", name, launch.mode, launch.place, launch.gpu);
       setBusyFor(name, null);

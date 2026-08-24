@@ -1,6 +1,11 @@
-/* Instances panel: one row per account, one launch bay on the right. */
+/* Accounts panel: one row per account, one launch bay on the right.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+   The list is a scrolling canvas rather than a page that grows: the panel
+   takes whatever height the window has left and every account lives inside
+   it, so fifty accounts and two accounts produce the same layout and the
+   launch bay never slides off the bottom of a long list. */
+
+import { useEffect, useMemo, useState } from "react";
 import { GPU_INFO, describeGpu, describeMode, errText, useEngine } from "../engine.jsx";
 import {
   Button,
@@ -11,7 +16,6 @@ import {
   Notice,
   Panel,
   PanelHead,
-  Toggle,
 } from "./ui.jsx";
 import {
   AlertIcon,
@@ -25,6 +29,7 @@ import {
   SearchIcon,
   StopIcon,
   TrashIcon,
+  UserPlusIcon,
   UsersIcon,
 } from "./icons.jsx";
 
@@ -36,6 +41,12 @@ function initials(name) {
   const chars = parts.length > 1 ? parts.slice(0, 2).map((p) => p[0]) : [parts[0].slice(0, 2)];
   return chars.join("").toUpperCase();
 }
+
+/** Making a brand new Roblox account is not something the engine can do yet —
+    there is no signup command behind the bridge — so the button says so rather
+    than opening a form that cannot submit. */
+const CREATE_UNAVAILABLE =
+  "Creating a new Roblox account isn't wired up yet — use Add account to bring an existing one in.";
 
 export default function AccountsView({ active, launch, onLaunch, showToast, addRequest = 0 }) {
   const engine = useEngine();
@@ -109,8 +120,8 @@ export default function AccountsView({ active, launch, onLaunch, showToast, addR
   const bulkBusy = checkedAccounts.some((a) => busy[a.name]);
 
   return (
-    <div className={`min-h-0 flex-1 overflow-y-auto px-5 py-5 ${active ? "" : "hidden"}`}>
-      <div className="mx-auto flex w-full max-w-[1180px] flex-col gap-4">
+    <div className={`min-h-0 flex-1 flex-col overflow-hidden px-5 py-5 ${active ? "flex" : "hidden"}`}>
+      <div className="mx-auto flex min-h-0 w-full max-w-[1180px] flex-1 flex-col gap-4">
         {issue && (
           <Notice
             tone={issue.tone}
@@ -132,26 +143,26 @@ export default function AccountsView({ active, launch, onLaunch, showToast, addR
           </Notice>
         )}
 
-        <div className="grid items-start gap-8 lg:grid-cols-[minmax(0,1fr)_308px]">
-          {/* ---- Instances ---- */}
-          <Panel className="animate-rise overflow-hidden">
+        <div className="grid min-h-0 flex-1 gap-8 lg:grid-cols-[minmax(0,1fr)_308px]">
+          {/* ---- Accounts ---- */}
+          <Panel className="animate-rise flex min-h-0 flex-col overflow-hidden">
             <PanelHead
               icon={UsersIcon}
-              title="Instances"
+              title="Accounts"
               count={accounts.length}
               right={
                 <>
                   {accounts.length > 0 && (
                     <label
                       className="mr-1 flex cursor-pointer items-center gap-1.5 text-[11.5px] text-ink-3 select-none hover:text-ink-2"
-                      title="Tick every instance in the list"
+                      title="Tick every account in the list"
                     >
                       <input
                         type="checkbox"
                         className="check"
                         checked={allVisibleChecked}
                         onChange={toggleAll}
-                        aria-label="Select all instances"
+                        aria-label="Select all accounts"
                       />
                       {checked.size ? `${checked.size} selected` : "Select all"}
                     </label>
@@ -162,11 +173,15 @@ export default function AccountsView({ active, launch, onLaunch, showToast, addR
                       value={query}
                       onChange={(e) => setQuery(e.target.value)}
                       placeholder="Filter"
-                      aria-label="Filter instances by name"
+                      aria-label="Filter accounts by name"
                       spellCheck={false}
                       className="input h-7 w-[132px] py-0 pl-8 text-[12px]"
                     />
                   </div>
+                  <Button size="sm" onClick={() => showToast(CREATE_UNAVAILABLE, "info")} disabled={!usable}>
+                    <UserPlusIcon className="h-3.5 w-3.5" />
+                    Create account
+                  </Button>
                   <Button variant="solid" size="sm" onClick={() => setAdding(true)} disabled={!usable}>
                     <PlusIcon className="h-3.5 w-3.5" />
                     Add account
@@ -175,41 +190,45 @@ export default function AccountsView({ active, launch, onLaunch, showToast, addR
               }
             />
 
-            {visible.length > 0 ? (
-              <ul>
-                {visible.map((account) => (
-                  <AccountRow
-                    key={account.name}
-                    account={account}
-                    selected={selected === account.name}
-                    checked={checked.has(account.name)}
-                    onCheck={(on) => toggleChecked(account.name, on)}
-                    busyLabel={busy[account.name]}
-                    progressLine={busy[account.name] ? progress[account.name] : null}
-                    onSelect={() => setSelected(account.name)}
-                    onStart={() => engine.start(account.name, launch)}
-                    onStop={() => engine.stop(account.name)}
-                    onOpen={() => engine.openViewer(account.name)}
-                    onHide={() => engine.hideViewer(account.name)}
-                    onRemove={() => removeAccount(account)}
-                  />
-                ))}
-              </ul>
-            ) : (
-              <EmptyState
-                filtered={accounts.length > 0}
-                query={query}
-                usable={usable}
-                onAdd={() => setAdding(true)}
-                onClear={() => setQuery("")}
-              />
-            )}
+            {/* The scrolling canvas. Every account is in here, however many
+                there are; the panel itself never grows past the window. */}
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {visible.length > 0 ? (
+                <ul>
+                  {visible.map((account) => (
+                    <AccountRow
+                      key={account.name}
+                      account={account}
+                      selected={selected === account.name}
+                      checked={checked.has(account.name)}
+                      onCheck={(on) => toggleChecked(account.name, on)}
+                      busyLabel={busy[account.name]}
+                      progressLine={busy[account.name] ? progress[account.name] : null}
+                      onSelect={() => setSelected(account.name)}
+                      onStart={() => engine.start(account.name, launch)}
+                      onStop={() => engine.stop(account.name)}
+                      onOpen={() => engine.openViewer(account.name)}
+                      onHide={() => engine.hideViewer(account.name)}
+                      onRemove={() => removeAccount(account)}
+                    />
+                  ))}
+                </ul>
+              ) : (
+                <EmptyState
+                  filtered={accounts.length > 0}
+                  query={query}
+                  usable={usable}
+                  onAdd={() => setAdding(true)}
+                  onClear={() => setQuery("")}
+                />
+              )}
+            </div>
           </Panel>
 
           {/* ---- Launch bay ---- */}
-          <Panel className="animate-rise overflow-hidden">
+          <Panel className="animate-rise flex min-h-0 flex-col overflow-hidden">
             <PanelHead icon={RocketIcon} title="Launch" />
-            <div className="flex flex-col gap-4 p-3.5">
+            <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-3.5">
               <Field label="Mode" htmlFor="launch-mode">
                 <select
                   id="launch-mode"
@@ -275,32 +294,11 @@ export default function AccountsView({ active, launch, onLaunch, showToast, addR
                 />
               </Field>
 
-              <div className="rule-t pt-3.5">
-                <Toggle
-                  id="launch-multi"
-                  checked={launch.multiInstance}
-                  onChange={(v) => onLaunch({ ...launch, multiInstance: v })}
-                  label="Multi-instance"
-                  hint="Run more than one account at the same time."
-                />
-              </div>
-
-              {/* Only on an engine that has the command (engine.jsx gates on
-                  the handshake's advertised list). Its home is here, under the
-                  settings it is warmed for, because those settings are exactly
-                  what decides whether a warm instance is usable at all. */}
-              {engine.poolSupported && (
-                <div className="rule-t pt-3.5">
-                  <WarmPool active={active} launch={launch} onLaunch={onLaunch} />
-                </div>
-              )}
-
-              <div className="flex flex-col gap-2">
+              <div className="rule-t flex flex-col gap-2 pt-3.5">
                 {bulk ? (
                   <>
                     {/* Several rows are ticked: the bay's Mode / Graphics /
-                        Place apply to all of them. A bulk launch is
-                        multi-instance by definition, whatever the toggle says. */}
+                        Place apply to all of them. */}
                     <Button
                       variant="solid"
                       size="lg"
@@ -366,8 +364,8 @@ export default function AccountsView({ active, launch, onLaunch, showToast, addR
                             ? `${selectedAccount.name} is running`
                             : `${selectedAccount.name} is selected`
                           : accounts.length > 1
-                            ? "Pick an instance, or tick several to launch them together"
-                            : "Pick an instance from the list"}
+                            ? "Pick an account, or tick several to launch them together"
+                            : "Pick an account from the list"}
                     </p>
                   </>
                 )}
@@ -384,204 +382,6 @@ export default function AccountsView({ active, launch, onLaunch, showToast, addR
 }
 
 /* -------------------------------------------------------------------------- */
-
-/* Is the pool on? FARMING SAYS YES UNLESS THE USER SAYS OTHERWISE.
-
-   `keepWarm` is deliberately tri-state. `undefined` means "nobody has had an
-   opinion", and the right answer to that depends entirely on the mode:
-
-     farming  is fifty launches, and a cold boot is 35-60 s of every one of
-              them. Leaving the pool off by default made "it always cold
-              boots" the default experience of the mode built for volume, on
-              the one host where a warm pool is the ONLY fast path (WHPX
-              cannot snapshot a VM).
-     gaming   is one instance somebody is about to watch. A warm slot for it
-              is a second guest holding its memory so that one launch can be
-              quick, which is a bad trade for a single player.
-
-   Once the toggle is touched it stores a real boolean and that sticks, in
-   both directions -- so this decides the default, never the setting. Reading
-   the mode at render time (rather than writing a value in when the mode
-   changes) is what lets switching gaming -> farming turn the pool on without
-   overwriting a preference the user has already expressed. */
-export function keepWarmDefault(launch) {
-  if (launch?.keepWarm === undefined || launch?.keepWarm === null) {
-    return launch?.mode === "farming";
-  }
-  return Boolean(launch.keepWarm);
-}
-
-/* Keep one instance warm.
-
-   The engine can hold instances pre-booted to the account-free ready point;
-   a launch then adopts one instead of booting. Measured on this box: 35-60 s
-   of boot against 0.093 s to adopt — and on Windows it is the only fast path
-   there is, because WHPX cannot snapshot a VM.
-
-   The control lives directly under Mode / Graphics / Place ID because those
-   settings decide whether a warm instance is usable AT ALL: a slot is only
-   adopted by a launch that resolves to the same machine, and the place sizes
-   it (the engine floors guest RAM per game — PS99 asks for 3072 MB). So this
-   warms the pool for the settings shown above it, re-warms when they change,
-   and never claims a slot is ready unless it was warmed for what the launch
-   bay says right now — the alternative is a panel reporting "instant" while
-   every launch quietly cold-boots. */
-function WarmPool({ active, launch, onLaunch }) {
-  const engine = useEngine();
-  const { doctor, pool, poolBusy, poolError, refreshPool, startPool, stopPool } = engine;
-
-  const enabled = keepWarmDefault(launch);
-  const mode = launch.mode;
-  const place = String(launch.place || "").trim();
-  // Normalised exactly as main.py normalises it. If the two sides disagreed
-  // about what "no policy" means, the receipt would never match the settings
-  // and the pool would re-warm itself forever.
-  const gpu = GPU_INFO[launch.gpu] ? launch.gpu : "";
-  const specKey = `${mode}|${place}|${gpu}`;
-
-  const warmedFor = pool?.warmed_for || null;
-  const warmedKey = warmedFor ? `${warmedFor.mode}|${warmedFor.place}|${warmedFor.gpu}` : null;
-  const matched = warmedKey !== null && warmedKey === specKey;
-  const managerDown = Boolean(pool?.configured) && pool?.manager_alive === false;
-  const needsRestart = Boolean(pool) && (!pool.configured || pool.manager_alive === false);
-
-  // What we last asked the backend to warm, and how many times. Both are refs:
-  // nothing here should re-render, and both survive a status poll.
-  const asked = useRef({ key: null, tries: 0 });
-  const autoStopped = useRef(false);
-
-  // Adopt the live pool's own receipt on arrival, so opening the app onto a
-  // pool that is already correct does not re-issue a start.
-  useEffect(() => {
-    if (asked.current.key === null && warmedKey && pool?.manager_alive) {
-      asked.current = { key: warmedKey, tries: 1 };
-    }
-  }, [pool, warmedKey]);
-
-  useEffect(() => {
-    if (!enabled) return undefined;
-    // Debounced, because Place ID is a free-text field: without this, typing
-    // one id would stop and re-warm the pool once per keystroke, and each of
-    // those is a real virtual machine powered off and booted again.
-    const timer = setTimeout(() => {
-      const first = asked.current.key !== specKey;
-      // One automatic retry per settings change, no more. A pool that will not
-      // come up must never become a subprocess every couple of seconds; the
-      // status line says what is wrong and the toggle is the retry.
-      const retry = needsRestart && !poolError && asked.current.tries < 2;
-      if (!first && !retry) {
-        refreshPool();
-        return;
-      }
-      asked.current = { key: specKey, tries: first ? 1 : asked.current.tries + 1 };
-      startPool(1, mode, place, gpu);
-    }, 1500);
-    return () => clearTimeout(timer);
-  }, [enabled, specKey, needsRestart, poolError, mode, place, gpu, refreshPool, startPool]);
-
-  /* The toggle is off, and a pool THIS app warmed is still configured — a stop
-     that did not land, or an app that went away before it could. Give the
-     memory back. Once per mount, and only when there is a receipt: a pool
-     somebody started from the CLI is not this app's to shut down. */
-  useEffect(() => {
-    if (enabled || autoStopped.current) return;
-    if (!pool?.configured || !pool.warmed_for) return;
-    autoStopped.current = true;
-    stopPool();
-  }, [enabled, pool, stopPool]);
-
-  /* The only timer. 30 s because nothing here moves faster than a boot, and
-     only while this panel is on screen and the pool is on; it dies with the
-     component. */
-  useEffect(() => {
-    if (!enabled || !active) return undefined;
-    const timer = setInterval(refreshPool, 30000);
-    return () => clearInterval(timer);
-  }, [enabled, active, refreshPool]);
-
-  const toggle = (on) => {
-    onLaunch({ ...launch, keepWarm: on });
-    if (on) {
-      autoStopped.current = false;
-      asked.current = { key: null, tries: 0 };
-    } else {
-      asked.current = { key: null, tries: 0 };
-      stopPool();
-    }
-  };
-
-  // `ready_matching`, never `ready` — and only when the pool was warmed for the
-  // settings above. A ready slot for other settings is invisible to a launch.
-  const ready = matched ? Number(pool?.ready_matching) || 0 : 0;
-
-  let tone = "off";
-  let status = "Off — every launch boots from cold";
-  if (enabled) {
-    if (poolError) {
-      tone = "fault";
-      status = `Couldn't keep one warm — ${poolError}`;
-    } else if (poolBusy || !pool) {
-      tone = "busy";
-      status = "Checking…";
-    } else if (pool.ok === false) {
-      tone = "fault";
-      status = errText(pool);
-    } else if (managerDown) {
-      // No count in this state, however many slots are up: nothing is tending
-      // them, so "instant" would go on being printed while the pool drains.
-      tone = "fault";
-      status = "The pool manager isn't running — switch this off and on again";
-    } else if (ready > 0) {
-      tone = "live";
-      status = `${ready} ready — the next launch is instant`;
-    } else if (warmedKey && !matched) {
-      tone = "busy";
-      status = "Re-warming for these settings…";
-    } else {
-      tone = "busy";
-      status = "Warming — this first boot still takes a few minutes";
-    }
-  } else if (pool?.configured && pool.warmed_for) {
-    // Off, but a pool THIS app warmed is still holding the memory (the same
-    // condition the auto-stop above acts on). Saying "off" here would be the
-    // one lie this panel can tell that costs gigabytes.
-    tone = poolError ? "fault" : "busy";
-    status = poolError
-      ? `A warm instance is still running — ${poolError}`
-      : "Off — shutting the warm instance down…";
-  }
-
-  const fits = Number.isFinite(doctor?.scratch_fits_instances)
-    ? doctor.scratch_fits_instances
-    : null;
-
-  return (
-    <div className="flex flex-col gap-2">
-      <Toggle
-        id="launch-warm"
-        checked={enabled}
-        onChange={toggle}
-        label="Keep an instance warm"
-        hint="Pre-boots one now, so the next launch skips the boot entirely."
-      />
-      <div className="flex items-center gap-2">
-        <Lamp tone={tone} pulse={tone === "busy"} size={6} />
-        {/* The engine's own failures are prose and can run to paragraphs (a
-            missing base image prints the whole install checklist), so the line
-            stays one line and the full text lives in the tooltip. */}
-        <span title={status} className="truncate font-mono text-[11px] text-ink-3">
-          {status}
-        </span>
-      </div>
-      <p className="text-[11px] leading-snug text-ink-3">
-        A warm instance stays booted while it waits, holding its memory and its disk scratch
-        until you switch this off.
-        {fits != null && ` Free disk here fits about ${fits} instance${fits === 1 ? "" : "s"}.`}
-      </p>
-    </div>
-  );
-}
-
 /* -------------------------------------------------------------------------- */
 
 function AccountRow({
@@ -766,7 +566,7 @@ function EmptyState({ filtered, query, usable, onAdd, onClear }) {
       <div className="flex flex-col items-center gap-2.5 px-4 py-14 text-center">
         <SearchIcon className="h-6 w-6 text-ink-3" />
         <p className="text-[13px] text-ink-2">
-          No instance matches “<span className="font-mono">{query}</span>”
+          No account matches “<span className="font-mono">{query}</span>”
         </p>
         <Button size="sm" onClick={onClear}>
           Clear filter
@@ -778,7 +578,7 @@ function EmptyState({ filtered, query, usable, onAdd, onClear }) {
     <div className="flex flex-col items-center gap-3 px-4 py-14 text-center">
       <LayersIcon className="h-7 w-7 text-ink-3" strokeWidth={1.4} />
       <div>
-        <p className="text-[13px] font-medium text-ink">No instances yet</p>
+        <p className="text-[13px] font-medium text-ink">No accounts yet</p>
         <p className="mx-auto mt-1 max-w-[36ch] text-[11.5px] leading-relaxed text-ink-3">
           Each account gets its own Android instance with its own storage, ports and game data.
         </p>

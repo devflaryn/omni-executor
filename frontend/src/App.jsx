@@ -8,25 +8,27 @@ import HomeView from "./components/HomeView.jsx";
 import EditorView from "./components/EditorView.jsx";
 import AccountsView from "./components/AccountsView.jsx";
 import SettingsView from "./components/SettingsView.jsx";
+import FarmingView from "./components/FarmingView.jsx";
 import BootstrapView from "./components/BootstrapView.jsx";
 import AuthView from "./components/AuthView.jsx";
 import { UpdateBanner, UpdateModal, useUpdates } from "./components/UpdateBanner.jsx";
 import Toast from "./components/Toast.jsx";
-import { CodeIcon, GearIcon, HomeIcon, UsersIcon } from "./components/icons.jsx";
+import { CodeIcon, GearIcon, HomeIcon, SproutIcon, UsersIcon } from "./components/icons.jsx";
 
 const NAV = [
   { id: "home", label: "Home", Icon: HomeIcon, hint: "1" },
   { id: "editor", label: "Editor", Icon: CodeIcon, hint: "2" },
-  { id: "accounts", label: "Instances", Icon: UsersIcon, hint: "3" },
-  { id: "settings", label: "Settings", Icon: GearIcon, hint: "4" },
+  { id: "accounts", label: "Accounts", Icon: UsersIcon, hint: "3" },
+  { id: "farming", label: "Farming", Icon: SproutIcon, hint: "4" },
+  { id: "settings", label: "Settings", Icon: GearIcon, hint: "5" },
 ];
 
-const DEFAULT_LAUNCH = { mode: "gaming", gpu: "auto", place: "", multiInstance: false };
+const DEFAULT_LAUNCH = { mode: "gaming", gpu: "auto", place: "" };
 const DEFAULT_PROFILE = { name: "Guest", tag: "" };
 
 export default function App() {
   const [tab, setTab] = useState("home");
-  // Home's "Add account" opens the Instances tab's dialog: a counter, so each
+  // Home's "Add account" opens the Accounts tab's dialog: a counter, so each
   // press opens it again even if the last one was dismissed.
   const [addRequest, setAddRequest] = useState(0);
   const [theme, setTheme] = useState("dark");
@@ -127,7 +129,7 @@ export default function App() {
     saveSettings({ launch: next });
   }, []);
 
-  // Ctrl/Cmd+1..4 jumps between sections, as long as you aren't typing.
+  // Ctrl/Cmd+1..5 jumps between sections, as long as you aren't typing.
   useEffect(() => {
     const onKey = (e) => {
       if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
@@ -193,7 +195,7 @@ export default function App() {
             <UpdateBanner updates={updates} onOpenSettings={() => switchTab("settings")} />
 
             {/* Every view stays mounted so the editor keeps its buffer and the
-                instances list keeps its selection; only visibility changes. */}
+                accounts list keeps its selection; only visibility changes. */}
             <main className="flex min-h-0 flex-1 flex-col">
               <HomeView
                 active={tab === "home"}
@@ -214,6 +216,7 @@ export default function App() {
                 showToast={showToast}
                 addRequest={addRequest}
               />
+              <FarmingView active={tab === "farming"} />
               <SettingsView
                 active={tab === "settings"}
                 theme={theme}
@@ -244,16 +247,18 @@ function ContextBar({ tab, profile, chrome }) {
   const nav = NAV.find((n) => n.id === tab);
   const subtitle =
     tab === "accounts"
-      ? `${accounts.length} ${accounts.length === 1 ? "instance" : "instances"}${
+      ? `${accounts.length} ${accounts.length === 1 ? "account" : "accounts"}${
           running.length ? ` · ${running.length} running` : ""
         }`
       : tab === "editor"
         ? `Engine ${health.label.toLowerCase()}`
-        : tab === "home"
-          ? running.length
-            ? `${running.length} running`
-            : `Engine ${health.label.toLowerCase()}`
-          : profile.name || "Guest";
+        : tab === "farming"
+          ? `Engine ${health.label.toLowerCase()}`
+          : tab === "home"
+            ? running.length
+              ? `${running.length} running`
+              : `Engine ${health.label.toLowerCase()}`
+            : profile.name || "Guest";
 
   return <TitleBar title={nav?.label ?? "Omni Executor"} subtitle={subtitle} chrome={chrome} />;
 }

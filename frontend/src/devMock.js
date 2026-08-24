@@ -15,7 +15,16 @@ export function installDevMock() {
     { name: "farm_alpha", base: "bliss-15", arch: "arm", running: false },
     { name: "farm_beta", base: "bliss-15", arch: "x86", running: false },
     { name: "scout-01", base: "bliss-15", arch: "x86", running: false },
+    // Enough rows to overflow the Accounts panel, so the preview exercises the
+    // scrolling canvas rather than a list that happens to fit.
+    ...Array.from({ length: 14 }, (_, i) => ({
+      name: `farmhand-${String(i + 1).padStart(2, "0")}`,
+      base: "bliss-15",
+      arch: i % 3 === 0 ? "arm" : "x86",
+      running: false,
+    })),
   ];
+  const autoexec = [{ name: "00-antiafk.lua" }, { name: "10-collect.lua" }, { name: "20-rejoin.lua" }];
   const find = (n) => accounts.find((a) => a.name === n);
   const later = (ms, fn) => new Promise((r) => setTimeout(() => r(fn()), ms));
   const push = (e, p) => window.omniEvent?.(e, p);
@@ -67,6 +76,8 @@ export function installDevMock() {
       engine_view: async () => ({ ok: true }),
       engine_hide: async () => ({ ok: true }),
       engine_remove: async () => ({ ok: true }),
+      list_autoexec: async () => ({ ok: true, scripts: autoexec.map((s) => ({ ...s })) }),
+      open_autoexec_folder: async () => ({ ok: true }),
       execute_script: (name) => later(600, () => ({ ok: true, output: `ran on ${name}` })),
     },
   };
