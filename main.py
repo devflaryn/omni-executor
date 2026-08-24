@@ -734,6 +734,37 @@ class Api:
         return {"ok": True, "ran": None, "pending": True, "id": job_id, "connected": True,
                 "output": "Submitted — no result yet (the script may still be running)."}
 
+    # ---- autoexec ----
+
+    def autoexec_dir(self):
+        """The host folder whose scripts every instance auto-runs at session
+        start. Under the engine's runtime dir (beside accounts/), which is the
+        exact path omnidroid reads and pushes at launch, so what the user drops
+        here is what runs."""
+        import bootstrap
+        d = bootstrap.runtime_dir() / "autoexec"
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        return str(d)
+
+    def open_autoexec_folder(self):
+        """Open the autoexec folder in the OS file manager. Every file here is
+        run, in filename order, in EVERY instance at session start -- drop a
+        .lua in and the next launch executes it."""
+        path = self.autoexec_dir()
+        try:
+            if sys.platform == "win32":
+                os.startfile(path)  # noqa: S606 — a known dir, not user input
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
+            return {"ok": True, "path": path}
+        except Exception as exc:  # noqa: BLE001 — report, never crash the app
+            return {"ok": False, "error": str(exc), "path": path}
+
     # ---- account / sign-in ----
 
     def auth_status(self):

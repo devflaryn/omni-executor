@@ -9,7 +9,7 @@ import { api } from "../api.js";
 import { useEngine } from "../engine.jsx";
 import { useEditorStore } from "../editorStore.jsx";
 import { Button, IconButton, Lamp } from "./ui.jsx";
-import { CheckIcon, CloseIcon, CopyIcon, EraserIcon, FileIcon, PlayIcon, PlusIcon } from "./icons.jsx";
+import { CheckIcon, CloseIcon, CopyIcon, EraserIcon, FileIcon, PlayIcon, PlusIcon, RocketIcon } from "./icons.jsx";
 
 const ALL = "__all__";
 
@@ -134,6 +134,20 @@ export default function EditorView({ active, showToast }) {
                 </option>
               ))}
             </select>
+            <IconButton
+              label="Autoexec folder — every script here auto-runs in every instance at start"
+              onClick={async () => {
+                const res = await api("open_autoexec_folder");
+                showToast?.(
+                  res?.ok
+                    ? "Opened autoexec folder — drop .lua files here to auto-run them at start"
+                    : `Could not open autoexec folder: ${res?.message || res?.error || "unknown"}`,
+                  res?.ok ? "ok" : "err",
+                );
+              }}
+            >
+              <RocketIcon className="h-4 w-4" />
+            </IconButton>
             <IconButton label={copied ? "Copied" : "Copy script"} onClick={copy}>
               {copied ? <CheckIcon className="h-4 w-4 text-live" /> : <CopyIcon className="h-4 w-4" />}
             </IconButton>
