@@ -471,34 +471,62 @@ def _month_name(month):
 
 
 def classify_date_selects(drv):
-    """Find the birthday <select>s by what they CONTAIN, not by id.
+    """Find the birthday <select>s. First by known ids/names (#MonthDropdown,
+    #DayDropdown, #YearDropdown) when present — the stable path for today's
+    page — then by structure (what each select CONTAINS) for a markup that
+    renames them. Returns (month, day, year) elements or Nones.
 
-    Month select: >= 12 options whose text looks like month names or whose
-    values are 1..12. Day select: 28-31 options, all numeric-ish. Year select:
-    >= 40 options dominated by 4-digit values. Returns (month, day, year)
-    elements or Nones."""
+    Structural rules: month select has >= 12 options whose TEXT are month
+    names; day select has ~28-32 options (a disabled ``Day`` placeholder plus
+    the 01..31 days) all numeric-valued; year select has >= 40 options
+    dominated by 4-digit values. The day bound is deliberately lenient: the
+    placeholder raises the count to 32, so a 28..31 bound would misclassify
+    today's real form and the birthday day would never get set."""
     found = {"month": None, "day": None, "year": None}
+
+    def take(slot, el):
+        if not found[slot]:
+            found[slot] = el
+
     try:
         selects = drv.find_elements("css selector", "select")
     except Exception:  # noqa: BLE001
         return found
+
+    # (1) Known ids/names — stable on the current page and cheaper to match.
+    id_name = {
+        "month": ("#MonthDropdown", "select[name='birthdayMonth']"),
+        "day": ("#DayDropdown", "select[name='birthdayDay']"),
+        "year": ("#YearDropdown", "select[name='birthdayYear']"),
+    }
+    for slot, sels in id_name.items():
+        for sel in sels:
+            try:
+                for el in drv.find_elements("css selector", sel):
+                    take(slot, el)
+            except Exception:  # noqa: BLE001
+                continue
+
+    # (2) Structural fallback for a page that renames the controls.
     months = {_month_name(m).lower() for m in range(1, 13)}
     for el in selects:
+        if all(found.values()):
+            break
         try:
             options = el.find_elements("css selector", "option")
         except Exception:  # noqa: BLE001
             continue
         texts = [(o.text or "").strip() for o in options]
         vals = [(o.get_attribute("value") or "").strip() for o in options]
-        if len(texts) >= 12 and sum(t.lower() in months for t in texts) >= 12:
-            if not found["month"]:
-                found["month"] = el
-        elif 28 <= len(texts) <= 31 and sum(v.isdigit() for v in vals) >= len(vals) - 1:
-            if not found["day"]:
-                found["day"] = el
-        elif len(texts) >= 40 and sum(re.fullmatch(r"(19|20)\d\d", v or "") for v in vals) > len(vals) // 2:
-            if not found["year"]:
-                found["year"] = el
+        if (not found["month"] and len(texts) >= 12
+                and sum(t.lower() in months for t in texts) >= 12):
+            take("month", el)
+        elif (not found["day"] and 28 <= len(texts) <= 32
+              and sum(v.isdigit() for v in vals) >= len(vals) - 1):
+            take("day", el)
+        elif (not found["year"] and len(texts) >= 40
+              and sum(1 for v in vals if re.fullmatch(r"(19|20)\d\d", v or "")) > len(vals) // 2):
+            take("year", el)
     return found
 
 
@@ -540,11 +568,15 @@ def fill_field(el, value):
 
 
 def find_gender_control(drv, gender):
-    """The gender picker, whatever shape it takes today: a labelled button, a
-    radio input, or a data attribute. Best-effort — a form without one simply
-    skips the step (Roblox has shipped both variants)."""
+    """The gender picker, whatever shape it takes today. Roblox currently
+    renders two icon buttons with no text — ``id="MaleButton"``/``id="FemaleButton"``
+    (or a ``title="Male"``/``title="Female"``) — so match those first, then the
+    labelled/radio/data-attribute variants the old form used. Best-effort: a
+    form without a gender picker at all simply skips the step (it's optional)."""
     label = "Male" if gender == "male" else "Female"
     candidates = [
+        (f"#{label}Button", "css"),               # today's page: id="MaleButton"
+        (f"button[title='{label}']", "css"),
         (f"[data-gender='{gender}']", "css"),
         (f"#gender-{gender}", "css"),
         (f"input[value='{label}']", "css"),
@@ -572,43 +604,67 @@ def find_gender_control(drv, gender):
 # text/submit heuristic.
 SIGNUP_BUTTON_IDS = ("#signup-button", "button[data-testid='signup-button']")
 
+# Words that mark a submit button as the SIGNUP one (not login) in the languages
+# the app is likely to hit. An empty/icon-only button also counts.
+SIGNUP_MARKS = ("sign up", "signup", "kaydol", "\u00fcye ol", "registre",
+                "create account", "cr\u00e9er", "anmelden", "\u00e0ngivelse",
+                "crea cuenta", "inscri")
 
-def submit_form(drv, on_status):
-    found_specific = False
+
+def submit_form(drv, on_status, wait=10.0):
+    """Find the Sign Up button and CLICK it once it is enabled.
+
+    Roblox renders the signup button ``disabled`` until the form validates
+    asynchronously (username availability check + password length), so we poll
+    for enablement before clicking — a click on a disabled button is a silent
+    no-op that leaves the form untouched and the whole account waiting on a
+    timeout. Prefers a signup-id button; falls back to a generic submit whose
+    text/breadcrumb marks it as signup (never a login button)."""
+    button = None
     for sel in SIGNUP_BUTTON_IDS:
         try:
-            for btn in drv.find_elements("css selector", sel):
-                if btn.is_displayed():
-                    btn.click()
-                    found_specific = True
+            for b in drv.find_elements("css selector", sel):
+                if b.is_displayed():
+                    button = b
                     break
         except Exception:  # noqa: BLE001
             continue
-        if found_specific:
+        if button:
             break
-    if found_specific:
-        on_status("[create] submitted the registration form")
-        return True
 
-    # Fallback: a generic submit button, only when its text says "sign up" in
-    # a language we recognise (or it's icon-only). Never guess on a login
-    # button, which would silently submit the wrong form.
-    marks = ("sign up", "signup", "kaydol", "\u00fcye ol", "registre",
-             "create account", "cr\u00e9er", "anmelden", "\u00e0ngivelse",
-             "crea cuenta", "inscri")
-    for sel in ("button[type='submit']",):
+    if button is None:
+        for sel in ("button[type='submit']", "button[type='button']"):
+            try:
+                for b in drv.find_elements("css selector", sel):
+                    if not b.is_displayed():
+                        continue
+                    try:
+                        txt = (b.text or "").lower()
+                    except Exception:  # noqa: BLE001
+                        txt = ""
+                    if any(m in txt for m in SIGNUP_MARKS) or not txt:
+                        button = b
+                        break
+            except Exception:  # noqa: BLE001
+                continue
+            if button:
+                break
+
+    if button is None:
+        return False  # no signup button on the page; caller re-polls
+
+    deadline = time.monotonic() + float(wait)
+    while time.monotonic() < deadline:
         try:
-            for btn in drv.find_elements("css selector", sel):
-                try:
-                    txt = (btn.text or "").lower()
-                except Exception:  # noqa: BLE001
-                    txt = ""
-                if btn.is_displayed() and (any(m in txt for m in marks) or not txt):
-                    btn.click()
-                    on_status("[create] submitted the registration form")
-                    return True
-        except Exception:  # noqa: BLE001
-            continue
+            if button.get_attribute("disabled") is None:
+                button.click()
+                on_status("[create] submitted the registration form")
+                return True
+        except Exception:  # noqa: BLE001 - a stale/rotated element
+            return True  # got through before it disappeared mid-flight
+        time.sleep(POLL_S)
+    # Still disabled after the wait (e.g. username rejected) — let the caller
+    # regenerate and retry rather than force a click that would do nothing.
     return False
 
 

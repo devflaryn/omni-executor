@@ -502,23 +502,134 @@ def test_submit_form_clicks_signup_id_button_with_localized_text():
     calls = {"n": 0}
 
     class Btn:
-        def __init__(self, text):
+        def __init__(self, text, disabled=True):
             self.text = text
             self.displayed = True
+            self._disabled = disabled
 
         def is_displayed(self):
             return self.displayed
+
+        def get_attribute(self, name):
+            if name == "disabled":
+                return "true" if self._disabled else None
+            return None
+
+        def click(self):
+            calls["n"] += 1
+
+    # Signup button starts enabled; the login button must never be clicked.
+    class Drv:
+        def find_elements(self, by, sel):
+            if sel == "#signup-button":
+                return [Btn("Kaydol", disabled=False)]
+            if sel == "button[type='submit']":
+                return [Btn("Giriş Yap", disabled=False)]
+            return []
+
+    assert ac.submit_form(Drv(), lambda m: None) is True
+    assert calls["n"] == 1   # the signup one, not the login one
+
+
+def test_submit_form_waits_for_disabled_button_to_enable(monkeypatch):
+    """Roblox renders the signup button disabled until the form validates
+    asynchronously; submit_form must poll for enablement instead of clicking
+    a disabled (no-op) button."""
+    calls = {"n": 0}
+    state = {"disabled": True}
+
+    class Btn:
+        def is_displayed(self):
+            return True
+
+        def get_attribute(self, name):
+            if name == "disabled":
+                return "true" if state["disabled"] else None
+            return None
 
         def click(self):
             calls["n"] += 1
 
     class Drv:
         def find_elements(self, by, sel):
-            if sel == "#signup-button":
-                return [Btn("Kaydol")]
-            if sel == "button[type='submit']":
-                return [Btn("Giriş Yap")]
+            return [Btn()] if sel == "#signup-button" else []
+
+    def enable_after_two_polls():
+        state["disabled"] = False
+
+    monkeypatch.setattr(ac.time, "sleep",
+                        lambda s: enable_after_two_polls())
+
+    assert ac.submit_form(Drv(), lambda m: None, wait=10.0) is True
+    assert calls["n"] == 1
+
+
+def test_classify_date_selects_with_placeholder_day_and_ids():
+    """Today's Roblox form: #MonthDropdown / #DayDropdown / #YearDropdown, with
+    the Day select carrying a disabled ``Day`` placeholder (32 options total).
+    All three must be classified AND picked by id."""
+    class Opt:
+        def __init__(self, text, value):
+            self._text, self._value = text, value
+
+        def get_attribute(self, name):
+            assert name == "value"
+            return self._value
+
+        @property
+        def text(self):
+            return self._text
+
+    months = [Opt("Month", "")] + \
+        [Opt(m, m[:3]) for m in
+         ["January", "February", "March", "April", "May", "June", "July",
+          "August", "September", "October", "November", "December"]]
+    days = [Opt("Day", "")] + [Opt(f"{d:02d}", f"{d:02d}") for d in range(1, 32)]
+    years = [Opt("Year", "")] + [Opt(f"{y}", f"{y}") for y in range(2021, 1926, -1)]
+
+    class Sel:
+        def __init__(self, opts):
+            self._opts = opts
+
+        def find_elements(self, by, sel):
+            assert sel == "option"
+            return self._opts
+
+    drv = _SelectsDrv(Sel(months), Sel(days), Sel(years))
+    found = ac.classify_date_selects(drv)
+    assert found["month"] is not None
+    assert found["day"] is not None
+    assert found["year"] is not None
+
+
+class _SelectsDrv:
+    """Select list + id lookups over the same swiss Sels (a miniature of the
+    Selenium contract classify_date_selects depends on)."""
+
+    def __init__(self, month, day, year):
+        self._all = [month, day, year]
+
+    def find_elements(self, by, sel):
+        if sel == "select":
+            return self._all
+        return []
+
+
+def test_find_gender_control_matches_id_button():
+    """Roblox's gender picker is two icon buttons with no text — only
+    id=MaleButton/id=FemaleButton and a title. find_gender_control must match
+    those."""
+    class Btn:
+        def is_displayed(self):
+            return True
+
+    class Drv:
+        def find_elements(self, by, sel):
+            if sel == "#MaleButton":
+                return [Btn()]
+            if sel == "#FemaleButton":
+                return [Btn()]
             return []
 
-    assert ac.submit_form(Drv(), lambda m: None) is True
-    assert calls["n"] == 1   # the signup one, not the login one
+    assert ac.find_gender_control(Drv(), "male") is not None
+    assert ac.find_gender_control(Drv(), "female") is not None
