@@ -435,7 +435,7 @@ function OmniAccountPanel({ auth, onAuthChange, showToast }) {
    automatically; without one it waits for a human in the opened browser
    window — nothing is ever blocked outright, just slower. */
 function CaptchaPanel() {
-  const [provider, setProvider] = useState("surfsky");
+  const [provider, setProvider] = useState("2captcha");
   const [key, setKey] = useState("");
   const [reveal, setReveal] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -447,7 +447,7 @@ function CaptchaPanel() {
       if (!alive) return;
       const c = cfg?.captcha || {};
       if (c.provider) setProvider(c.provider);
-      setKey(String(c.apiKeys?.[c.provider || "surfsky"] || ""));
+      setKey(String(c.apiKeys?.[c.provider || "2captcha"] || ""));
       setLoaded(true);
     });
     return () => {
@@ -492,21 +492,21 @@ function CaptchaPanel() {
             }}
             className="input cursor-pointer"
           >
-            <option value="surfsky">Surfsky.io</option>
+            <option value="2captcha">2captcha.com</option>
           </select>
         </Field>
 
         <Field
           label="API key"
           htmlFor="captcha-key"
-          hint="Solve captchas automatically while creating accounts. Get one at surfsky.io."
+          hint="Solve captchas automatically while creating accounts. Get one at 2captcha.com."
         >
           <div className="flex gap-2">
             <input
               id="captcha-key"
               type={reveal ? "text" : "password"}
               className="input font-mono tracking-wide"
-              placeholder="Paste your Surfsky.io API key"
+              placeholder="Paste your 2captcha.com API key"
               value={key}
               disabled={!loaded}
               autoComplete="off"

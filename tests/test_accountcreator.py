@@ -3,7 +3,7 @@
 The Selenium flow itself is only smoke-tested here (a fake driver records the
 calls); the point of these tests is that everything AROUND the browser — the
 generators, the validation contract shared with main.Api, the vault file and
-the surfsky.io client's request/response shape — is pinned down without
+the 2captcha.com client's request/response shape — is pinned down without
 touching a network or a Chrome.
 """
 
@@ -114,8 +114,8 @@ def test_validate_config_defaults_and_clamping():
     assert clean["amount"] == 1
     assert clean["usernameStyle"] == "name_no"
     assert clean["customPassword"] is None
-    assert clean["captchaProvider"] == "surfsky"
-    assert set(clean["captchaApiKeys"]) == {"surfsky"}
+    assert clean["captchaProvider"] == "2captcha"
+    assert set(clean["captchaApiKeys"]) == {"2captcha"}
 
 
 @pytest.mark.parametrize("bad", [0, -3, 51, "lots"])
@@ -139,10 +139,10 @@ def test_validate_config_requires_strong_custom_password():
 
 
 def test_validate_config_strips_api_keys():
-    clean, _ = ac.validate_creation_config(captcha_api_keys={"surfsky": "  key-123  ",
+    clean, _ = ac.validate_creation_config(captcha_api_keys={"2captcha": "  key-123  ",
                                                             "unknown": "x"})
-    assert clean["captchaApiKeys"]["surfsky"] == "key-123"
-    assert set(clean["captchaApiKeys"]) == {"surfsky"}
+    assert clean["captchaApiKeys"]["2captcha"] == "key-123"
+    assert set(clean["captchaApiKeys"]) == {"2captcha"}
 
 
 # -------------------------------------------------------------------- vault
@@ -172,7 +172,7 @@ def test_vault_file_is_json_and_survives_reload(vault_root):
     assert ac.Vault(vault_root).get("Ultra_Hawk948")["createdAt"] <= time.time()
 
 
-# ------------------------------------------------------------ surfsky solver
+# ------------------------------------------------------------ 2captcha solver
 
 class _FakeResponse:
     def __init__(self, payload):
@@ -214,13 +214,13 @@ def test_solver_happy_path(monkeypatch):
          "solution": {"token": "TOKEN|abc"}},
     ]
     calls = _solver_with(monkeypatch, responses, sleep=lambda s: None)
-    s = ac.SurfskySolver("key-123", poll=0)
+    s = ac.TwoCaptchaSolver("key-123", poll=0)
     token = s.solve_funcaptcha("https://www.roblox.com/up/registration",
                                ac.ROBLOX_ARKOSE_PUBLIC_KEY)
     assert token == "TOKEN|abc"
     create, result = calls[0], calls[-1]
-    assert create["url"].endswith(ac.SURFSKY_CREATE_PATH)
-    assert result["url"].endswith(ac.SURFSKY_RESULT_PATH)
+    assert create["url"].endswith(ac.TWOCAPTCHA_CREATE_PATH)
+    assert result["url"].endswith(ac.TWOCAPTCHA_RESULT_PATH)
     assert create["body"]["clientKey"] == "key-123"
     task = create["body"]["task"]
     assert task["type"] == ac.FUN_CAPTCHA_TASK_TYPE
@@ -231,21 +231,21 @@ def test_solver_happy_path(monkeypatch):
 def test_solver_error_paths(monkeypatch):
     _solver_with(monkeypatch, [{"errorId": 1, "errorCode": "ERROR_KEY_DOES_NOT_EXIST"}])
     with pytest.raises(ac.CaptchaError, match="KEY"):
-        ac.SurfskySolver("bad", poll=0).solve_funcaptcha("https://x", "k")
+        ac.TwoCaptchaSolver("bad", poll=0).solve_funcaptcha("https://x", "k")
 
     _solver_with(monkeypatch, [{"errorId": 0, "taskId": "t"}, {"status": "processing"}])
-    s = ac.SurfskySolver("key", timeout=0.01, poll=0)
+    s = ac.TwoCaptchaSolver("key", timeout=0.01, poll=0)
     with pytest.raises(ac.CaptchaError, match="did not finish"):
         s.solve_funcaptcha("https://x", "k")
 
     with pytest.raises(ac.CaptchaError, match="empty"):
-        ac.SurfskySolver("   ")
+        ac.TwoCaptchaSolver("   ")
 
 
 def test_make_solver_gates_on_key():
-    assert ac.make_solver("surfsky", {"surfsky": ""}) is None
-    assert isinstance(ac.make_solver("surfsky", {"surfsky": "k"}),
-                      ac.SurfskySolver)
+    assert ac.make_solver("2captcha", {"2captcha": ""}) is None
+    assert isinstance(ac.make_solver("2captcha", {"2captcha": "k"}),
+                      ac.TwoCaptchaSolver)
 
 
 # ------------------------------------------------------- selenium flow (fake)

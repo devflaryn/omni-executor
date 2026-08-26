@@ -82,7 +82,7 @@ DEFAULT_SETTINGS = {
     # Captcha provider for automated solving during account creation.
     # apiKeys holds one key per provider id (see accountcreator.CAPTCHA_PROVIDERS);
     # an empty key means captchas wait for a human in the opened browser window.
-    "captcha": {"provider": "surfsky", "apiKeys": {"surfsky": ""}},
+    "captcha": {"provider": "2captcha", "apiKeys": {"2captcha": ""}},
 }
 
 # COMPATIBILITY SHIM, NOT A FEATURE. The engine offers two presets, `gaming`
@@ -1572,7 +1572,7 @@ class Api:
 
         Each account: open roblox.com's registration page, fill a random 18+
         birthday, generated username/password/gender, solve any captcha
-        (surfsky.io when an API key is configured; otherwise the human solves
+        (2captcha.com when an API key is configured; otherwise the human solves
         it in the opened browser window), then on landing at roblox.com/home
         capture `.ROBLOSECURITY`, verify it, save the cookie into omnidroid's
         store AND the password/birthday into the vault — so an expired cookie

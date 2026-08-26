@@ -7,7 +7,7 @@ One module, four concerns:
      pick. Pure functions over `secrets`, so they are unit-testable without a
      browser.
 
-  2. CAPTCHA SOLVING — a small client for surfsky.io's createTask /
+  2. CAPTCHA SOLVING — a small client for 2captcha.com's createTask /
      getTaskResult protocol (the shape every major solver service shares).
      Roblox's signup is gated by Arkose FunCaptcha; with an API key configured
      the challenge is solved out-of-band and the token injected back into the
@@ -61,7 +61,8 @@ USERNAME_STYLES = {
 }
 
 CAPTCHA_PROVIDERS = {
-    "surfsky": "Surfsky.io",
+    # id -> display name (the UI dropdown + settings.json use the id).
+    "2captcha": "2captcha.com",
 }
 
 FIRST_NAMES = (
@@ -225,7 +226,7 @@ def validate_creation_config(amount=1, username_style=None, custom_password=None
     provider = captcha_provider if captcha_provider in CAPTCHA_PROVIDERS else None
     if captcha_provider not in (None, "") and provider is None:
         return None, f"Unknown captcha provider {captcha_provider!r}."
-    clean["captchaProvider"] = provider or "surfsky"
+    clean["captchaProvider"] = provider or "2captcha"
 
     keys = captcha_api_keys if isinstance(captcha_api_keys, dict) else {}
     clean["captchaApiKeys"] = {
@@ -313,12 +314,12 @@ class Vault:
 
 
 # ---------------------------------------------------------------------------
-# surfsky.io captcha solver (createTask / getTaskResult protocol)
+# 2captcha.com captcha solver (createTask / getTaskResult protocol)
 # ---------------------------------------------------------------------------
 
-SURFSKY_API_BASE = "https://api.surfsky.io"
-SURFSKY_CREATE_PATH = "/captcha/createTask"
-SURFSKY_RESULT_PATH = "/captcha/getTaskResult"
+TWOCAPTCHA_API_BASE = "https://api.2captcha.com"
+TWOCAPTCHA_CREATE_PATH = "/createTask"
+TWOCAPTCHA_RESULT_PATH = "/getTaskResult"
 # Task type for Arkose FunCaptcha without handing the solver a proxy — the
 # same name every createTask-style service uses for it.
 FUN_CAPTCHA_TASK_TYPE = "FunCaptchaTaskProxyLess"
@@ -333,22 +334,22 @@ class CaptchaError(Exception):
     """Raised for any solver-side failure worth showing the user."""
 
 
-class SurfskySolver:
-    """Minimal surfsky.io FunCaptcha client.
+class TwoCaptchaSolver:
+    """Minimal 2captcha.com FunCaptcha client.
 
-    POST {base}/captcha/createTask  {"clientKey", "task"}      -> {"taskId"}
-    POST {base}/captcha/getTaskResult {"clientKey", "taskId"}  -> polled until
+    POST {base}/createTask      {"clientKey", "task"}      -> {"errorId", "taskId"}
+    POST {base}/getTaskResult   {"clientKey", "taskId"}    -> polled until
     status == "ready", then solution.token is the answer to inject.
 
     Both constants live at module scope so an endpoint change is a one-line
     edit, not an archaeology dig."""
 
-    def __init__(self, api_key, base=SURFSKY_API_BASE, timeout=240.0,
+    def __init__(self, api_key, base=TWOCAPTCHA_API_BASE, timeout=240.0,
                  poll=3.0, request_timeout=30.0):
         if not api_key or not str(api_key).strip():
-            raise CaptchaError("Surfsky.io API key is empty.")
+            raise CaptchaError("2captcha.com API key is empty.")
         self.api_key = str(api_key).strip()
-        self.base = (base or SURFSKY_API_BASE).rstrip("/")
+        self.base = (base or TWOCAPTCHA_API_BASE).rstrip("/")
         self.timeout = float(timeout)
         self.poll = float(poll)
         self.request_timeout = float(request_timeout)
@@ -369,13 +370,13 @@ class SurfskySolver:
                 detail = e.read().decode("utf-8", errors="replace")[:200]
             except Exception:  # noqa: BLE001 - body is decoration
                 pass
-            raise CaptchaError(f"Surfsky.io returned HTTP {e.code}: {detail}") from e
+            raise CaptchaError(f"2captcha.com returned HTTP {e.code}: {detail}") from e
         except (urllib.error.URLError, OSError, TimeoutError) as e:
-            raise CaptchaError(f"Could not reach Surfsky.io: {e}") from e
+            raise CaptchaError(f"Could not reach 2captcha.com: {e}") from e
         try:
             return json.loads(body)
         except ValueError as e:
-            raise CaptchaError("Surfsky.io sent a response that was not JSON.") from e
+            raise CaptchaError("2captcha.com sent a response that was not JSON.") from e
 
     def solve_funcaptcha(self, website_url, public_key, subdomain=None):
         """Submit the challenge and block until a token comes back."""
@@ -386,19 +387,19 @@ class SurfskySolver:
         }
         if subdomain:
             task["funcaptchaApiJSSubdomain"] = subdomain
-        resp = self._post(SURFSKY_CREATE_PATH,
+        resp = self._post(TWOCAPTCHA_CREATE_PATH,
                           {"clientKey": self.api_key, "task": task})
         if resp.get("errorId"):
             raise CaptchaError(
                 resp.get("errorDescription") or resp.get("errorCode") or "createTask failed")
         task_id = resp.get("taskId")
         if not task_id:
-            raise CaptchaError("Surfsky.io did not return a taskId.")
+            raise CaptchaError("2captcha.com did not return a taskId.")
 
         deadline = time.monotonic() + self.timeout
         while time.monotonic() < deadline:
             time.sleep(self.poll)
-            res = self._post(SURFSKY_RESULT_PATH,
+            res = self._post(TWOCAPTCHA_RESULT_PATH,
                              {"clientKey": self.api_key, "taskId": task_id})
             err = res.get("errorId")
             if err:
@@ -894,6 +895,6 @@ def make_solver(captcha_provider, api_keys):
     """Build the solver for a validated config, or None when no key is set
     (= manual solving)."""
     keys = api_keys or {}
-    if captcha_provider == "surfsky" and keys.get("surfsky"):
-        return SurfskySolver(keys["surfsky"])
+    if captcha_provider == "2captcha" and keys.get("2captcha"):
+        return TwoCaptchaSolver(keys["2captcha"])
     return None

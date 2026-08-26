@@ -83,7 +83,7 @@ export function installDevMock() {
       creation_get_config: async () => ({
         ok: true,
         creation: { amount: 1, usernameStyle: "name_no" },
-        captcha: { provider: "surfsky", apiKeys: { surfsky: "" } },
+        captcha: { provider: "2captcha", apiKeys: { "2captcha": "" } },
       }),
       creation_save_config: async (patch) => {
         Object.assign(settings, patch);
