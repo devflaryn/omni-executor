@@ -421,9 +421,14 @@ class TwoCaptchaSolver:
 # selenium signup flow
 # ---------------------------------------------------------------------------
 
+# The registration entry point. `/up/registration` and `/register` were retired
+# by Roblox and now 404; the live one is the SPA route `CreateAccount`, which
+# redirects `/tr/CreateAccount` etc. for non-English locales. `account/signupredir`
+# is Roblox's canonical signup redirect and lands on the same page. Both return
+# 200 in every locale, so neither can strand us on a localized 404 page.
 SIGNUP_URLS = (
-    "https://www.roblox.com/up/registration",
-    "https://www.roblox.com/register",
+    "https://www.roblox.com/CreateAccount",
+    "https://www.roblox.com/account/signupredir",
 )
 HOME_URL_MARKERS = ("roblox.com/home", "roblox.com/discover")
 
@@ -435,7 +440,6 @@ SEL_USERNAME = ("#signup-username", "input[name='username']",
                 "input[placeholder*='username' i]")
 SEL_PASSWORD = ("#signup-password", "input[name='password']",
                 "input[type='password']")
-SEL_SUBMIT = ("#signup-button", "button[type='submit']", "button[data-testid='signup-button']")
 SEL_ERROR_TEXT = ("[class*='error' i]", "[role='alert']", ".form-control-label")
 CAPTCHA_IFRAME_SEL = ("iframe[src*='arkoselabs'], iframe[src*='funcaptcha'], "
                       "iframe[id*='arkose'], iframe[title*='verification' i]")
@@ -560,24 +564,51 @@ def find_gender_control(drv, gender):
     return None
 
 
+# Submitting the signup form. Roblox localizes the button text (English "Sign
+# Up", Turkish "Kaydol", ...), so matching on English text alone would skip the
+# click on a localized page and let the whole account time out. Buttons matched
+# by their SIGNUP-specific id/data-testid are trusted unconditionally (that id
+# is code, not user-facing text); only the generic selector falls back to a
+# text/submit heuristic.
+SIGNUP_BUTTON_IDS = ("#signup-button", "button[data-testid='signup-button']")
+
+
 def submit_form(drv, on_status):
-    for sel in SEL_SUBMIT:
+    found_specific = False
+    for sel in SIGNUP_BUTTON_IDS:
         try:
-            btns = drv.find_elements("css selector", sel)
+            for btn in drv.find_elements("css selector", sel):
+                if btn.is_displayed():
+                    btn.click()
+                    found_specific = True
+                    break
         except Exception:  # noqa: BLE001
             continue
-        for btn in btns:
-            try:
-                txt = (btn.text or "").lower()
-            except Exception:  # noqa: BLE001
-                txt = ""
-            if btn.is_displayed() and ("sign up" in txt or "signup" in txt or not txt):
+        if found_specific:
+            break
+    if found_specific:
+        on_status("[create] submitted the registration form")
+        return True
+
+    # Fallback: a generic submit button, only when its text says "sign up" in
+    # a language we recognise (or it's icon-only). Never guess on a login
+    # button, which would silently submit the wrong form.
+    marks = ("sign up", "signup", "kaydol", "\u00fcye ol", "registre",
+             "create account", "cr\u00e9er", "anmelden", "\u00e0ngivelse",
+             "crea cuenta", "inscri")
+    for sel in ("button[type='submit']",):
+        try:
+            for btn in drv.find_elements("css selector", sel):
                 try:
+                    txt = (btn.text or "").lower()
+                except Exception:  # noqa: BLE001
+                    txt = ""
+                if btn.is_displayed() and (any(m in txt for m in marks) or not txt):
                     btn.click()
                     on_status("[create] submitted the registration form")
                     return True
-                except Exception:  # noqa: BLE001
-                    continue
+        except Exception:  # noqa: BLE001
+            continue
     return False
 
 

@@ -477,3 +477,48 @@ def test_creation_get_config_heals_removed_provider(tmp_path, monkeypatch):
     on_disk = json.loads(settings_file.read_text(encoding="utf-8"))
     assert on_disk["captcha"]["provider"] == "2captcha"
     assert set(on_disk["captcha"]["apiKeys"]) == {"2captcha"}
+
+
+# ------------------------------------------------------- registration entry
+
+def test_signup_urls_use_live_routes_not_retired_404_paths():
+    """Roblox retired /up/registration and /register (both 404 now); the
+    signing entry point is the CreateAccount SPA route (locale-localized) plus
+    the canonical signup redirect. Neither of the dead paths may be in the
+    candidate list, or a Turkish-locale browser lands on a /tr/... 404."""
+    assert ac.SIGNUP_URLS, "must keep at least one signup URL"
+    for url in ac.SIGNUP_URLS:
+        assert "roblox.com" in url, url
+    assert "register" not in [u.lower() for u in ac.SIGNUP_URLS]
+    assert "up/registration" not in [u.lower() for u in ac.SIGNUP_URLS]
+    assert any("CreateAccount" in u for u in ac.SIGNUP_URLS) or \
+        any("signupredir" in u for u in ac.SIGNUP_URLS)
+
+
+def test_submit_form_clicks_signup_id_button_with_localized_text():
+    """The id-based signup button must be clicked even when Roblox localizes
+    its visible text (e.g. Turkish 'Kaydol'). The generic submit fallback must
+    never click a login button."""
+    calls = {"n": 0}
+
+    class Btn:
+        def __init__(self, text):
+            self.text = text
+            self.displayed = True
+
+        def is_displayed(self):
+            return self.displayed
+
+        def click(self):
+            calls["n"] += 1
+
+    class Drv:
+        def find_elements(self, by, sel):
+            if sel == "#signup-button":
+                return [Btn("Kaydol")]
+            if sel == "button[type='submit']":
+                return [Btn("Giriş Yap")]
+            return []
+
+    assert ac.submit_form(Drv(), lambda m: None) is True
+    assert calls["n"] == 1   # the signup one, not the login one
