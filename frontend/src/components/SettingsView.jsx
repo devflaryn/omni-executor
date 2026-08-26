@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
 import { useEngine } from "../engine.jsx";
 import { Button, Field, Lamp, Panel, PanelHead, Toggle } from "./ui.jsx";
-import { CpuIcon, GearIcon, MoonIcon, SunIcon, UserIcon } from "./icons.jsx";
+import { CpuIcon, GearIcon, LockIcon, MoonIcon, SunIcon, UserIcon } from "./icons.jsx";
 import UpdatePanel from "./UpdateBanner.jsx";
 
 function initials(name) {
@@ -178,6 +178,9 @@ export default function SettingsView({
             </div>
           </div>
         </Panel>
+
+        {/* Captcha provider (used by account creation) */}
+        <CaptchaPanel />
 
         {/* Engine */}
         <Panel className="overflow-hidden">
@@ -422,6 +425,109 @@ function OmniAccountPanel({ auth, onAuthChange, showToast }) {
             Sign out
           </Button>
         </div>
+      </div>
+    </Panel>
+  );
+}
+
+/* Captcha solving for account creation: pick a provider, paste its API key.
+   With a key saved, the challenge during "Create account" is solved
+   automatically; without one it waits for a human in the opened browser
+   window — nothing is ever blocked outright, just slower. */
+function CaptchaPanel() {
+  const [provider, setProvider] = useState("surfsky");
+  const [key, setKey] = useState("");
+  const [reveal, setReveal] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const saveTimer = useRef(null);
+
+  useEffect(() => {
+    let alive = true;
+    api("creation_get_config").then((cfg) => {
+      if (!alive) return;
+      const c = cfg?.captcha || {};
+      if (c.provider) setProvider(c.provider);
+      setKey(String(c.apiKeys?.[c.provider || "surfsky"] || ""));
+      setLoaded(true);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const save = (nextProvider, nextKey) => {
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      api("creation_save_config", {
+        captcha: { provider: nextProvider, apiKeys: { [nextProvider]: nextKey.trim() } },
+      });
+    }, 500);
+  };
+
+  return (
+    <Panel className="overflow-hidden">
+      <PanelHead
+        icon={LockIcon}
+        title="Captcha"
+        right={
+          <span className="flex items-center gap-2 text-[11.5px] text-ink-2">
+            <Lamp tone={key.trim() ? "live" : "off"} size={6} />
+            {key.trim() ? "Auto-solve on" : "Manual"}
+          </span>
+        }
+      />
+      <div className="flex flex-col gap-4 p-4">
+        <Field
+          label="Provider"
+          htmlFor="captcha-provider"
+          hint="More providers can be added later."
+        >
+          <select
+            id="captcha-provider"
+            value={provider}
+            disabled={!loaded}
+            onChange={(e) => {
+              setProvider(e.target.value);
+              save(e.target.value, key);
+            }}
+            className="input cursor-pointer"
+          >
+            <option value="surfsky">Surfsky.io</option>
+          </select>
+        </Field>
+
+        <Field
+          label="API key"
+          htmlFor="captcha-key"
+          hint="Solve captchas automatically while creating accounts. Get one at surfsky.io."
+        >
+          <div className="flex gap-2">
+            <input
+              id="captcha-key"
+              type={reveal ? "text" : "password"}
+              className="input font-mono tracking-wide"
+              placeholder="Paste your Surfsky.io API key"
+              value={key}
+              disabled={!loaded}
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(e) => {
+                setKey(e.target.value);
+                save(provider, e.target.value);
+              }}
+            />
+            <Button size="md" onClick={() => setReveal((r) => !r)}>
+              {reveal ? "Hide" : "Show"}
+            </Button>
+          </div>
+        </Field>
+
+        {!key.trim() && (
+          <p className="text-[11px] leading-relaxed text-ink-3">
+            No key yet — during account creation you solve each captcha yourself in the
+            browser window that opens.
+          </p>
+        )}
       </div>
     </Panel>
   );

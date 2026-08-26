@@ -74,6 +74,15 @@ DEFAULT_SETTINGS = {
     # LAUNCH, when nobody is mid-anything, and merely OFFER while the app is
     # open. See Api._update_tick.
     "autoUpdate": True,
+    # Account-creation preferences (the Create account modal seeds itself from
+    # these and writes its last-used values back). The custom PASSWORD is
+    # deliberately NOT persisted: it is a per-run override, and a password at
+    # rest in settings.json is one leak away from being every account's.
+    "creation": {"amount": 1, "usernameStyle": "name_no"},
+    # Captcha provider for automated solving during account creation.
+    # apiKeys holds one key per provider id (see accountcreator.CAPTCHA_PROVIDERS);
+    # an empty key means captchas wait for a human in the opened browser window.
+    "captcha": {"provider": "surfsky", "apiKeys": {"surfsky": ""}},
 }
 
 # COMPATIBILITY SHIM, NOT A FEATURE. The engine offers two presets, `gaming`
@@ -535,6 +544,11 @@ class Api:
         self._updating = False
         self._update_stop = threading.Event()
         self._update_thread = None
+        # Account-creation batch (one worker thread, sequential accounts).
+        self._creation_thread = None
+        self._creation_stop = threading.Event()
+        # index/total of the account currently being created, for status polls.
+        self._creation_at = (0, 0)
 
     # ---- window controls (used by the custom title bar) ----
 
@@ -1504,6 +1518,194 @@ class Api:
                 os.remove(path)
             except OSError:
                 pass
+
+    # ---- account creation (roblox.com signup, captcha, vault) ----
+
+    def creation_get_config(self):
+        """Saved creation + captcha preferences, merged over defaults."""
+        s = self.get_settings()
+        creation = {**DEFAULT_SETTINGS["creation"], **(s.get("creation") or {})}
+        captcha = {**DEFAULT_SETTINGS["captcha"], **(s.get("captcha") or {})}
+        keys = {**(DEFAULT_SETTINGS["captcha"]["apiKeys"]), **(captcha.get("apiKeys") or {})}
+        captcha["apiKeys"] = keys
+        return {"ok": True, "creation": creation, "captcha": captcha}
+
+    def creation_save_config(self, config):
+        """Persist creation/captcha preferences. Validated through
+        accountcreator so the UI contract has exactly one authority. A partial
+        patch (only the API key, say) never wipes an unrelated saved value."""
+        import accountcreator
+        cfg = config if isinstance(config, dict) else {}
+        current = self.creation_get_config()
+
+        # Only forward the fields this patch actually carries; absent ones keep
+        # their saved values.
+        patch_creation = cfg.get("creation")
+        patch_captcha = cfg.get("captcha")
+        amount_in = cfg.get("amount",
+                            patch_creation.get("amount") if isinstance(patch_creation, dict) else None)
+        style_in = cfg.get("usernameStyle",
+                           patch_creation.get("usernameStyle") if isinstance(patch_creation, dict) else None)
+        provider_in = cfg.get("captchaProvider",
+                              patch_captcha.get("provider") if isinstance(patch_captcha, dict) else None)
+        keys_in = cfg.get("captchaApiKeys",
+                          patch_captcha.get("apiKeys") if isinstance(patch_captcha, dict) else None)
+
+        clean, error = accountcreator.validate_creation_config(
+            amount=amount_in if amount_in is not None else current["creation"].get("amount", 1),
+            username_style=style_in,
+            custom_password=None,          # never persisted (see DEFAULT_SETTINGS)
+            captcha_provider=provider_in if provider_in is not None else current["captcha"].get("provider"),
+            captcha_api_keys=keys_in if keys_in is not None else current["captcha"].get("apiKeys"),
+        )
+        if error:
+            return {"ok": False, "error": "bad_config", "message": error}
+        return self.save_settings({
+            "creation": {"amount": clean["amount"],
+                         "usernameStyle": clean["usernameStyle"]},
+            "captcha": {"provider": clean["captchaProvider"],
+                        "apiKeys": clean["captchaApiKeys"]},
+        })
+
+    def creation_start(self, config=None):
+        """Create N Roblox accounts in one background batch.
+
+        Each account: open roblox.com's registration page, fill a random 18+
+        birthday, generated username/password/gender, solve any captcha
+        (surfsky.io when an API key is configured; otherwise the human solves
+        it in the opened browser window), then on landing at roblox.com/home
+        capture `.ROBLOSECURITY`, verify it, save the cookie into omnidroid's
+        store AND the password/birthday into the vault — so an expired cookie
+        can later be replayed by an automated login instead of losing the
+        account."""
+        if self._creation_thread and self._creation_thread.is_alive():
+            return {"ok": False, "error": "busy",
+                    "message": "An account-creation batch is already running."}
+        import accountcreator
+
+        saved = self.creation_get_config()
+        cfg = config if isinstance(config, dict) else {}
+        clean, error = accountcreator.validate_creation_config(
+            amount=cfg.get("amount", saved["creation"].get("amount", 1)),
+            username_style=cfg.get("usernameStyle", saved["creation"].get("usernameStyle")),
+            custom_password=cfg.get("customPassword"),
+            captcha_provider=cfg.get("captchaProvider", saved["captcha"].get("provider")),
+            captcha_api_keys=cfg.get("captchaApiKeys", saved["captcha"].get("apiKeys")),
+        )
+        if error:
+            return {"ok": False, "error": "bad_config", "message": error}
+        solver = accountcreator.make_solver(clean["captchaProvider"],
+                                            clean["captchaApiKeys"])
+        total = clean["amount"]
+
+        self._creation_stop.clear()
+        results = []
+
+        def _worker():
+            for i in range(total):
+                if self._creation_stop.is_set():
+                    break
+                self._creation_at = (i + 1, total)
+                self._push("creation-progress",
+                           {"index": i + 1, "total": total, "phase": "start",
+                            "message": f"Starting account {i + 1} of {total}"})
+
+                def say(line, i=i, total=total):
+                    self._push("creation-progress",
+                               {"index": i + 1, "total": total,
+                                "phase": "run", "message": str(line)[-300:]})
+
+                try:
+                    res = accountcreator.create_account(
+                        on_status=say,
+                        stop_check=self._creation_stop.is_set,
+                        username_style=clean["usernameStyle"],
+                        custom_password=clean["customPassword"],
+                        solver=solver)
+                except Exception as e:  # noqa: BLE001 - one bad batch must not kill the thread silently
+                    res = {"ok": False, "error": "unexpected",
+                           "message": f"{type(e).__name__}: {e}"}
+
+                if res.get("ok"):
+                    try:
+                        # Cookie -> omnidroid's accounts.json (the engine's own
+                        # store), password/birthday -> the executor's vault.
+                        accountsync().write_local(res["username"], res["cookie"],
+                                                  user_id=res.get("user_id"))
+                        self._vault().add(res["username"], res["password"],
+                                          birthday=res.get("birthday"),
+                                          style=clean["usernameStyle"])
+                    except Exception as e:  # noqa: BLE001
+                        res = {"ok": False, "error": "save_failed",
+                               "message": f"account created but saving failed: {e}",
+                               "username": res.get("username")}
+                results.append({k: v for k, v in res.items() if k != "cookie"})
+                self._push("creation-account", {
+                    "index": i + 1, "total": total,
+                    "ok": bool(res.get("ok")),
+                    "username": res.get("username"),
+                    # One-time reveal to the UI that asked for this run — same
+                    # trust boundary as the browser window it just watched.
+                    "password": res.get("password"),
+                    "error": res.get("message") or res.get("error"),
+                })
+                if res.get("ok"):
+                    self._publish_account(res)
+                    self._push("accounts-changed", {})
+            stopped = self._creation_stop.is_set()
+            ok_count = sum(1 for r in results if r.get("ok"))
+            self._push("creation-done", {
+                "ok": ok_count > 0, "results": results,
+                "created": ok_count, "failed": len(results) - ok_count,
+                "stopped": stopped,
+                "message": (f"{'Stopped' if stopped else 'Done'} — {ok_count} created, "
+                            f"{len(results) - ok_count} failed"),
+            })
+            self._creation_at = (0, 0)
+
+        self._creation_thread = threading.Thread(target=_worker,
+                                                 name="account-creation", daemon=True)
+        self._creation_thread.start()
+        return {"ok": True, "started": True, "total": total}
+
+    def creation_status(self):
+        running = bool(self._creation_thread and self._creation_thread.is_alive())
+        index, total = self._creation_at if running else (0, 0)
+        return {"ok": True, "running": running, "index": index, "total": total}
+
+    def creation_stop(self):
+        """Cooperative stop: finishes the account in flight's current step
+        check, then skips the rest of the batch."""
+        self._creation_stop.set()
+        return {"ok": True, "stopping": True}
+
+    def _vault(self):
+        """The created-account credential vault, rooted where omnidroid keeps
+        accounts.json (OMNI_DATA_DIR / runtime dir)."""
+        import accountcreator
+        root = os.environ.get("OMNI_DATA_DIR")
+        if not root:
+            import bootstrap
+            root = bootstrap.runtime_dir()
+        return accountcreator.Vault(root)
+
+    def vault_list(self):
+        """Created accounts WITHOUT secrets (has_password booleans only)."""
+        try:
+            return {"ok": True, "accounts": self._vault().list()}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": "vault_read_failed", "message": str(e)}
+
+    def vault_reveal(self, username):
+        """Full record INCLUDING the password — an explicit user action (the
+        UI's copy button), never part of a list response."""
+        if not isinstance(username, str) or not username.strip():
+            return {"ok": False, "error": "bad_username"}
+        rec = self._vault().get(username.strip())
+        if not rec:
+            return {"ok": False, "error": "not_found",
+                    "message": f"No created account named {username!r}."}
+        return {"ok": True, "account": rec}
 
     def engine_modes(self):
         """Mode list DERIVED from the engine's version report; falls back to a

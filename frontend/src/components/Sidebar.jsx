@@ -10,7 +10,7 @@
 import { useWindowDrag } from "./TitleBar.jsx";
 import { ChevronLeftIcon, ChevronRightIcon } from "./icons.jsx";
 
-export default function Sidebar({ nav, tab, onTab, collapsed, onCollapse, chrome }) {
+export default function Sidebar({ nav, tab, onTab, collapsed, onCollapse, chrome, premium = false }) {
   const mac = Boolean(chrome?.mac);
   // The identity block and the empty rail move the window, like a titlebar.
   const drag = useWindowDrag(chrome);
@@ -53,14 +53,23 @@ export default function Sidebar({ nav, tab, onTab, collapsed, onCollapse, chrome
         aria-label="Sections"
         className={`flex flex-col gap-1 py-2 ${collapsed ? "items-center px-2" : "pr-2.5 pl-3.5"}`}
       >
-        {nav.map(({ id, label, Icon, hint }, i) => {
+        {nav.map(({ id, label, Icon, hint, premium: needsPremium }, i) => {
           const active = tab === id;
+          // A locked section stays clickable — it explains itself when opened.
+          // The pip is the only thing the rail says about it.
+          const locked = Boolean(needsPremium) && !premium;
           return (
             <button
               key={id}
               onClick={() => onTab(id)}
               aria-current={active ? "page" : undefined}
-              title={collapsed ? `${label}  (Ctrl+${i + 1})` : undefined}
+              title={
+                locked
+                  ? `${label} — Premium${collapsed ? `  (Ctrl+${i + 1})` : ""}`
+                  : collapsed
+                    ? `${label}  (Ctrl+${i + 1})`
+                    : undefined
+              }
               className={`ring-focus group relative flex h-9 items-center rounded-lg text-[12.5px]
                           font-medium transition-colors duration-150
                           ${collapsed ? "w-9 justify-center" : "gap-2.5 px-2.5"}
@@ -73,10 +82,18 @@ export default function Sidebar({ nav, tab, onTab, collapsed, onCollapse, chrome
               {active && !collapsed && (
                 <span className="absolute top-1/2 -left-[11px] h-[18px] w-[3px] -translate-y-1/2 rounded-full bg-accent" />
               )}
-              <Icon className={`h-4 w-4 shrink-0 ${active ? "text-accent" : ""}`} />
+              <span className="relative shrink-0">
+                <Icon className={`h-4 w-4 ${active ? "text-accent" : ""}`} />
+                {/* Collapsed, the label is gone and the pip is the whole
+                    signal, so it rides the icon rather than the row. */}
+                {locked && collapsed && (
+                  <span className="absolute -top-[3px] -right-[3px] h-[6px] w-[6px] rounded-full bg-premium" />
+                )}
+              </span>
               {!collapsed && (
                 <>
                   <span className="truncate">{label}</span>
+                  {locked && <span className="h-[6px] w-[6px] shrink-0 rounded-full bg-premium" />}
                   {hint && (
                     <span className="silk ml-auto text-[9px] text-ink-3 opacity-0 transition-opacity group-hover:opacity-100">
                       {hint}

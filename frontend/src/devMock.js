@@ -79,6 +79,48 @@ export function installDevMock() {
       list_autoexec: async () => ({ ok: true, scripts: autoexec.map((s) => ({ ...s })) }),
       open_autoexec_folder: async () => ({ ok: true }),
       execute_script: (name) => later(600, () => ({ ok: true, output: `ran on ${name}` })),
+      // ---- account creation (pretend batch: pushes the same events main.py does)
+      creation_get_config: async () => ({
+        ok: true,
+        creation: { amount: 1, usernameStyle: "name_no" },
+        captcha: { provider: "surfsky", apiKeys: { surfsky: "" } },
+      }),
+      creation_save_config: async (patch) => {
+        Object.assign(settings, patch);
+        localStorage.setItem("omni-settings", JSON.stringify(settings));
+        return { ...settings, ok: true };
+      },
+      creation_status: async () => ({ ok: true, running: false, index: 0, total: 0 }),
+      creation_stop: async () => ({ ok: true, stopping: true }),
+      creation_start: (cfg) => {
+        const total = Number(cfg?.amount) || 1;
+        later(400, () =>
+          Array.from({ length: total }, (_, i) => {
+            const style = cfg?.usernameStyle || "name_no";
+            const name =
+              style === "stealth"
+                ? Math.random().toString(36).slice(2, 14)
+                : style === "adj_noun"
+                  ? `FrozenWolf${1000 + Math.floor(Math.random() * 9000)}`
+                  : style === "gamertag"
+                    ? `EpicWizard${100 + Math.floor(Math.random() * 900)}`
+                    : `Eric${100000 + Math.floor(Math.random() * 900000)}`;
+            push("creation-progress", { index: i + 1, total, phase: "start", message: `Starting account ${i + 1} of ${total}` });
+            setTimeout(() => {
+              push("creation-account", { index: i + 1, total, ok: true, username: name, password: "mock-Passw0rd!" });
+              push("accounts-changed", {});
+              accounts.push({ name, base: "bliss-15", arch: "x86", running: false });
+              if (i === total - 1) push("creation-done", { ok: true, created: total, failed: 0, results: [], message: "Done" });
+            }, 1500 + i * 800);
+          })
+        );
+        return Promise.resolve({ ok: true, started: true, total });
+      },
+      vault_list: async () => ({ ok: true, accounts: [] }),
+      vault_reveal: async (username) => ({
+        ok: true,
+        account: { username, password: "mock-Passw0rd!", birthday: [1995, 4, 12] },
+      }),
     },
   };
   window.dispatchEvent(new Event("pywebviewready"));

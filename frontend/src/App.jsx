@@ -13,13 +13,16 @@ import BootstrapView from "./components/BootstrapView.jsx";
 import AuthView from "./components/AuthView.jsx";
 import { UpdateBanner, UpdateModal, useUpdates } from "./components/UpdateBanner.jsx";
 import Toast from "./components/Toast.jsx";
-import { CodeIcon, GearIcon, HomeIcon, SproutIcon, UsersIcon } from "./components/icons.jsx";
+import { CodeIcon, GearIcon, GridIcon, HomeIcon, UsersIcon } from "./components/icons.jsx";
 
+// `premium: true` marks a section the free tier cannot use. The rail renders a
+// gold pip on it and the section itself shows its own locked state — it is NOT
+// hidden, because a tab nobody can see cannot explain what a plan buys.
 const NAV = [
   { id: "home", label: "Home", Icon: HomeIcon, hint: "1" },
   { id: "editor", label: "Editor", Icon: CodeIcon, hint: "2" },
   { id: "accounts", label: "Accounts", Icon: UsersIcon, hint: "3" },
-  { id: "farming", label: "Farming", Icon: SproutIcon, hint: "4" },
+  { id: "farming", label: "Farming", Icon: GridIcon, hint: "4", premium: true },
   { id: "settings", label: "Settings", Icon: GearIcon, hint: "5" },
 ];
 
@@ -188,6 +191,7 @@ export default function App() {
             collapsed={compact}
             onCollapse={applyCompact}
             chrome={chrome}
+            premium={auth?.subscription?.tier === "premium"}
           />
 
           <div className="flex min-w-0 flex-1 flex-col">
@@ -217,7 +221,13 @@ export default function App() {
                 showToast={showToast}
                 addRequest={addRequest}
               />
-              <FarmingView active={tab === "farming"} />
+              <FarmingView
+                active={tab === "farming"}
+                auth={auth}
+                launch={launch}
+                onGo={switchTab}
+                showToast={showToast}
+              />
               <SettingsView
                 active={tab === "settings"}
                 theme={theme}

@@ -226,6 +226,40 @@ export const HomeIcon = (props) => (
 
 /* Sprout — the Farming section. A seedling rather than a plant: the section is
    about growing something over time, not about what it grew into. */
+/* Farming. A grid of cells, not a sprout: "farming" is grinding, not
+   agriculture, and the tab's job is supervising many instances at once. The
+   four cells are deliberately Home's InstrumentStrip shrunk to 24px, so the
+   rail icon and the readout it leads to are the same picture. */
+export const GridIcon = (props) => (
+  <svg {...base} {...props}>
+    <rect x="3" y="3" width="7.5" height="7.5" rx="1.6" />
+    <rect x="13.5" y="3" width="7.5" height="7.5" rx="1.6" />
+    <rect x="3" y="13.5" width="7.5" height="7.5" rx="1.6" />
+    <rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6" />
+  </svg>
+);
+
+export const LockIcon = (props) => (
+  <svg {...base} {...props}>
+    <rect x="4" y="10.5" width="16" height="10.5" rx="2" />
+    <path d="M8 10.5V7a4 4 0 0 1 8 0v3.5" />
+  </svg>
+);
+
+export const ClockIcon = (props) => (
+  <svg {...base} {...props}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 7v5l3.2 1.9" />
+  </svg>
+);
+
+export const HeartPulseIcon = (props) => (
+  <svg {...base} {...props}>
+    <path d="M20.4 5.6a5 5 0 0 0-7.1 0L12 6.9l-1.3-1.3a5 5 0 1 0-7.1 7.1l1.3 1.3L12 21l7.1-7a34 34 0 0 0 1.3-1.3 5 5 0 0 0 0-7.1z" />
+    <path d="M3.5 12.5h3l1.5-2.5 2 4 1.5-3 1 1.5h3" />
+  </svg>
+);
+
 export const SproutIcon = (props) => (
   <svg {...base} {...props}>
     <path d="M7 20h10" />

@@ -32,6 +32,7 @@ import {
   UserPlusIcon,
   UsersIcon,
 } from "./icons.jsx";
+import CreateAccountModal from "./CreateAccountModal.jsx";
 
 /** Two characters, always: one per word, or the first two letters of a single
     run-together name like "admn1b12farm2". */
@@ -41,12 +42,6 @@ function initials(name) {
   const chars = parts.length > 1 ? parts.slice(0, 2).map((p) => p[0]) : [parts[0].slice(0, 2)];
   return chars.join("").toUpperCase();
 }
-
-/** Making a brand new Roblox account is not something the engine can do yet —
-    there is no signup command behind the bridge — so the button says so rather
-    than opening a form that cannot submit. */
-const CREATE_UNAVAILABLE =
-  "Creating a new Roblox account isn't wired up yet — use Add account to bring an existing one in.";
 
 export default function AccountsView({ active, launch, onLaunch, showToast, addRequest = 0 }) {
   const engine = useEngine();
@@ -58,6 +53,7 @@ export default function AccountsView({ active, launch, onLaunch, showToast, addR
   const [checked, setChecked] = useState(() => new Set());
   const [query, setQuery] = useState("");
   const [adding, setAdding] = useState(false);
+  const [creating, setCreating] = useState(false);
 
   const usable = backend === true;
 
@@ -178,7 +174,7 @@ export default function AccountsView({ active, launch, onLaunch, showToast, addR
                       className="input h-7 w-[132px] py-0 pl-8 text-[12px]"
                     />
                   </div>
-                  <Button size="sm" onClick={() => showToast(CREATE_UNAVAILABLE, "info")} disabled={!usable}>
+                  <Button size="sm" onClick={() => setCreating(true)} disabled={!usable}>
                     <UserPlusIcon className="h-3.5 w-3.5" />
                     Create account
                   </Button>
@@ -376,6 +372,14 @@ export default function AccountsView({ active, launch, onLaunch, showToast, addR
       </div>
 
       {adding && <AddAccountModal onClose={() => setAdding(false)} onAdded={setSelected} />}
+
+      {creating && (
+        <CreateAccountModal
+          onClose={() => setCreating(false)}
+          showToast={showToast}
+          onCreated={() => engine.refreshList()}
+        />
+      )}
 
     </div>
   );

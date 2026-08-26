@@ -24,7 +24,7 @@ hiddenimports = []
 # This app's own modules — see OmniExecutor-win.spec: declared for the record,
 # not out of need. Kept identical to the Windows spec on purpose (tests/
 # test_packaging.py asserts the two agree).
-hiddenimports += ["accountsync", "cloud", "bootstrap", "updates", "windowchrome"]
+hiddenimports += ["accountsync", "accountcreator", "cloud", "bootstrap", "updates", "windowchrome"]
 hiddenimports += collect_submodules("omnidroid")
 # Selenium drives the "add account" browser login (omnidroid/accounts.py). It is
 # imported LAZILY inside the login functions, so PyInstaller's static analysis

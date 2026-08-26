@@ -34,7 +34,7 @@ hiddenimports = []
 # PyInstaller walks bytecode and does find a plain `import x` inside a
 # function. Naming them keeps a future dynamic import (importlib, __import__)
 # from silently dropping out of the bundle.
-hiddenimports += ["accountsync", "cloud", "bootstrap", "updates", "windowchrome"]
+hiddenimports += ["accountsync", "accountcreator", "cloud", "bootstrap", "updates", "windowchrome"]
 hiddenimports += collect_submodules("omnidroid")
 # Selenium drives the "add account" browser login (omnidroid/accounts.py). It
 # is imported LAZILY inside the login functions, so PyInstaller's static
