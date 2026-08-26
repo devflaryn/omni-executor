@@ -150,10 +150,11 @@ def valid_username(name):
     return bool(isinstance(name, str) and USERNAME_RE.fullmatch(name))
 
 
-def generate_birthday(min_age=18, max_age=45):
+def generate_birthday(min_age=18, max_age=25):
     """A random (year, month, day) making the holder between min_age and
-    max_age years old today. Roblox asks for a birth date and gates features
-    on it; everything this app does wants an ADULT account, so the floor is
+    max_age years old today (default 18-25 as required). Roblox asks for a
+    birth date and gates features on it; everything this app does wants an
+    ADULT of 18+ (and between 18 and 25 by default), so the floor is
     hard-coded at registration time rather than hoped for later."""
     today = date.today()
     # A leap day is only produced when the chosen year actually has one;
@@ -470,6 +471,11 @@ def _month_name(month):
     return calendar.month_name[int(month)]
 
 
+def _month_abbr(month):
+    import calendar
+    return calendar.month_abbr[int(month)]  # "Jan".."Dec" — what the <option value> holds
+
+
 def classify_date_selects(drv):
     """Find the birthday <select>s. First by known ids/names (#MonthDropdown,
     #DayDropdown, #YearDropdown) when present — the stable path for today's
@@ -530,19 +536,36 @@ def classify_date_selects(drv):
     return found
 
 
-def _select_option(el, value, texts=()):
-    """Settle a <select> on `value` trying value, then visible text."""
+def _select_option(el, matches):
+    """Settle a <select> on the first option that matches any of `matches`.
+
+    `matches` is an iterable of strings tried as, in turn: the option's VALUE
+    attribute (the abbreviation form Roblox really stores, e.g. "Mar"), then
+    the option's visible text ("March"). Either exact match selects the
+    option. Returns True if any option was selected."""
     from selenium.webdriver.support.ui import Select
     s = Select(el)
-    v = str(value)
+    candidates = [str(m) for m in matches]
+
+    def val(opt):
+        try:
+            return (opt.get_attribute("value") or "").strip()
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def txt(opt):
+        try:
+            return (opt.text or "").strip()
+        except Exception:  # noqa: BLE001
+            return ""
+
     for opt in s.options:
-        if (opt.get_attribute("value") or "").strip() == v:
-            s.select_by_value(v)
+        if val(opt).lower() in {c.lower() for c in candidates}:
+            s.select_by_value(val(opt))
             return True
-    wanted = {str(t).lower() for t in texts}
     for opt in s.options:
-        if (opt.text or "").strip().lower() in wanted:
-            s.select_by_visible_text(opt.text.strip())
+        if txt(opt).lower() in {c.lower() for c in candidates}:
+            s.select_by_visible_text(txt(opt))
             return True
     return False
 
@@ -555,11 +578,15 @@ def fill_birthday(drv, birthday, on_status):
         on_status("[create] birthday dropdowns not fully identified "
                   f"(m/d/y found: {got}); continuing anyway")
     if sel["month"]:
-        _select_option(sel["month"], month, {_month_name(month), f"{month:02d}", str(month)})
+        # The <option value> is the 3-letter abbreviation ("Mar"), while the
+        # visible text is the full name ("March") — cover both.
+        _select_option(sel["month"], [
+            _month_abbr(month), f"{month:02d}", str(month),
+            _month_name(month)])
     if sel["day"]:
-        _select_option(sel["day"], day, {f"{day:02d}", str(day)})
+        _select_option(sel["day"], [f"{day:02d}", str(day)])
     if sel["year"]:
-        _select_option(sel["year"], year, {str(year)})
+        _select_option(sel["year"], [str(year)])
 
 
 def fill_field(el, value):

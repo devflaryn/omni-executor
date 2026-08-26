@@ -82,14 +82,14 @@ def test_unknown_style_raises():
         ac.generate_username("nope")
 
 
-def test_birthday_is_always_adult_but_plausible():
+def test_birthday_is_adult_but_not_too_old():
+    """Accounts must be 18+ but no older than 25 (the required range)."""
     today = date.today()
     for _ in range(300):
         y, m, d = ac.generate_birthday()
         bday = date(y, m, d)
         age = today.year - y - ((today.month, today.day) < (m, d))
-        assert age >= 18, (y, m, d)
-        assert age <= 45
+        assert 18 <= age <= 25, (y, m, d)
 
 
 def test_password_meets_all_classes_and_is_random():
@@ -613,6 +613,49 @@ class _SelectsDrv:
         if sel == "select":
             return self._all
         return []
+
+
+def test_select_option_matches_abbrev_month_value(monkeypatch):
+    """Roblox stores the month as a 3-letter abbreviation (<option value="Mar">),
+    so _select_option must settle on that value even though the app feeds it the
+    numeric month. This pins the fix for 'month not registering'."""
+    class Opt:
+        def __init__(self, value, text):
+            self._value, self._text = value, text
+
+        def get_attribute(self, n):
+            assert n == "value"
+            return self._value
+
+        @property
+        def text(self):
+            return self._text
+
+    calls = {"by_value": [], "by_visible": []}
+
+    class FakeSelect:
+        def __init__(self, el):
+            self.options = el
+            self._sel = None
+
+        def select_by_value(self, v):
+            calls["by_value"].append(v)
+            self._sel = v
+
+        def select_by_visible_text(self, t):
+            calls["by_visible"].append(t)
+            self._sel = t
+
+    opts = [Opt("", "Month")] + \
+        [Opt(m[:3], m) for m in ["January", "February", "March", "April", "May",
+                                 "June", "July", "August", "September",
+                                 "October", "November", "December"]]
+
+    monkeypatch.setattr("selenium.webdriver.support.ui.Select", FakeSelect)
+    # month 3 -> abbreviation "Mar" is the <option value>; select by that value.
+    assert ac._select_option(opts, [ac._month_abbr(3), "03", "3", "March"]) is True
+    assert calls["by_value"] == ["Mar"]
+    assert calls["by_visible"] == []
 
 
 def test_find_gender_control_matches_id_button():
