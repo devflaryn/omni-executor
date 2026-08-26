@@ -449,3 +449,31 @@ def test_landed_on_home_matches_only_authenticated_paths():
     assert ac.landed_on_home("https://www.roblox.com/discover")
     assert not ac.landed_on_home("https://www.roblox.com/login")
     assert not ac.landed_on_home("")
+
+
+# ------------------------------------------------ stale-provider self-heal
+
+def test_creation_get_config_heals_removed_provider(tmp_path, monkeypatch):
+    """settings.json outlives the surfsky -> 2captcha swap, so a leftover
+    "surfsky" provider must be normalized to the default (and written back)
+    instead of rejecting every creation batch."""
+    import json
+    import main
+
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(
+        json.dumps({"captcha": {"provider": "surfsky",
+                                "apiKeys": {"surfsky": "old-key"}}}),
+        encoding="utf-8")
+    monkeypatch.setattr(main, "SETTINGS_FILE", settings_file)
+
+    cfg = main.Api().creation_get_config()
+    assert cfg["captcha"]["provider"] == "2captcha"
+    # The orphaned surfsky key is dropped before it can leak or be validated.
+    assert set(cfg["captcha"]["apiKeys"]) == {"2captcha"}
+    assert cfg["captcha"]["apiKeys"]["2captcha"] == ""
+
+    # Healed on disk too — one run fixes it permanently.
+    on_disk = json.loads(settings_file.read_text(encoding="utf-8"))
+    assert on_disk["captcha"]["provider"] == "2captcha"
+    assert set(on_disk["captcha"]["apiKeys"]) == {"2captcha"}

@@ -1522,12 +1522,39 @@ class Api:
     # ---- account creation (roblox.com signup, captcha, vault) ----
 
     def creation_get_config(self):
-        """Saved creation + captcha preferences, merged over defaults."""
+        """Saved creation + captcha preferences, merged over defaults.
+
+        Self-heals a stale captcha provider. settings.json outlives code: a
+        provider that was removed from the app (the surfsky -> 2captcha swap)
+        can still be persisted on disk, and creation_start falls back to the
+        saved provider whenever the modal doesn't send one — so a leftover
+        "surfsky" would reject every batch with "unknown captcha provider".
+        Normalize any unknown provider to the current default and drop orphaned
+        apiKeys, then write the fix back once so it heals permanently (same
+        discipline as RETIRED_MODES).
+        """
+        import accountcreator
         s = self.get_settings()
         creation = {**DEFAULT_SETTINGS["creation"], **(s.get("creation") or {})}
         captcha = {**DEFAULT_SETTINGS["captcha"], **(s.get("captcha") or {})}
-        keys = {**(DEFAULT_SETTINGS["captcha"]["apiKeys"]), **(captcha.get("apiKeys") or {})}
-        captcha["apiKeys"] = keys
+        valid = accountcreator.CAPTCHA_PROVIDERS
+
+        changed = False
+        if captcha.get("provider") not in valid:
+            captcha["provider"] = DEFAULT_SETTINGS["captcha"]["provider"]
+            changed = True
+        raw_keys = captcha.get("apiKeys") or {}
+        cleaned = {p: str(raw_keys.get(p) or "").strip() for p in valid}
+        if cleaned != raw_keys:
+            captcha["apiKeys"] = cleaned
+            changed = True
+        if changed:
+            try:
+                # Merge so only the captcha block changes; nothing else is touched.
+                self.save_settings({"captcha": {"provider": captcha["provider"],
+                                                "apiKeys": cleaned}})
+            except OSError:
+                pass  # a settings file that can't be written must not block reads
         return {"ok": True, "creation": creation, "captcha": captcha}
 
     def creation_save_config(self, config):
