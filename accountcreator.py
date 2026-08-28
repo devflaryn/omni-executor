@@ -7,12 +7,13 @@ One module, four concerns:
      pick. Pure functions over `secrets`, so they are unit-testable without a
      browser.
 
-  2. CAPTCHA SOLVING — a small client for 2captcha.com's createTask /
-     getTaskResult protocol (the shape every major solver service shares).
-     Roblox's signup is gated by Arkose FunCaptcha; with an API key configured
-     the challenge is solved out-of-band and the token injected back into the
-     page. Without one, the flow falls back to the human solving it in the
-     opened browser window — never silently blocked, just slower.
+  2. CAPTCHA HANDLING — Roblox's signup is gated by Arkose FunCaptcha. The
+     challenge is DETECTED here and handed to the human in the opened window.
+     Third-party token solvers used to live here and were removed: Arkose
+     will not issue a puzzle at all to a solver's IP (it hangs on "Verifying
+     browser..."), so no service can produce a token for Roblox, whatever the
+     proxy. Automatic solving is being rebuilt as a server-side vision solver
+     that PLAYS the puzzle in this browser, where Arkose does serve one.
 
   3. THE SIGNUP FLOW — Selenium drives a VISIBLE Chrome: roblox.com ->
      registration page -> random birthday (18+) -> generated username,
@@ -44,6 +45,7 @@ import shutil
 import string
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import date, timedelta
 from pathlib import Path
@@ -60,10 +62,6 @@ USERNAME_STYLES = {
     "stealth": ("Stealth", "mwu78cnas782n"),
 }
 
-CAPTCHA_PROVIDERS = {
-    # id -> display name (the UI dropdown + settings.json use the id).
-    "2captcha": "2captcha.com",
-}
 
 FIRST_NAMES = (
     "Eric", "John", "Alex", "Mike", "Chris", "Jake", "Tom", "Sam", "Nick",
@@ -150,7 +148,12 @@ def valid_username(name):
     return bool(isinstance(name, str) and USERNAME_RE.fullmatch(name))
 
 
-def generate_birthday(min_age=18, max_age=25):
+# The required account-creation age band: adults, 18 through 25.
+BIRTHDAY_MIN_AGE = 18
+BIRTHDAY_MAX_AGE = 25
+
+
+def generate_birthday(min_age=BIRTHDAY_MIN_AGE, max_age=BIRTHDAY_MAX_AGE):
     """A random (year, month, day) making the holder between min_age and
     max_age years old today (default 18-25 as required). Roblox asks for a
     birth date and gates features on it; everything this app does wants an
@@ -198,8 +201,8 @@ MIN_AMOUNT, MAX_AMOUNT = 1, 50
 
 
 def validate_creation_config(amount=1, username_style=None, custom_password=None,
-                             captcha_provider=None, captcha_api_keys=None):
-    """Normalize a creation/captcha config from the UI. Returns
+                             captcha_proxy=None):
+    """Normalize a creation config from the UI. Returns
     (clean_dict, error_message_or_None). Unknown values are REJECTED rather
     than coerced: a stale settings.json must surface as a message, not as an
     argparse-style surprise three layers down."""
@@ -224,15 +227,14 @@ def validate_creation_config(amount=1, username_style=None, custom_password=None
     else:
         clean["customPassword"] = str(custom_password)
 
-    provider = captcha_provider if captcha_provider in CAPTCHA_PROVIDERS else None
-    if captcha_provider not in (None, "") and provider is None:
-        return None, f"Unknown captcha provider {captcha_provider!r}."
-    clean["captchaProvider"] = provider or "2captcha"
-
-    keys = captcha_api_keys if isinstance(captcha_api_keys, dict) else {}
-    clean["captchaApiKeys"] = {
-        p: (str(keys.get(p) or "").strip()) for p in CAPTCHA_PROVIDERS
-    }
+    # The proxy is validated HERE so a typo shows up in the modal rather than
+    # three layers down as a mystery failure mid-batch. It has nothing to do
+    # with captchas any more — it is what gets past Roblox's per-IP signup
+    # rate limit, which trips after roughly ten attempts from one address.
+    _proxy, proxy_err = parse_proxy(captcha_proxy)
+    if proxy_err:
+        return None, proxy_err
+    clean["captchaProxy"] = str(captcha_proxy or "").strip()
     return clean, None
 
 
@@ -315,107 +317,97 @@ class Vault:
 
 
 # ---------------------------------------------------------------------------
-# 2captcha.com captcha solver (createTask / getTaskResult protocol)
+# proxy configuration (signup rate limits, not captchas)
 # ---------------------------------------------------------------------------
 
-TWOCAPTCHA_API_BASE = "https://api.2captcha.com"
-TWOCAPTCHA_CREATE_PATH = "/createTask"
-TWOCAPTCHA_RESULT_PATH = "/getTaskResult"
-# Task type for Arkose FunCaptcha without handing the solver a proxy — the
-# same name every createTask-style service uses for it.
-FUN_CAPTCHA_TASK_TYPE = "FunCaptchaTaskProxyLess"
 
-# Roblox's Arkose public key for login/signup, used when the page cannot be
-# scraped for the live one (it is stable across the site, but scraping first
-# means a rotation does not strand us).
-ROBLOX_ARKOSE_PUBLIC_KEY = "A2A14B1D-1AF3-C791-9BBC-EE33CC7A0A6F"
+# Proxy schemes 2captcha accepts for proxyType.
+PROXY_TYPES = ("http", "https", "socks4", "socks5")
+
+
 
 
 class CaptchaError(Exception):
     """Raised for any solver-side failure worth showing the user."""
 
 
-class TwoCaptchaSolver:
-    """Minimal 2captcha.com FunCaptcha client.
+def parse_proxy(text):
+    """Normalize a proxy string into 2captcha's task fields.
 
-    POST {base}/createTask      {"clientKey", "task"}      -> {"errorId", "taskId"}
-    POST {base}/getTaskResult   {"clientKey", "taskId"}    -> polled until
-    status == "ready", then solution.token is the answer to inject.
+    Returns (proxy_dict_or_None, error_or_None). Blank is NOT an error — it
+    means "no proxy", and proxyless stays the default so an install that never
+    configures one behaves exactly as before.
 
-    Both constants live at module scope so an endpoint change is a one-line
-    edit, not an archaeology dig."""
+    Every layout the residential dashboards hand out is accepted, because the
+    user is going to paste whichever one their provider showed them:
 
-    def __init__(self, api_key, base=TWOCAPTCHA_API_BASE, timeout=240.0,
-                 poll=3.0, request_timeout=30.0):
-        if not api_key or not str(api_key).strip():
-            raise CaptchaError("2captcha.com API key is empty.")
-        self.api_key = str(api_key).strip()
-        self.base = (base or TWOCAPTCHA_API_BASE).rstrip("/")
-        self.timeout = float(timeout)
-        self.poll = float(poll)
-        self.request_timeout = float(request_timeout)
+        host:port
+        host:port:user:pass
+        user:pass@host:port
+        scheme://user:pass@host:port
 
-    def _post(self, path, payload):
-        req = urllib.request.Request(
-            f"{self.base}{path}",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json",
-                     "User-Agent": "omni-executor-account-creator/1.0"},
-            method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=self.request_timeout) as r:
-                body = r.read().decode("utf-8", errors="replace")
-        except urllib.error.HTTPError as e:
-            detail = ""
-            try:
-                detail = e.read().decode("utf-8", errors="replace")[:200]
-            except Exception:  # noqa: BLE001 - body is decoration
-                pass
-            raise CaptchaError(f"2captcha.com returned HTTP {e.code}: {detail}") from e
-        except (urllib.error.URLError, OSError, TimeoutError) as e:
-            raise CaptchaError(f"Could not reach 2captcha.com: {e}") from e
-        try:
-            return json.loads(body)
-        except ValueError as e:
-            raise CaptchaError("2captcha.com sent a response that was not JSON.") from e
+    A password may itself contain ':' (they often do), so the credential split
+    only ever consumes the FIRST separator."""
+    if text is None:
+        return None, None
+    raw = str(text).strip()
+    if not raw:
+        return None, None
 
-    def solve_funcaptcha(self, website_url, public_key, subdomain=None):
-        """Submit the challenge and block until a token comes back."""
-        task = {
-            "type": FUN_CAPTCHA_TASK_TYPE,
-            "websiteURL": website_url,
-            "websitePublicKey": public_key,
-        }
-        if subdomain:
-            task["funcaptchaApiJSSubdomain"] = subdomain
-        resp = self._post(TWOCAPTCHA_CREATE_PATH,
-                          {"clientKey": self.api_key, "task": task})
-        if resp.get("errorId"):
-            raise CaptchaError(
-                resp.get("errorDescription") or resp.get("errorCode") or "createTask failed")
-        task_id = resp.get("taskId")
-        if not task_id:
-            raise CaptchaError("2captcha.com did not return a taskId.")
+    scheme = "http"
+    if "://" in raw:
+        scheme, _, raw = raw.partition("://")
+        scheme = scheme.lower()
+        if scheme not in PROXY_TYPES:
+            return None, (f"Unsupported proxy scheme {scheme!r} — "
+                          f"use one of {', '.join(PROXY_TYPES)}.")
+        raw = raw.strip()
 
-        deadline = time.monotonic() + self.timeout
-        while time.monotonic() < deadline:
-            time.sleep(self.poll)
-            res = self._post(TWOCAPTCHA_RESULT_PATH,
-                             {"clientKey": self.api_key, "taskId": task_id})
-            err = res.get("errorId")
-            if err:
-                raise CaptchaError(
-                    res.get("errorDescription") or res.get("errorCode") or "getTaskResult failed")
-            status = res.get("status")
-            if status == "ready":
-                token = (res.get("solution") or {}).get("token") or \
-                        (res.get("solution") or {}).get("gRecaptchaResponse")
-                if not token:
-                    raise CaptchaError("Solver reported ready but sent no token.")
-                return token
-            # "processing" (or anything unknown) keeps the poll going; the
-            # deadline is what bounds a wedged task.
-        raise CaptchaError(f"Solver did not finish within {int(self.timeout)}s.")
+    def hostport(s):
+        """(host, port) if `s` is a well-formed host:port, else None."""
+        host, sep, port_s = s.rpartition(":")
+        if not sep or not host.strip() or not port_s.strip().isdigit():
+            return None
+        return host.strip(), int(port_s)
+
+    login = password = ""
+    hp = None
+
+    # Which layout is this? Decided by what actually PARSES, not by which
+    # separator appears first: a password may legitimately contain '@'
+    # ("host:port:user:p@ss"), and preferring the '@' form on sight would
+    # split that into a bogus host.
+    if "@" in raw:
+        creds, _, tail = raw.rpartition("@")
+        hp = hostport(tail)
+        if hp:
+            login, _, password = creds.partition(":")
+    if hp is None:
+        parts = raw.split(":")
+        if len(parts) >= 4 and hostport(":".join(parts[:2])):
+            # host:port:user:pass — the password keeps any further colons.
+            hp = hostport(":".join(parts[:2]))
+            login = parts[2]
+            password = ":".join(parts[3:])
+        else:
+            hp = hostport(raw)
+
+    if hp is None:
+        # Distinguish "no port at all" from "port isn't a number", because
+        # the two are different typos.
+        _h, sep, port_s = raw.rpartition(":")
+        if sep and port_s.strip() and not port_s.strip().isdigit():
+            return None, f"Proxy port {port_s.strip()!r} is not a number."
+        return None, f"Proxy {text.strip()!r} needs a host and a port."
+
+    host, port = hp
+    if not 1 <= port <= 65535:
+        return None, f"Proxy port {port} is out of range."
+
+    return {"type": scheme, "address": host, "port": port,
+            "login": login.strip(), "password": password.strip()}, None
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -442,12 +434,29 @@ SEL_USERNAME = ("#signup-username", "input[name='username']",
 SEL_PASSWORD = ("#signup-password", "input[name='password']",
                 "input[type='password']")
 SEL_ERROR_TEXT = ("[class*='error' i]", "[role='alert']", ".form-control-label")
-CAPTCHA_IFRAME_SEL = ("iframe[src*='arkoselabs'], iframe[src*='funcaptcha'], "
-                      "iframe[id*='arkose'], iframe[title*='verification' i]")
+# Marker shapes an Arkose/FunCaptcha challenge can take on Roblox's signup.
+# Probed one by one (never merged into one comma-union) so a single selector
+# an older chromedriver refuses cannot blind the whole probe — Roblox funnels
+# the widget through nested iframes whose top-level src can be about:blank,
+# so no ONE marker is guaranteed.
+CAPTCHA_SELECTORS = (
+    "iframe[src*='arkose']",
+    "iframe[src*='funcaptcha']",
+    "iframe[id*='arkose']",
+    "iframe[id*='captcha' i]",
+    "iframe[title*='verification' i]",
+    "iframe[data-e2e='enforcement-frame']",
+    "#funcaptcha iframe",
+    "div[id*='arkose' i]",
+)
 
 MAX_USERNAME_ATTEMPTS = 6       # "taken" regenerations allowed per account
 FORM_DEADLINE_S = 120           # budget for loading + filling the form
+FORM_MISSING_GRACE_S = 20       # no form/captcha/home for this long = fatal
+CAPTCHA_APPEAR_S = 10           # post-submit window for the challenge to mount
+CAPTCHA_READY_S = 15            # post-detection window for the iframe to mount
 CAPTCHA_MANUAL_TIMEOUT_S = 600  # human-in-the-loop solve window
+CAPTCHA_CLEAR_POLLS = 3         # consecutive absent readings = actually cleared
 POLL_S = 0.5
 
 
@@ -695,104 +704,159 @@ def submit_form(drv, on_status, wait=10.0):
     return False
 
 
-def captcha_present(drv):
+def _shown(drv, el):
+    """Is this element actually on screen?
+
+    `is_displayed()` alone is not enough. Roblox's Arkose enforcement iframe
+    has been observed filling the viewport (getBoundingClientRect 1169x749,
+    non-zero offsetWidth, the challenge plainly visible) while Selenium's
+    is_displayed() returned False for it — so captcha_present() reported no
+    challenge, the flow fell through to 'form missing', and the account died
+    waiting. Geometry is the fallback authority: it is what the user sees.
+
+    The 40px floor keeps 1x1 tracking iframes from counting as a challenge."""
     try:
-        frames = drv.find_elements("css selector", CAPTCHA_IFRAME_SEL)
-        return any(f.is_displayed() for f in frames)
-    except Exception:  # noqa: BLE001
+        if el.is_displayed():
+            return True
+    except Exception:  # noqa: BLE001 - stale element mid-render
         return False
-
-
-def extract_public_key(drv):
-    """Scrape the live Arkose public key: first from a challenge iframe URL
-    (?public_key=...), then from inline config in the page source."""
     try:
-        for f in drv.find_elements("css selector", "iframe"):
-            src = f.get_attribute("src") or ""
-            m = re.search(r"[?&]public[_-]?key=([A-Za-z0-9\-]+)", src)
-            if m:
-                return m.group(1)
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        m = re.search(r'''["']?public[_-]?[Kk]ey["']?\s*[:=]\s*["']([A-Za-z0-9\-]{16,})["']''',
-                      drv.page_source or "")
-        if m:
-            return m.group(1)
-    except Exception:  # noqa: BLE001
-        pass
-    return None
+        size = drv.execute_script(
+            "const r = arguments[0].getBoundingClientRect();"
+            "return [r.width, r.height];", el)
+    except Exception:  # noqa: BLE001 - no JS (a test double), trust is_displayed
+        return False
+    return bool(size) and size[0] > 40 and size[1] > 40
 
 
-# Injecting a solved token: try every integration point Roblox builds have
-# used, in order of preference, and report which one accepted it. Anything
-# that fails falls through to the next; if none accept, the caller says so and
-# the human can still solve the visible challenge by hand.
-INJECT_TOKEN_JS = """
-const token = arguments[0];
-window.__omniArkoseToken = token;
-const hits = [];
-// 1. Hidden inputs some integrations read straight from the DOM.
-for (const sel of ['input[name="fc-token"]', '#fc-token',
-                   'input[name="verificationToken"]', '#verification-token',
-                   'input[name="captchaToken"]']) {
-  const el = document.querySelector(sel);
-  if (el) {
-    el.value = token;
-    el.dispatchEvent(new Event('input', {bubbles: true}));
-    el.dispatchEvent(new Event('change', {bubbles: true}));
-    hits.push('input:' + sel);
-  }
-}
-// 2. Enforcement objects registered by the Arkose web SDK.
-for (const name of ['__arkose_enforcement', 'arkoseEnforcement', 'enforcement',
-                    'myEnforcement', 'ArkoseEnforcement']) {
-  const obj = window[name];
-  if (obj && typeof obj.onCompleted === 'function') {
-    try { obj.onCompleted({token}); hits.push('hook:' + name); } catch (e) {}
-  }
-}
-// 3. Roblox's own verification bridge, when present.
-try {
-  if (window.Roblox && window.Roblox.GameVerification &&
-      typeof window.Roblox.GameVerification.tokenReceived === 'function') {
-    window.Roblox.GameVerification.tokenReceived(token);
-    hits.push('roblox:GameVerification');
-  }
-} catch (e) {}
-return hits;
-"""
+def captcha_present(drv):
+    """True while an Arkose/FunCaptcha challenge is visible anywhere on the
+    page. Several marker shapes are probed (src, id, title, data-e2e and the
+    container div) because no single one is guaranteed to survive a Roblox
+    markup change or an Arkose rollout."""
+    for sel in CAPTCHA_SELECTORS:
+        try:
+            for f in drv.find_elements("css selector", sel):
+                if _shown(drv, f):
+                    return True
+        except Exception:  # noqa: BLE001
+            continue
+    return False
 
 
-def solve_captcha_automatically(drv, solver, on_status):
-    """Solve via the configured provider and push the token into the page.
-    Returns (True, strategy) on an accepted injection, else (False, reason)."""
-    url = drv.current_url or "https://www.roblox.com/"
-    key = extract_public_key(drv) or ROBLOX_ARKOSE_PUBLIC_KEY
-    on_status(f"[create] asking {type(solver).__name__} to solve the challenge ...")
-    token = solver.solve_funcaptcha(url, key)
-    on_status("[create] solver returned a token; injecting")
-    try:
-        hits = drv.execute_script(INJECT_TOKEN_JS, token) or []
-    except Exception as e:  # noqa: BLE001
-        return False, f"injection failed: {e}"
-    if hits:
-        return True, ", ".join(str(h) for h in hits)
-    return False, "no injection point accepted the token"
+def captcha_challenge_mounted(drv):
+    """True once the Arkose challenge iframe ITSELF is on the page — one
+    carrying a real client-api src — as opposed to the enforcement container
+    that renders first. That iframe is also where the live public key is
+    scraped from, so solving before it exists means solving blind against
+    the fallback key."""
+    for sel in ("iframe[src*='arkoselabs']", "iframe[src*='funcaptcha']",
+                "iframe[src*='arkose']"):
+        try:
+            for f in drv.find_elements("css selector", sel):
+                src = (f.get_attribute("src") or "").strip()
+                if src and _shown(drv, f):
+                    return True
+        except Exception:  # noqa: BLE001
+            continue
+    return False
 
 
-def wait_for_manual_solve(drv, on_status, stop_check, timeout=CAPTCHA_MANUAL_TIMEOUT_S):
-    """No API key: the challenge sits in the visible window; say so loudly and
-    wait for it to disappear."""
-    on_status("[create] NO captcha provider configured — solve the challenge in "
-              "the opened browser window")
+def wait_for_captcha_ready(drv, on_status, stop_check, timeout=None):
+    """Give a freshly-detected challenge a moment to finish mounting before
+    a solver is asked to attack it — the enforcement container can appear
+    seconds before the actual challenge iframe. Returns True to proceed
+    (iframe seen, challenge gone again, or the wait ran out — a markup that
+    only ever shows a container must not strand the flow) and False only
+    when the batch was stopped mid-wait."""
+    timeout = CAPTCHA_READY_S if timeout is None else float(timeout)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if stop_check():
             return False
-        if not captcha_present(drv):
-            on_status("[create] captcha cleared")
+        if captcha_challenge_mounted(drv) or not captcha_present(drv):
             return True
+        time.sleep(POLL_S)
+    return True
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Roblox localizes by Accept-Language, and the CHALLENGE inherits it: on a
+# Turkish browser the Arkose puzzle arrives as "Zari toplamak icin oklara tikla
+# ...", which a solver's worker cannot read and a non-Turkish operator cannot
+# either. The signup form is also matched partly by English text. Forcing one
+# known language makes both the puzzle and the form predictable.
+SIGNUP_LOCALE = "en-US,en;q=0.9"
+
+
+def force_english(drv, on_status):
+    """Pin the browser to English for the signup flow. Chrome-only, and
+    optional: a driver without CDP just gets whatever locale it had."""
+    # ONLY the request header. Emulation.setLocaleOverride was tried here too
+    # and removed: it rewrites the JS locale APIs without touching timezone or
+    # IP, so the browser then claims en-US while every other signal still says
+    # Turkey. That inconsistency is exactly what fingerprinting looks for,
+    # which is the opposite of what this flow wants. An English Accept-Language
+    # from a Turkish address is ordinary and asserts nothing about the machine.
+    try:
+        drv.execute_cdp_cmd("Network.enable", {})
+        drv.execute_cdp_cmd("Network.setExtraHTTPHeaders",
+                            {"headers": {"Accept-Language": SIGNUP_LOCALE}})
+        return True
+    except Exception as e:  # noqa: BLE001 - no CDP, or a build without the domain
+        on_status(f"[create] could not force an English locale ({_short(e)})")
+        return False
+
+
+
+
+
+
+def _short(e):
+    return str(e).strip().splitlines()[0][:120] if str(e).strip() else type(e).__name__
+
+
+
+
+
+
+
+
+
+
+def wait_for_manual_solve(drv, on_status, stop_check, timeout=None,
+                          note="NO captcha provider configured"):
+    """No usable solver: the challenge sits in the visible window; say so
+    loudly and wait for the human. 'Cleared' requires several CONSECUTIVE
+    absent polls — an Arkose re-render can flicker the iframe away for one
+    poll, and treating that single miss as success let the flow declare
+    victory (and move on to closing the browser) while the challenge was
+    still up."""
+    timeout = CAPTCHA_MANUAL_TIMEOUT_S if timeout is None else float(timeout)
+    on_status(f"[create] {note} — solve the challenge in "
+              "the opened browser window")
+    deadline = time.monotonic() + timeout
+    misses = 0
+    while time.monotonic() < deadline:
+        if stop_check():
+            return False
+        if captcha_present(drv):
+            misses = 0
+        else:
+            misses += 1
+            if misses >= CAPTCHA_CLEAR_POLLS or landed_on_home(drv.current_url):
+                on_status("[create] captcha cleared")
+                return True
         time.sleep(POLL_S)
     on_status("[create] gave up waiting for the manual captcha solve")
     return False
@@ -839,22 +903,34 @@ def read_session_cookie(drv):
 
 def create_account(on_status=lambda m: None, stop_check=lambda: False,
                    username_style="name_no", custom_password=None,
-                   solver=None, driver_factory=None, poll=POLL_S):
+                   driver_factory=None, poll=POLL_S, solver_client=None,
+                   solver_mode="step", proxy=None):
     """Create ONE Roblox account end-to-end. Returns a result dict:
 
         ok, username, password, birthday, user_id, cookie, error/message
 
-    `driver_factory()` must return a started Selenium driver (headful Chrome
-    by default, resolved through omnidroid's own chromedriver plumbing). It
-    is injected so tests can substitute a fake."""
+    `driver_factory()` must return a started Selenium driver. The DEFAULT
+    factory builds an anti-detection Chrome (stealth.make_driver): a vanilla
+    Selenium driver carries navigator.webdriver and the automation switch,
+    which makes Arkose mint a high-risk token even when the puzzle is solved
+    correctly — Roblox then answers the signup POST 403 and re-asks the
+    captcha. `proxy` (host[:port][:user:pass] or a scheme:// URL) is that
+    browser's outbound address; it exists to spread signup attempts across
+    IPs, since Roblox rate-limits signups per address. The factory is
+    injected so tests can substitute a fake."""
     accounts_mod = _omni_accounts()
     if driver_factory is None:
         def driver_factory():
-            return accounts_mod._driver("chrome", headless=False)
+            try:
+                import stealth
+                return stealth.make_driver(headless=False, proxy=proxy,
+                                           on_status=on_status)
+            except ImportError:
+                return accounts_mod._driver("chrome", headless=False)
 
     username = generate_username(username_style)
     password = custom_password or generate_password()
-    birthday = generate_birthday()
+    birthday = generate_birthday(BIRTHDAY_MIN_AGE, BIRTHDAY_MAX_AGE)
     gender = pick_gender()
 
     try:
@@ -865,6 +941,11 @@ def create_account(on_status=lambda m: None, stop_check=lambda: False,
 
     from selenium.common.exceptions import WebDriverException
     try:
+        # Pin the locale before ANY navigation: Roblox reads Accept-Language
+        # and redirects to a localized route (/tr/CreateAccount) whose captcha
+        # is localized with it, and a puzzle nobody in the room can read helps
+        # neither a human nor a future solver.
+        force_english(drv, on_status)
         if not open_signup_page(drv, on_status):
             return {"ok": False, "error": "navigation_failed",
                     "message": "the Roblox registration page would not load"}
@@ -874,48 +955,123 @@ def create_account(on_status=lambda m: None, stop_check=lambda: False,
         fill_birthday(drv, birthday, on_status)
 
         attempts = 0
+        captcha_solved_by = "none"
+        form_missing_since = None
         deadline = time.monotonic() + FORM_DEADLINE_S * MAX_USERNAME_ATTEMPTS
-        injected = False
         while time.monotonic() < deadline:
             if stop_check():
                 return {"ok": False, "error": "stopped", "message": "cancelled"}
 
+            # --- state 1: a challenge is up --------------------------------
+            # Checked FIRST, before ever looking for the form: the captcha
+            # REPLACES the signup form, so a captcha-covered page has no form
+            # to find — treating that as 'form missing' is what closed Chrome
+            # the moment the challenge appeared.
+            if captcha_present(drv):
+                # Let the freshly-detected challenge finish mounting before
+                # attacking it: the enforcement container can render seconds
+                # before the real Arkose iframe (which is also where the
+                # live public key is scraped from).
+                if not wait_for_captcha_ready(drv, on_status, stop_check):
+                    return {"ok": False, "error": "stopped", "message": "cancelled"}
+                if not captcha_present(drv):
+                    continue    # it unmounted again while we waited
+                # Try the vision solver first: it PLAYS the puzzle in this
+                # browser rather than buying a token, because Arkose will not
+                # issue a challenge to a solver's own address at all.
+                solved_here = False
+                if solver_client is not None:
+                    try:
+                        import visioncaptcha
+                        res = visioncaptcha.play_challenge(
+                            drv, solver_client, on_status, stop_check,
+                            is_present=captcha_present, mode=solver_mode)
+                        solved_here = bool(res.get("ok"))
+                        if not solved_here:
+                            on_status("[create] vision solver stopped: "
+                                      f"{res.get('reason')}")
+                    except Exception as e:  # noqa: BLE001 - never lose the
+                        # account over the solver; the human can still finish.
+                        on_status(f"[create] vision solver failed: {_short(e)}")
+
+                # Whatever the solver did or did not manage, an unsolved
+                # challenge goes to the human in the visible window — the
+                # browser must NOT close here.
+                if not solved_here and captcha_present(drv):
+                    if not wait_for_manual_solve(
+                            drv, on_status, stop_check,
+                            note=("the solver could not finish it"
+                                  if solver_client is not None
+                                  else "no automatic solver configured")):
+                        return {"ok": False, "error": "captcha_timeout",
+                                "message": "the captcha was never cleared"}
+                captcha_solved_by = "solver" if solved_here else "manual"
+                # Solving (by hand especially) can take minutes that have
+                # nothing to do with filling the form: restart that budget.
+                deadline = time.monotonic() + FORM_DEADLINE_S * MAX_USERNAME_ATTEMPTS
+                time.sleep(2.0)
+                continue
+
+            # --- state 2: authenticated -----------------------------------
+            if landed_on_home(drv.current_url):
+                break   # signup went through (or we arrived already signed in)
+
+            # --- state 3: the form ------------------------------------------
             user_el = _first(drv, SEL_USERNAME, timeout=5)
             pass_el = _first(drv, SEL_PASSWORD, timeout=5)
             if not user_el or not pass_el:
-                if landed_on_home(drv.current_url):
-                    break   # already authenticated (fast retry path)
-                return {"ok": False, "error": "form_missing",
-                        "message": "the signup form disappeared before it could be filled"}
+                # No form, no captcha, no home: mid-transition. Give the page
+                # a grace window before declaring the signup dead — bailing
+                # out here is what closed the browser right after a captcha.
+                now = time.monotonic()
+                if form_missing_since is None:
+                    form_missing_since = now
+                elif now - form_missing_since > FORM_MISSING_GRACE_S:
+                    return {"ok": False, "error": "form_missing",
+                            "message": "the signup form disappeared before it could be filled"}
+                time.sleep(POLL_S)
+                continue
+            form_missing_since = None
 
-            fill_field(user_el, username)
-            fill_field(pass_el, password)
+            # Re-typing a field that already holds our value restarts Roblox's
+            # async validation and keeps the submit button disabled, so only
+            # fill what is actually missing.
+            try:
+                if (user_el.get_attribute("value") or "") != username:
+                    fill_field(user_el, username)
+            except Exception:  # noqa: BLE001 - stale element: just retype
+                fill_field(user_el, username)
+            try:
+                if not (pass_el.get_attribute("value") or ""):
+                    fill_field(pass_el, password)
+            except Exception:  # noqa: BLE001
+                fill_field(pass_el, password)
             gen = find_gender_control(drv, gender)
             if gen:
                 try:
                     gen.click()
                 except Exception:  # noqa: BLE001
                     pass
-            submit_form(drv, on_status)
-            time.sleep(2.0)
+            if not submit_form(drv, on_status):
+                # The button is still disabled (async validation pending);
+                # let it settle instead of hammering the form.
+                time.sleep(1.0)
+                continue
 
-            # --- post-submit states -------------------------------------
-            if captcha_present(drv):
-                if solver is not None:
-                    ok, why = solve_captcha_automatically(drv, solver, on_status)
-                    if ok:
-                        injected = True
-                    else:
-                        on_status(f"[create] automatic solve did not take ({why}); "
-                                  f"solve it manually in the browser window")
-                        if not wait_for_manual_solve(drv, on_status, stop_check):
-                            return {"ok": False, "error": "captcha_timeout",
-                                    "message": "the captcha was never cleared"}
-                else:
-                    if not wait_for_manual_solve(drv, on_status, stop_check):
-                        return {"ok": False, "error": "captcha_timeout",
-                                "message": "the captcha was never cleared"}
-                time.sleep(2.0)
+            # --- state 4: just submitted ------------------------------------
+            # The Arkose iframe can take several seconds to mount after the
+            # click; deciding 'no captcha' after one fixed sleep is what let
+            # the flow fall through and misread the page. Poll for whichever
+            # answer comes back: the challenge, home, or a validation error.
+            end = time.monotonic() + CAPTCHA_APPEAR_S
+            while time.monotonic() < end:
+                if stop_check():
+                    return {"ok": False, "error": "stopped", "message": "cancelled"}
+                if captcha_present(drv) or landed_on_home(drv.current_url):
+                    break
+                if error_text_near_fields(drv):
+                    break   # a validation verdict (e.g. 'taken') came back
+                time.sleep(POLL_S)
 
             errs = error_text_near_fields(drv).lower()
             if "taken" in errs or ("already" in errs and "username" in errs):
@@ -925,15 +1081,6 @@ def create_account(on_status=lambda m: None, stop_check=lambda: False,
                             "message": f"all {attempts} generated usernames were taken"}
                 username = generate_username(username_style)
                 on_status(f"[create] username taken — retrying as {username}")
-                continue
-
-            if landed_on_home(drv.current_url):
-                break
-
-            # Still on the form with no error we recognise: keep polling a
-            # little before treating it as stuck.
-            time.sleep(1.5)
-            if captcha_present(drv):
                 continue
         else:
             return {"ok": False, "error": "timeout",
@@ -964,7 +1111,7 @@ def create_account(on_status=lambda m: None, stop_check=lambda: False,
             "gender": gender,
             "user_id": uid,
             "cookie": cookie_val,
-            "captcha_solved_by": "provider" if injected else ("manual" if solver is None else "fallback-manual"),
+            "captcha_solved_by": captcha_solved_by,
         }
     except WebDriverException as e:
         return {"ok": False, "error": "browser_failed",
@@ -1005,10 +1152,15 @@ def sys_path_fallback():  # pragma: no cover - mirrors accountsync's loader
     raise ImportError("omnidroid accounts module not found")
 
 
-def make_solver(captcha_provider, api_keys):
-    """Build the solver for a validated config, or None when no key is set
-    (= manual solving)."""
-    keys = api_keys or {}
-    if captcha_provider == "2captcha" and keys.get("2captcha"):
-        return TwoCaptchaSolver(keys["2captcha"])
-    return None
+
+
+
+
+
+
+
+
+
+
+
+

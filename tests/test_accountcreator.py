@@ -108,27 +108,15 @@ def test_gender_pick():
 
 # ------------------------------------------------------------- configuration
 
-def test_validate_config_defaults_and_clamping():
-    clean, err = ac.validate_creation_config()
-    assert err is None
-    assert clean["amount"] == 1
-    assert clean["usernameStyle"] == "name_no"
-    assert clean["customPassword"] is None
-    assert clean["captchaProvider"] == "2captcha"
-    assert set(clean["captchaApiKeys"]) == {"2captcha"}
-
-
 @pytest.mark.parametrize("bad", [0, -3, 51, "lots"])
 def test_validate_config_rejects_bad_amount(bad):
     clean, err = ac.validate_creation_config(amount=bad)
     assert clean is None and err
 
 
-def test_validate_config_rejects_unknown_style_provider():
+def test_validate_config_rejects_unknown_style():
     _, e1 = ac.validate_creation_config(username_style="l33t")
     assert e1
-    _, e2 = ac.validate_creation_config(captcha_provider="anticaptcha")
-    assert e2
 
 
 def test_validate_config_requires_strong_custom_password():
@@ -136,13 +124,6 @@ def test_validate_config_requires_strong_custom_password():
     assert clean is None and "8" in err
     clean, _ = ac.validate_creation_config(custom_password="long-enough-1!")
     assert clean["customPassword"] == "long-enough-1!"
-
-
-def test_validate_config_strips_api_keys():
-    clean, _ = ac.validate_creation_config(captcha_api_keys={"2captcha": "  key-123  ",
-                                                            "unknown": "x"})
-    assert clean["captchaApiKeys"]["2captcha"] == "key-123"
-    assert set(clean["captchaApiKeys"]) == {"2captcha"}
 
 
 # -------------------------------------------------------------------- vault
@@ -188,66 +169,6 @@ class _FakeResponse:
         return False
 
 
-def _solver_with(monkeypatch, responses, sleep=lambda s: None):
-    calls = []
-
-    def fake_urlopen(req, timeout=None):
-        body = json.loads(req.data.decode())
-        url = req.full_url
-        calls.append({"url": url, "body": body})
-        # Beyond the scripted responses the service keeps saying the same
-        # thing (normally "processing"), so polling tests can rely purely on
-        # their own deadlines.
-        idx = min(len(responses) - 1, len(calls) - 1)
-        return _FakeResponse(responses[idx])
-
-    monkeypatch.setattr(ac.urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr(ac.time, "sleep", sleep)
-    return calls
-
-
-def test_solver_happy_path(monkeypatch):
-    responses = [
-        {"errorId": 0, "taskId": "t-1"},
-        {"status": "processing"},
-        {"errorId": 0, "status": "ready",
-         "solution": {"token": "TOKEN|abc"}},
-    ]
-    calls = _solver_with(monkeypatch, responses, sleep=lambda s: None)
-    s = ac.TwoCaptchaSolver("key-123", poll=0)
-    token = s.solve_funcaptcha("https://www.roblox.com/up/registration",
-                               ac.ROBLOX_ARKOSE_PUBLIC_KEY)
-    assert token == "TOKEN|abc"
-    create, result = calls[0], calls[-1]
-    assert create["url"].endswith(ac.TWOCAPTCHA_CREATE_PATH)
-    assert result["url"].endswith(ac.TWOCAPTCHA_RESULT_PATH)
-    assert create["body"]["clientKey"] == "key-123"
-    task = create["body"]["task"]
-    assert task["type"] == ac.FUN_CAPTCHA_TASK_TYPE
-    assert task["websitePublicKey"] == ac.ROBLOX_ARKOSE_PUBLIC_KEY
-    assert result["body"]["taskId"] == "t-1"
-
-
-def test_solver_error_paths(monkeypatch):
-    _solver_with(monkeypatch, [{"errorId": 1, "errorCode": "ERROR_KEY_DOES_NOT_EXIST"}])
-    with pytest.raises(ac.CaptchaError, match="KEY"):
-        ac.TwoCaptchaSolver("bad", poll=0).solve_funcaptcha("https://x", "k")
-
-    _solver_with(monkeypatch, [{"errorId": 0, "taskId": "t"}, {"status": "processing"}])
-    s = ac.TwoCaptchaSolver("key", timeout=0.01, poll=0)
-    with pytest.raises(ac.CaptchaError, match="did not finish"):
-        s.solve_funcaptcha("https://x", "k")
-
-    with pytest.raises(ac.CaptchaError, match="empty"):
-        ac.TwoCaptchaSolver("   ")
-
-
-def test_make_solver_gates_on_key():
-    assert ac.make_solver("2captcha", {"2captcha": ""}) is None
-    assert isinstance(ac.make_solver("2captcha", {"2captcha": "k"}),
-                      ac.TwoCaptchaSolver)
-
-
 # ------------------------------------------------------- selenium flow (fake)
 
 class FakeElement:
@@ -283,6 +204,7 @@ class FakeElement:
         return None
 
 
+
 class FakeDriver:
     """Records the signup conversation; enough surface for create_account."""
 
@@ -315,7 +237,12 @@ class FakeDriver:
 
     def execute_script(self, script, *args):
         self.script_calls.append((script, args))
-        return self._script_results.get("inject", [])
+        # _shown() falls back to geometry when is_displayed() lies; a driver
+        # that does not script an answer reports "no box", so the caller keeps
+        # trusting is_displayed().
+        if "getBoundingClientRect" in script:
+            return self._script_results.get("rect")
+        return self._script_results.get("script")
 
     def get_cookie(self, name):
         return self.cookies.get(name)
@@ -427,22 +354,121 @@ def test_create_account_reports_browser_failure():
     assert res["error"] == "browser_failed"
 
 
+# ------------------------------------------------- captcha keeps browser open
+#
+# The regression these pin down: when the Arkose challenge mounts it REPLACES
+# the signup form, and the flow used to read 'form gone' as fatal and quit
+# the driver — closing Chrome the instant the captcha appeared.
+
+class _CaptchaFlag:
+    """A captcha iframe whose visibility is driven by a state dict."""
+
+    def __init__(self, state):
+        self._state = state
+
+    def is_displayed(self):
+        return bool(self._state["captcha"])
+
+
+class _SolverFlowDriver(FakeDriver):
+    """Submit -> the challenge replaces the form -> the injected token is
+    accepted -> the challenge unmounts -> home arrives a couple of polls
+    later (never instantly — the old code only survived instant landings)."""
+
+    def __init__(self):
+        super().__init__(script_results={"inject": ["hook:__arkose_enforcement"]})
+        self.state = {"captcha": False, "home_reads": None}
+
+    def execute_script(self, script, *args):
+        out = super().execute_script(script, *args)
+        if args and str(args[0]).startswith("TOKEN"):
+            self.state["captcha"] = False
+            self.state["home_reads"] = 2
+        return out
+
+    @property
+    def current_url(self):
+        if self.state["home_reads"] is not None:
+            if self.state["home_reads"] > 0:
+                self.state["home_reads"] -= 1
+                return "https://www.roblox.com/CreateAccount"
+            self.url = "https://www.roblox.com/home"
+            self.cookies[ac.COOKIE_NAME] = {"value": "CAP-COOKIE"}
+        return self.url
+
+
+def _fast_captcha(monkeypatch):
+    """Make the captcha-transition machinery millisecond-fast. The ready /
+    unmount windows poll on the REAL clock (sleep is a no-op here), so their
+    defaults would cost real seconds per test; the fake challenges also carry
+    no iframe src, so 'is the challenge iframe mounted' is answered yes
+    directly instead of burning the ready window."""
+    monkeypatch.setattr(ac.time, "sleep", lambda s: None)
+    monkeypatch.setattr(ac, "CAPTCHA_READY_S", 0.05)
+    monkeypatch.setattr(ac, "captcha_challenge_mounted", lambda drv: True)
+    real_first = ac._first
+    monkeypatch.setattr(ac, "_first",
+                        lambda drv, sels, timeout=10: real_first(drv, sels, 0.05))
+
+
+def _accounts_returning(cookie, uid, uname):
+    class FakeAccounts:
+        @staticmethod
+        def whoami(c):
+            assert c == cookie
+            return uid, uname
+
+    return FakeAccounts
+
+
+def test_create_account_waits_for_a_manual_captcha_solve(monkeypatch):
+    """No solver configured: the challenge replaces the form, the flow must
+    keep the browser open and WAIT (not declare the form missing), and a
+    human-cleared challenge completes the account."""
+    drv = FakeDriver()
+    _fast_captcha(monkeypatch)
+
+    state = {"polls": 4, "drv": drv}
+
+    class HumanSolvesFlag:
+        def is_displayed(self):
+            if state["polls"] > 0:
+                state["polls"] -= 1
+                return True
+            # The human finished the challenge: the page moves on to home.
+            state["drv"].url = "https://www.roblox.com/home"
+            state["drv"].cookies[ac.COOKIE_NAME] = {"value": "MANUAL-COOKIE"}
+            return False
+
+    def show_captcha():
+        drv.elements.pop("#signup-username", None)
+        drv.elements.pop("#signup-password", None)
+        drv.elements["iframe[src*='funcaptcha']"] = [HumanSolvesFlag()]
+
+    drv.elements = {
+        "#signup-username": FakeElement(),
+        "#signup-password": FakeElement(),
+        "#signup-button": FakeElement(tag="button", text="Sign Up",
+                                      on_click=show_captcha),
+    }
+    monkeypatch.setattr(ac, "_omni_accounts",
+                        lambda: _accounts_returning("MANUAL-COOKIE", 222, "ManualUser"))
+
+    res = ac.create_account(on_status=lambda m: None,
+                            driver_factory=lambda: drv)
+    assert res["ok"], res
+    assert res["username"] == "ManualUser"
+    assert res["captcha_solved_by"] == "manual"
+
+
+class _StubbornFlag:
+    """A challenge that stays mounted no matter what token is injected."""
+
+    def is_displayed(self):
+        return True
+
+
 # ------------------------------------------------------- captcha page probes
-
-def test_public_key_scraped_from_iframe(monkeypatch):
-    class IframeDrv:
-        url = "https://www.roblox.com/"
-
-        def find_elements(self, by, sel):
-            class F:
-                def get_attribute(self, n):
-                    return ("https://client-api.arkoselabs.com/v2/iframe?"
-                            "public_key=A2A14B1D-TEST&data[type]=default")
-
-            return [F()]
-
-    assert ac.extract_public_key(IframeDrv()) == "A2A14B1D-TEST"
-
 
 def test_landed_on_home_matches_only_authenticated_paths():
     assert ac.landed_on_home("https://www.roblox.com/home?x=1")
@@ -452,32 +478,6 @@ def test_landed_on_home_matches_only_authenticated_paths():
 
 
 # ------------------------------------------------ stale-provider self-heal
-
-def test_creation_get_config_heals_removed_provider(tmp_path, monkeypatch):
-    """settings.json outlives the surfsky -> 2captcha swap, so a leftover
-    "surfsky" provider must be normalized to the default (and written back)
-    instead of rejecting every creation batch."""
-    import json
-    import main
-
-    settings_file = tmp_path / "settings.json"
-    settings_file.write_text(
-        json.dumps({"captcha": {"provider": "surfsky",
-                                "apiKeys": {"surfsky": "old-key"}}}),
-        encoding="utf-8")
-    monkeypatch.setattr(main, "SETTINGS_FILE", settings_file)
-
-    cfg = main.Api().creation_get_config()
-    assert cfg["captcha"]["provider"] == "2captcha"
-    # The orphaned surfsky key is dropped before it can leak or be validated.
-    assert set(cfg["captcha"]["apiKeys"]) == {"2captcha"}
-    assert cfg["captcha"]["apiKeys"]["2captcha"] == ""
-
-    # Healed on disk too — one run fixes it permanently.
-    on_disk = json.loads(settings_file.read_text(encoding="utf-8"))
-    assert on_disk["captcha"]["provider"] == "2captcha"
-    assert set(on_disk["captcha"]["apiKeys"]) == {"2captcha"}
-
 
 # ------------------------------------------------------- registration entry
 
@@ -676,3 +676,347 @@ def test_find_gender_control_matches_id_button():
 
     assert ac.find_gender_control(Drv(), "male") is not None
     assert ac.find_gender_control(Drv(), "female") is not None
+
+
+# ---------------------------------------------------------------------------
+# Arkose integration — pinned against what the LIVE Roblox signup page does
+#
+# Every constant below was read off roblox.com/CreateAccount in a real browser
+# while a challenge was on screen. The previous generation of these tests
+# faked `execute_script` -> ["hook:__arkose_enforcement"], so the injection
+# layer was free to target elements that do not exist on the page and still
+# go green. These assert against the OBSERVED integration instead.
+# ---------------------------------------------------------------------------
+
+# The enforcement iframe URL as Roblox actually serves it: the public key sits
+# in the FRAGMENT (#key&nonce&parentOrigin), never as a ?public_key= query
+# parameter — the only form the old regex could read.
+LIVE_ENFORCEMENT_SRC = (
+    "https://arkoselabs.roblox.com/v2/4.4.5/"
+    "enforcement.a30f6b579e932efaa0a5bb0ec1c0eed3.html"
+    "#A2A14B1D-1AF3-C791-9BBC-EE33CC7A0A6F"
+    "&d77e1ee3-a659-40f7-b53b-1fc82ef92667"
+    "&https%3A%2F%2Fwww.roblox.com"
+)
+LIVE_ARKOSE_HOST = "arkoselabs.roblox.com"
+
+
+class ArkoseFrame:
+    """An iframe element carrying the live enforcement src."""
+
+    def __init__(self, src=LIVE_ENFORCEMENT_SRC):
+        self.src = src
+
+    def is_displayed(self):
+        return True
+
+    def get_attribute(self, name):
+        return self.src if name == "src" else None
+
+
+class BlobDriver(FakeDriver):
+    """A driver whose page exposes a live blob and a live Arkose iframe."""
+
+    def __init__(self, blob="BLOB-123"):
+        super().__init__(script_results={"blob": blob,
+                                         "inject": ["arkose:onCompleted"]})
+        self.elements["iframe"] = [ArkoseFrame()]
+        self.url = "https://www.roblox.com/CreateAccount"
+
+
+# ---------------------------------------------------------------------------
+# residential proxy support
+#
+# Arkose fingerprints the IP the widget is loaded from, and a solver farm's
+# datacenter addresses are exactly what it is looking for — which is why every
+# proxyless task shape came back ERROR_CAPTCHA_UNSOLVABLE against Roblox's
+# signup key. With a proxy the worker loads the widget from the user's own
+# residential IP and the task type changes from FunCaptchaTaskProxyless to
+# FunCaptchaTask.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("text,expected", [
+    # host:port
+    ("1.2.3.4:8080",
+     {"type": "http", "address": "1.2.3.4", "port": 8080,
+      "login": "", "password": ""}),
+    # host:port:user:pass — what most residential dashboards hand out
+    ("gate.provider.io:7000:user-1:secret",
+     {"type": "http", "address": "gate.provider.io", "port": 7000,
+      "login": "user-1", "password": "secret"}),
+    # user:pass@host:port
+    ("user-1:secret@gate.provider.io:7000",
+     {"type": "http", "address": "gate.provider.io", "port": 7000,
+      "login": "user-1", "password": "secret"}),
+    # full URL, scheme carried through
+    ("socks5://user-1:secret@gate.provider.io:7000",
+     {"type": "socks5", "address": "gate.provider.io", "port": 7000,
+      "login": "user-1", "password": "secret"}),
+    ("http://1.2.3.4:8080",
+     {"type": "http", "address": "1.2.3.4", "port": 8080,
+      "login": "", "password": ""}),
+    # a password containing ':' must survive (only the FIRST colon splits)
+    ("host.io:9000:user:pa:ss",
+     {"type": "http", "address": "host.io", "port": 9000,
+      "login": "user", "password": "pa:ss"}),
+    # whitespace is forgiving
+    ("  1.2.3.4:8080  ",
+     {"type": "http", "address": "1.2.3.4", "port": 8080,
+      "login": "", "password": ""}),
+])
+def test_parse_proxy_accepts_the_formats_dashboards_hand_out(text, expected):
+    proxy, err = ac.parse_proxy(text)
+    assert err is None, err
+    assert proxy == expected
+
+
+@pytest.mark.parametrize("text", [
+    "not-a-proxy",              # no port
+    "1.2.3.4:notaport",
+    "1.2.3.4:0",                # out of range
+    "1.2.3.4:70000",
+    ":8080",                    # no host
+    "ftp://1.2.3.4:8080",       # unsupported scheme
+])
+def test_parse_proxy_rejects_junk(text):
+    proxy, err = ac.parse_proxy(text)
+    assert proxy is None
+    assert err
+
+
+def test_parse_proxy_treats_blank_as_no_proxy():
+    """An empty field is 'no proxy', not an error — proxyless stays the
+    default so an unconfigured install behaves exactly as before."""
+    for blank in ("", "   ", None):
+        proxy, err = ac.parse_proxy(blank)
+        assert proxy is None and err is None
+
+
+def test_validate_creation_config_accepts_and_normalizes_a_proxy():
+    clean, err = ac.validate_creation_config(
+        captcha_proxy="  gate.provider.io:7000:user-1:secret  ")
+    assert err is None
+    assert clean["captchaProxy"] == "gate.provider.io:7000:user-1:secret"
+
+
+def test_validate_creation_config_rejects_a_bad_proxy():
+    """A typo in the proxy has to surface in the modal, not three layers down
+    as a mystery solver failure the user pays for."""
+    clean, err = ac.validate_creation_config(captcha_proxy="1.2.3.4:notaport")
+    assert clean is None
+    assert "proxy" in err.lower()
+
+
+def test_validate_creation_config_defaults_the_proxy_to_empty():
+    clean, err = ac.validate_creation_config()
+    assert err is None
+    assert clean["captchaProxy"] == ""
+
+
+# ---------------------------------------------------------------------------
+# captcha pre-flight
+#
+# A failed batch cannot tell a dead key from a dead proxy from an Arkose that
+# refuses the proxy's IP — they all surface as one paid, useless solve. The
+# pre-flight separates them without spending anything.
+# ---------------------------------------------------------------------------
+
+
+def test_force_english_pins_accept_language_before_navigation():
+    """Roblox localizes by Accept-Language and the Arkose puzzle inherits it.
+    A Turkish browser gets a Turkish puzzle, which neither a solver's worker
+    nor a non-Turkish operator can read."""
+    calls = []
+
+    class CdpDriver(FakeDriver):
+        def execute_cdp_cmd(self, cmd, args):
+            calls.append((cmd, args))
+            return {}
+
+    assert ac.force_english(CdpDriver(), lambda m: None) is True
+    headers = next(a for c, a in calls if c == "Network.setExtraHTTPHeaders")
+    assert headers["headers"]["Accept-Language"].startswith("en-US")
+    # Deliberately NOT Emulation.setLocaleOverride: rewriting the JS locale
+    # without touching timezone or IP is a fingerprint mismatch, which hurts
+    # more than the localized puzzle it would fix.
+    assert not any(c == "Emulation.setLocaleOverride" for c, _ in calls)
+
+
+def test_force_english_is_optional():
+    """A driver without CDP must still be able to create accounts."""
+    said = []
+    assert ac.force_english(FakeDriver(), said.append) is False
+    assert said and "locale" in said[0]
+
+
+# ---------------------------------------------------------------------------
+# CapSolver: a second provider on the same createTask/getTaskResult protocol
+# ---------------------------------------------------------------------------
+
+class InvisibleArkoseFrame(ArkoseFrame):
+    """The live enforcement iframe: filling the viewport, plainly visible to
+    the user, but Selenium reports is_displayed() False for it."""
+
+    def is_displayed(self):
+        return False
+
+
+def test_captcha_present_trusts_geometry_when_is_displayed_lies():
+    """Observed on roblox.com/CreateAccount: the Arkose iframe measured
+    1169x749 with the challenge on screen, yet is_displayed() was False.
+    Believing it meant the challenge was never detected and the account died
+    waiting for a form that the captcha had replaced."""
+    class GeoDriver(FakeDriver):
+        def execute_script(self, script, *args):
+            if "getBoundingClientRect" in script:
+                return [1169, 749]
+            return super().execute_script(script, *args)
+
+    drv = GeoDriver()
+    drv.elements["iframe[src*='arkose']"] = [InvisibleArkoseFrame()]
+    assert ac.captcha_present(drv) is True
+
+
+def test_captcha_present_ignores_tracking_pixels():
+    """A 1x1 iframe is not a challenge."""
+    class GeoDriver(FakeDriver):
+        def execute_script(self, script, *args):
+            if "getBoundingClientRect" in script:
+                return [1, 1]
+            return super().execute_script(script, *args)
+
+    drv = GeoDriver()
+    drv.elements["iframe[src*='arkose']"] = [InvisibleArkoseFrame()]
+    assert ac.captcha_present(drv) is False
+
+
+def test_captcha_present_still_uses_is_displayed_when_it_says_yes():
+    drv = FakeDriver()
+    drv.elements["iframe[src*='arkose']"] = [ArkoseFrame()]
+    assert ac.captcha_present(drv) is True
+
+
+# --------------------------------------------------- the vision captcha solver
+#
+# The solver PLAYS the puzzle in this browser instead of buying a token: Arkose
+# will not issue a challenge to a solver's own address at all. What matters
+# here is what happens AFTERWARDS - the flow must carry on and re-submit the
+# form, which is the step a standalone harness forgot, leaving a solved captcha
+# and no account.
+
+def _vision_driver(monkeypatch, outcome, note_sink=None):
+    """A signup whose Sign Up click raises a challenge, plus a stubbed solver
+    returning `outcome`. Returns the create_account result."""
+    drv = FakeDriver()
+    _fast_captcha(monkeypatch)
+    state = {"cleared": False}
+
+    class Flag:
+        def is_displayed(self):
+            if state["cleared"]:
+                drv.url = "https://www.roblox.com/home"
+                drv.cookies[ac.COOKIE_NAME] = {"value": "VISION-COOKIE"}
+                return False
+            return True
+
+    def show_captcha():
+        drv.elements.pop("#signup-username", None)
+        drv.elements.pop("#signup-password", None)
+        drv.elements["iframe[src*='funcaptcha']"] = [Flag()]
+
+    drv.elements = {
+        "#signup-username": FakeElement(),
+        "#signup-password": FakeElement(),
+        "#signup-button": FakeElement(tag="button", text="Sign Up",
+                                      on_click=show_captcha),
+    }
+
+    import visioncaptcha
+
+    def fake_play(d, client, on_status=None, stop_check=None, is_present=None,
+                  mode="step"):
+        if isinstance(outcome, Exception):
+            raise outcome
+        if outcome.get("ok"):
+            state["cleared"] = True
+        return outcome
+
+    monkeypatch.setattr(visioncaptcha, "play_challenge", fake_play)
+
+    def fake_manual(d, on_status, stop_check, timeout=None, note=None):
+        if note_sink is not None:
+            note_sink.append(note)
+        state["cleared"] = True
+        return True
+
+    monkeypatch.setattr(ac, "wait_for_manual_solve", fake_manual)
+    monkeypatch.setattr(ac, "_omni_accounts",
+                        lambda: _accounts_returning("VISION-COOKIE", 777, "VisionUser"))
+    return ac.create_account(on_status=lambda m: None,
+                             driver_factory=lambda: drv,
+                             solver_client=object())
+
+
+def test_create_account_completes_when_the_solver_clears_the_puzzle(monkeypatch):
+    res = _vision_driver(monkeypatch, {"ok": True, "rounds": 5, "reason": None})
+    assert res["ok"], res
+    assert res["username"] == "VisionUser"
+    assert res["captcha_solved_by"] == "solver"
+
+
+def test_a_solver_that_gives_up_hands_over_to_a_human(monkeypatch):
+    """Stopping mid-puzzle must not cost the account."""
+    notes = []
+    res = _vision_driver(monkeypatch,
+                         {"ok": False, "rounds": 2, "reason": "solver was unsure"},
+                         note_sink=notes)
+    assert res["ok"], res
+    assert res["captcha_solved_by"] == "manual"
+    assert notes and "could not finish" in notes[0]
+
+
+def test_a_crashing_solver_never_costs_the_account(monkeypatch):
+    notes = []
+    res = _vision_driver(monkeypatch, RuntimeError("solver exploded"), note_sink=notes)
+    assert res["ok"], res
+    assert res["captcha_solved_by"] == "manual"
+
+
+def test_no_solver_configured_still_waits_for_a_human(monkeypatch):
+    """The default path when nobody has wired a solver in."""
+    drv = FakeDriver()
+    _fast_captcha(monkeypatch)
+    notes = []
+    state = {"cleared": False}
+
+    class Flag:
+        def is_displayed(self):
+            if state["cleared"]:
+                drv.url = "https://www.roblox.com/home"
+                drv.cookies[ac.COOKIE_NAME] = {"value": "NOSOLVER"}
+                return False
+            return True
+
+    def show_captcha():
+        drv.elements.pop("#signup-username", None)
+        drv.elements["iframe[src*='funcaptcha']"] = [Flag()]
+
+    drv.elements = {
+        "#signup-username": FakeElement(),
+        "#signup-password": FakeElement(),
+        "#signup-button": FakeElement(tag="button", text="Sign Up",
+                                      on_click=show_captcha),
+    }
+
+    def fake_manual(d, on_status, stop_check, timeout=None, note=None):
+        notes.append(note)
+        state["cleared"] = True
+        return True
+
+    monkeypatch.setattr(ac, "wait_for_manual_solve", fake_manual)
+    monkeypatch.setattr(ac, "_omni_accounts",
+                        lambda: _accounts_returning("NOSOLVER", 5, "NoSolver"))
+    res = ac.create_account(on_status=lambda m: None, driver_factory=lambda: drv)
+    assert res["ok"] and res["captcha_solved_by"] == "manual"
+    assert notes and "no automatic solver" in notes[0]

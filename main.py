@@ -79,10 +79,18 @@ DEFAULT_SETTINGS = {
     # deliberately NOT persisted: it is a per-run override, and a password at
     # rest in settings.json is one leak away from being every account's.
     "creation": {"amount": 1, "usernameStyle": "name_no"},
-    # Captcha provider for automated solving during account creation.
-    # apiKeys holds one key per provider id (see accountcreator.CAPTCHA_PROVIDERS);
-    # an empty key means captchas wait for a human in the opened browser window.
-    "captcha": {"provider": "2captcha", "apiKeys": {"2captcha": ""}},
+    # `proxy` is the outbound proxy the SIGNUP BROWSER uses. It has nothing to
+    # do with captchas: Roblox rate-limits signup per IP (roughly ten attempts
+    # before it answers "an unknown error occurred" with no captcha at all), so
+    # a fresh address per batch is what keeps creation working. Empty = direct.
+    # `solverUrl` is the vision captcha service (captchaserver.py): the
+    # executor POSTs screenshots there and gets back an action, never the
+    # model. Empty = no automatic solver, the human in the window solves.
+    # `solverToken` is the service's optional bearer token, never persisted to
+    # a default: it belongs to the deployment, like the proxy.
+    "captcha": {"proxy": "",
+                "solverUrl": "http://127.0.0.1:8788",
+                "solverToken": ""},
 }
 
 # COMPATIBILITY SHIM, NOT A FEATURE. The engine offers two presets, `gaming`
@@ -1522,37 +1530,29 @@ class Api:
     # ---- account creation (roblox.com signup, captcha, vault) ----
 
     def creation_get_config(self):
-        """Saved creation + captcha preferences, merged over defaults.
+        """Saved creation + proxy preferences, merged over defaults.
 
-        Self-heals a stale captcha provider. settings.json outlives code: a
-        provider that was removed from the app (the surfsky -> 2captcha swap)
-        can still be persisted on disk, and creation_start falls back to the
-        saved provider whenever the modal doesn't send one — so a leftover
-        "surfsky" would reject every batch with "unknown captcha provider".
-        Normalize any unknown provider to the current default and drop orphaned
-        apiKeys, then write the fix back once so it heals permanently (same
-        discipline as RETIRED_MODES).
+        settings.json outlives code, so it still carries the retired
+        third-party solver block (`provider`, `apiKeys`) from when captchas
+        were bought from 2captcha/CapSolver. Those keys are secrets that no
+        longer buy anything, so they are DROPPED and the fix written back once
+        — same self-healing discipline as RETIRED_MODES, but here it also
+        stops a dead API key sitting in a config file forever.
         """
-        import accountcreator
         s = self.get_settings()
         creation = {**DEFAULT_SETTINGS["creation"], **(s.get("creation") or {})}
-        captcha = {**DEFAULT_SETTINGS["captcha"], **(s.get("captcha") or {})}
-        valid = accountcreator.CAPTCHA_PROVIDERS
+        stored = s.get("captcha") or {}
+        proxy = str(stored.get("proxy") or "").strip()
+        solver_url = str(stored.get("solverUrl")
+                         or DEFAULT_SETTINGS["captcha"]["solverUrl"]).strip()
+        solver_token = str(stored.get("solverToken") or "").strip()
+        captcha = {"proxy": proxy, "solverUrl": solver_url,
+                   "solverToken": solver_token}
 
-        changed = False
-        if captcha.get("provider") not in valid:
-            captcha["provider"] = DEFAULT_SETTINGS["captcha"]["provider"]
-            changed = True
-        raw_keys = captcha.get("apiKeys") or {}
-        cleaned = {p: str(raw_keys.get(p) or "").strip() for p in valid}
-        if cleaned != raw_keys:
-            captcha["apiKeys"] = cleaned
-            changed = True
-        if changed:
+        if set(stored) - {"proxy", "solverUrl", "solverToken"} \
+                or stored.get("proxy") != proxy:
             try:
-                # Merge so only the captcha block changes; nothing else is touched.
-                self.save_settings({"captcha": {"provider": captcha["provider"],
-                                                "apiKeys": cleaned}})
+                self.save_settings({"captcha": captcha})
             except OSError:
                 pass  # a settings file that can't be written must not block reads
         return {"ok": True, "creation": creation, "captcha": captcha}
@@ -1573,25 +1573,29 @@ class Api:
                             patch_creation.get("amount") if isinstance(patch_creation, dict) else None)
         style_in = cfg.get("usernameStyle",
                            patch_creation.get("usernameStyle") if isinstance(patch_creation, dict) else None)
-        provider_in = cfg.get("captchaProvider",
-                              patch_captcha.get("provider") if isinstance(patch_captcha, dict) else None)
-        keys_in = cfg.get("captchaApiKeys",
-                          patch_captcha.get("apiKeys") if isinstance(patch_captcha, dict) else None)
+        proxy_in = cfg.get("captchaProxy",
+                           patch_captcha.get("proxy") if isinstance(patch_captcha, dict) else None)
 
         clean, error = accountcreator.validate_creation_config(
             amount=amount_in if amount_in is not None else current["creation"].get("amount", 1),
             username_style=style_in,
             custom_password=None,          # never persisted (see DEFAULT_SETTINGS)
-            captcha_provider=provider_in if provider_in is not None else current["captcha"].get("provider"),
-            captcha_api_keys=keys_in if keys_in is not None else current["captcha"].get("apiKeys"),
+            captcha_proxy=proxy_in if proxy_in is not None else current["captcha"].get("proxy"),
         )
         if error:
             return {"ok": False, "error": "bad_config", "message": error}
+        captcha_patch = {"proxy": clean["captchaProxy"]}
+        for key in ("solverUrl", "solverToken"):
+            val_in = (patch_captcha.get(key)
+                      if isinstance(patch_captcha, dict) else None)
+            if val_in is None:
+                val_in = cfg.get(key)
+            captcha_patch[key] = (str(val_in).strip() if val_in is not None
+                                  else current["captcha"].get(key, ""))
         return self.save_settings({
             "creation": {"amount": clean["amount"],
                          "usernameStyle": clean["usernameStyle"]},
-            "captcha": {"provider": clean["captchaProvider"],
-                        "apiKeys": clean["captchaApiKeys"]},
+            "captcha": captcha_patch,
         })
 
     def creation_start(self, config=None):
@@ -1616,13 +1620,10 @@ class Api:
             amount=cfg.get("amount", saved["creation"].get("amount", 1)),
             username_style=cfg.get("usernameStyle", saved["creation"].get("usernameStyle")),
             custom_password=cfg.get("customPassword"),
-            captcha_provider=cfg.get("captchaProvider", saved["captcha"].get("provider")),
-            captcha_api_keys=cfg.get("captchaApiKeys", saved["captcha"].get("apiKeys")),
+            captcha_proxy=cfg.get("captchaProxy", saved["captcha"].get("proxy")),
         )
         if error:
             return {"ok": False, "error": "bad_config", "message": error}
-        solver = accountcreator.make_solver(clean["captchaProvider"],
-                                            clean["captchaApiKeys"])
         total = clean["amount"]
 
         self._creation_stop.clear()
@@ -1643,12 +1644,24 @@ class Api:
                                 "phase": "run", "message": str(line)[-300:]})
 
                 try:
+                    # The vision solver is wired from settings: screenshots go
+                    # to the captcha service, only an action comes back. A
+                    # service that is down degrades to the human in the
+                    # window — create_account handles that itself.
+                    solver_client = None
+                    solver_url = (saved["captcha"].get("solverUrl") or "").strip()
+                    if solver_url:
+                        import visioncaptcha
+                        solver_client = visioncaptcha.SolverClient(
+                            solver_url,
+                            token=saved["captcha"].get("solverToken") or "")
                     res = accountcreator.create_account(
                         on_status=say,
                         stop_check=self._creation_stop.is_set,
                         username_style=clean["usernameStyle"],
                         custom_password=clean["customPassword"],
-                        solver=solver)
+                        solver_client=solver_client,
+                        proxy=clean["captchaProxy"] or None)
                 except Exception as e:  # noqa: BLE001 - one bad batch must not kill the thread silently
                     res = {"ok": False, "error": "unexpected",
                            "message": f"{type(e).__name__}: {e}"}

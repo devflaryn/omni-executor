@@ -179,7 +179,7 @@ export default function SettingsView({
           </div>
         </Panel>
 
-        {/* Captcha provider (used by account creation) */}
+        {/* Outbound proxy for account creation */}
         <CaptchaPanel />
 
         {/* Engine */}
@@ -430,14 +430,15 @@ function OmniAccountPanel({ auth, onAuthChange, showToast }) {
   );
 }
 
-/* Captcha solving for account creation: pick a provider, paste its API key.
-   With a key saved, the challenge during "Create account" is solved
-   automatically; without one it waits for a human in the opened browser
-   window — nothing is ever blocked outright, just slower. */
+/* Outbound proxy for account creation. This is NOT about captchas: Roblox
+   rate-limits signup per IP (after roughly ten attempts the form returns "an
+   unknown error occurred" and never even shows a challenge), so a fresh
+   address is what keeps a batch running. The third-party captcha providers
+   that used to live here were removed - Arkose refuses to issue a puzzle to a
+   solver's IP at all, so no service could produce a token for Roblox. */
 function CaptchaPanel() {
-  const [provider, setProvider] = useState("2captcha");
-  const [key, setKey] = useState("");
-  const [reveal, setReveal] = useState(false);
+  const [proxy, setProxy] = useState("");
+  const [proxyErr, setProxyErr] = useState("");
   const [loaded, setLoaded] = useState(false);
   const saveTimer = useRef(null);
 
@@ -445,9 +446,7 @@ function CaptchaPanel() {
     let alive = true;
     api("creation_get_config").then((cfg) => {
       if (!alive) return;
-      const c = cfg?.captcha || {};
-      if (c.provider) setProvider(c.provider);
-      setKey(String(c.apiKeys?.[c.provider || "2captcha"] || ""));
+      setProxy(String(cfg?.captcha?.proxy || ""));
       setLoaded(true);
     });
     return () => {
@@ -455,12 +454,15 @@ function CaptchaPanel() {
     };
   }, []);
 
-  const save = (nextProvider, nextKey) => {
+  const save = (nextProxy) => {
     clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      api("creation_save_config", {
-        captcha: { provider: nextProvider, apiKeys: { [nextProvider]: nextKey.trim() } },
+    saveTimer.current = setTimeout(async () => {
+      const res = await api("creation_save_config", {
+        captcha: { proxy: nextProxy.trim() },
       });
+      // The proxy can be malformed and the backend validates it, so surface
+      // its verdict rather than silently keeping a string that fails a batch.
+      setProxyErr(res?.ok === false ? String(res.message || "Invalid proxy.") : "");
     }, 500);
   };
 
@@ -468,66 +470,44 @@ function CaptchaPanel() {
     <Panel className="overflow-hidden">
       <PanelHead
         icon={LockIcon}
-        title="Captcha"
+        title="Account creation proxy"
         right={
           <span className="flex items-center gap-2 text-[11.5px] text-ink-2">
-            <Lamp tone={key.trim() ? "live" : "off"} size={6} />
-            {key.trim() ? "Auto-solve on" : "Manual"}
+            <Lamp tone={proxy.trim() ? "live" : "off"} size={6} />
+            {proxy.trim() ? "Via proxy" : "Direct"}
           </span>
         }
       />
       <div className="flex flex-col gap-4 p-4">
         <Field
-          label="Provider"
-          htmlFor="captcha-provider"
-          hint="More providers can be added later."
+          label="Outbound proxy"
+          htmlFor="captcha-proxy"
+          hint="host:port:user:pass - a fresh IP per batch avoids Roblox's signup rate limit."
         >
-          <select
-            id="captcha-provider"
-            value={provider}
+          <input
+            id="captcha-proxy"
+            type="text"
+            className="input font-mono tracking-wide"
+            placeholder="gate.provider.io:7000:user:pass"
+            value={proxy}
             disabled={!loaded}
+            autoComplete="off"
+            spellCheck={false}
             onChange={(e) => {
-              setProvider(e.target.value);
-              save(e.target.value, key);
+              setProxy(e.target.value);
+              save(e.target.value);
             }}
-            className="input cursor-pointer"
-          >
-            <option value="2captcha">2captcha.com</option>
-          </select>
+          />
         </Field>
 
-        <Field
-          label="API key"
-          htmlFor="captcha-key"
-          hint="Solve captchas automatically while creating accounts. Get one at 2captcha.com."
-        >
-          <div className="flex gap-2">
-            <input
-              id="captcha-key"
-              type={reveal ? "text" : "password"}
-              className="input font-mono tracking-wide"
-              placeholder="Paste your 2captcha.com API key"
-              value={key}
-              disabled={!loaded}
-              autoComplete="off"
-              spellCheck={false}
-              onChange={(e) => {
-                setKey(e.target.value);
-                save(provider, e.target.value);
-              }}
-            />
-            <Button size="md" onClick={() => setReveal((r) => !r)}>
-              {reveal ? "Hide" : "Show"}
-            </Button>
-          </div>
-        </Field>
-
-        {!key.trim() && (
-          <p className="text-[11px] leading-relaxed text-ink-3">
-            No key yet — during account creation you solve each captcha yourself in the
-            browser window that opens.
-          </p>
+        {proxyErr && (
+          <p className="text-[11px] leading-relaxed text-danger">{proxyErr}</p>
         )}
+
+        <p className="text-[11px] leading-relaxed text-ink-3">
+          Captchas are solved by hand in the browser window that opens.
+          Automatic solving is being rebuilt to play the puzzle in that window.
+        </p>
       </div>
     </Panel>
   );

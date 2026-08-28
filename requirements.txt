@@ -13,6 +13,14 @@ pywebview>=5.0
 # matching the installed Chrome at first use; no separate driver to install.
 selenium>=4.6
 
+# Anti-detection Chrome for account creation. A vanilla Selenium driver ships
+# navigator.webdriver + the automation switch, so Arkose mints a high-risk
+# token even when its puzzle is solved correctly and Roblox answers the signup
+# 403. undetected-chromedriver binary-patches the chromedriver (strips its
+# cdc_* variables) — the one signal no JS patching hides. stealth.make_driver
+# uses it when present and falls back to hardened vanilla Selenium otherwise.
+undetected-chromedriver>=3.5
+
 # The built-in VNC viewer (the View button -> omnidroid's `_vncview`). It
 # decodes RFB framebuffers through PIL and renders them in a Tk window, and
 # imports both lazily -- so a missing Pillow is not a startup failure, it is
