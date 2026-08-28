@@ -1,0 +1,7 @@
+# Shell scripts MUST keep LF endings even when checked out on Windows.
+# These are authored here and executed on macOS/Linux, where a CRLF shebang
+# is not a cosmetic difference -- the kernel reads the interpreter as
+# "bash\r" and the script dies with `env: 'bash\r': No such file or
+# directory` before its first line runs. That is exactly what happened to
+# build-linux.sh on the Ubuntu build box.
+*.sh text eol=lf
