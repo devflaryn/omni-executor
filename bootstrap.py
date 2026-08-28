@@ -111,13 +111,24 @@ def dist_base() -> str:
 
 
 def current_os() -> str:
-    """The dist API's name for this host: "win" | "mac".
+    """The dist API's name for this host: "win" | "linux" | "mac".
 
     Every manifest request goes through this. The base a machine downloads
     MUST match its architecture — a Windows box asking for the mac manifest
     would fetch the arm64 base and its arm offset, neither of which it can
-    boot — so this is never hardcoded at a call site."""
-    return "win" if sys.platform == "win32" else "mac"
+    boot — so this is never hardcoded at a call site.
+
+    Linux is its own answer and not a synonym for "mac". This used to be a
+    two-way win/mac split, which quietly sent every Linux host down the mac
+    branch: it asked for the mac manifest and started downloading a 3.9 GB
+    arm64 base onto an x86_64 machine that cannot boot it. Linux is an x86
+    host and takes the SAME base as Windows; only the tooling policy differs
+    (system QEMU from apt rather than the portable download)."""
+    if sys.platform == "win32":
+        return "win"
+    if sys.platform.startswith("linux"):
+        return "linux"
+    return "mac"
 
 
 def runtime_dir() -> Path:
@@ -1346,9 +1357,12 @@ def _register_x86_base(cfg: dict, images: Path) -> None:
 
 def _qemu_system_name() -> str:
     """The QEMU emulator THIS host needs: x86_64 for the Bliss base on
-    Windows, aarch64 for the arm64 base on macOS."""
-    return "qemu-system-x86_64" if current_os() == "win" \
-        else "qemu-system-aarch64"
+    Windows and Linux, aarch64 for the arm64 base on macOS.
+
+    It follows the BASE, not the host CPU: macOS ships the arm64 base even on
+    an Intel Mac, and both x86 hosts share one Bliss image."""
+    return "qemu-system-aarch64" if current_os() == "mac" \
+        else "qemu-system-x86_64"
 
 
 def _qemu_hint() -> str:
@@ -1362,6 +1376,8 @@ def _qemu_hint() -> str:
     if current_os() == "win":
         return ("QEMU is not installed yet — Omni Executor is installing it "
                 "automatically.")
+    if current_os() == "linux":
+        return "sudo apt install qemu-system-x86 qemu-utils android-tools-adb"
     return "brew install qemu android-platform-tools"
 
 
@@ -1571,11 +1587,15 @@ def configure_engine(rt: Path) -> dict:
     qemu_found = find_qemu(rt)
     qemu_path = str(qemu_found / _exe(_qemu_system_name())) if qemu_found else None
     win = current_os() == "win"
+    # Windows and Linux are both x86 hosts running the SAME Bliss base, so
+    # they share this whole branch. They part company only on QEMU: Windows
+    # downloads a portable build, Linux uses the system one (see below).
+    x86_host = current_os() in ("win", "linux")
 
     cfg = {
         "images_dir": str(images),
         "current_base": None,      # set below once a base is detected
-        "data_template": (f"{_X86_DIR}/{_X86_DATA_TEMPLATE}" if win
+        "data_template": (f"{_X86_DIR}/{_X86_DATA_TEMPLATE}" if x86_host
                           else "data-template-8g.qcow2"),
         "bases": {},
         "qemu": {"mem_mb": 4096, "smp": 4, "data_disk_size": "8G",
@@ -1587,9 +1607,14 @@ def configure_engine(rt: Path) -> dict:
     if win:
         # Without this omnidroid's ensure_qemu() is a silent no-op and a
         # machine with no QEMU can never acquire one.
+        #
+        # WINDOWS ONLY, deliberately. The blob behind it is a portable
+        # WINDOWS QEMU; handing it to a Linux host would have ensure_qemu()
+        # download a tree of .exe/.dll it can never run, on a platform whose
+        # packaging policy is system QEMU from apt.
         cfg["qemu"]["download_url"] = qemu_win_url()
 
-    if win:
+    if x86_host:
         _register_x86_base(cfg, images)
         (rt / "paths.json").write_text(json.dumps(cfg, indent=2))
         return {

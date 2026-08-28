@@ -1,4 +1,4 @@
-"""The two PyInstaller specs must not drift apart.
+"""The PyInstaller specs must not drift apart.
 
 PyInstaller's analysis walks bytecode, so it *does* find a plain
 `import accountsync` inside a function — that was checked with a control build,
@@ -23,7 +23,8 @@ import pytest
 PROJECT = Path(__file__).resolve().parent.parent
 WIN_SPEC = PROJECT / "OmniExecutor-win.spec"
 MAC_SPEC = PROJECT / "OmniExecutor.spec"
-SPECS = [WIN_SPEC, MAC_SPEC]
+LINUX_SPEC = PROJECT / "OmniExecutor-linux.spec"
+SPECS = [WIN_SPEC, MAC_SPEC, LINUX_SPEC]
 
 # Imported conditionally and carrying native binaries or package data, so
 # PyInstaller cannot pull them in unaided. Every one of these is a bug that
@@ -55,14 +56,16 @@ def test_runtime_only_dependencies_are_declared(spec):
     )
 
 
-def test_the_two_specs_declare_the_same_things():
-    """A dependency added to one spec and not the other means the fix shipped on
-    one platform only — which is how a Mac-only crash gets written."""
-    win, mac = (_declared(s) for s in SPECS)
-    assert win == mac, (
-        f"specs disagree — windows-only: {sorted(win - mac)}, "
-        f"macos-only: {sorted(mac - win)}"
-    )
+def test_every_spec_declares_the_same_things():
+    """A dependency added to one spec and not the others means the fix shipped
+    on one platform only — which is how a Mac-only crash gets written. With a
+    third platform the odds of that go up, not down, so Linux is held to the
+    same bar rather than being allowed to lag."""
+    declared = {s.name: _declared(s) for s in SPECS}
+    union = set().union(*declared.values())
+    gaps = {name: sorted(union - names)
+            for name, names in declared.items() if names != union}
+    assert not gaps, f"specs disagree — missing per spec: {gaps}"
 
 
 def test_selenium_manager_binary_is_collected():
