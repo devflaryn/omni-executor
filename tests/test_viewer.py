@@ -15,15 +15,23 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import main  # noqa: E402
+from tests.enginedouble import EngineCalls, probe_reply  # noqa: E402
 
 
 @pytest.fixture
 def engine(monkeypatch):
     """Record view argv; reply from a queue of canned engine results."""
-    calls, replies = [], []
+    calls, replies = EngineCalls(), []
 
     def fake_run_engine(args, progress=None, timeout=None):
-        calls.append(list(args))
+        args = list(args)
+        # A capability probe is not a view call: it must neither land in
+        # `calls` (every test here selects by argv[0] == "view") nor eat a
+        # canned reply off the queue.
+        if args and args[-1] == "--help":
+            calls.probes.append(args)
+            return probe_reply()
+        calls.append(args)
         return dict(replies.pop(0)) if replies else {"ok": True}
 
     monkeypatch.setattr(main, "run_engine", fake_run_engine)

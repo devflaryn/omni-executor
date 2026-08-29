@@ -28,6 +28,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import main  # noqa: E402
+from tests.enginedouble import EngineCalls, probe_reply  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -56,11 +57,18 @@ def _engine(monkeypatch, results=None):
     degrades to here -- engine_modes() then falls back to the live pair, so
     mode validation still has a list to check against.
     """
-    calls = []
+    calls = EngineCalls()
     answers = results or {}
 
     def fake_run_engine(args, progress=None, timeout=None):
-        calls.append(list(args))
+        args = list(args)
+        # Capability probes go to .probes, not into the recorded stream: the
+        # helpers above select a command by argv[0]/argv[1], and a
+        # `pool start --help` probe would otherwise be picked as the launch.
+        if args and args[-1] == "--help":
+            calls.probes.append(args)
+            return probe_reply()
+        calls.append(args)
         return dict(answers.get(" ".join(args[:2]), {"ok": True}))
 
     monkeypatch.setattr(main, "run_engine", fake_run_engine)

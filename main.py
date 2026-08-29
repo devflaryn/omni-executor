@@ -558,6 +558,10 @@ class Api:
         self._creation_stop = threading.Event()
         # index/total of the account currently being created, for status polls.
         self._creation_at = (0, 0)
+        # (subcommand, flag) -> bool, from _engine_accepts(). The engine is a
+        # fixed binary for the life of this process, so each answer is learned
+        # once.
+        self._engine_flags = {}
 
     # ---- window controls (used by the custom title bar) ----
 
@@ -1556,6 +1560,42 @@ class Api:
             return False
         return command in {c for c in advertised if isinstance(c, str)}
 
+    def _engine_accepts(self, subcommand, flag):
+        """Does the engine's `subcommand` parser accept `flag`?
+
+        The commands handshake above cannot answer this. It compares whole
+        SUBCOMMANDS against the engine's advertised list, so an engine that has
+        `start` but not `start --gpu` passes it cleanly and then fails at launch
+        with `unrecognized arguments: --gpu auto` — an argparse error out of a
+        subprocess, which is the exact failure the handshake exists to prevent.
+        Hit on macOS with app 1.0.30.
+
+        Why a probe and not another advertised field: the engines that need
+        this are the OLD ones, and an old engine cannot be taught to advertise
+        anything. Whatever we ask has to be a question it could already answer,
+        and `--help` is that question.
+
+        UNKNOWN COUNTS AS NOT SUPPORTED, matching _supports() and for the same
+        reason: dropping a display policy costs the engine's own default, while
+        sending a flag it cannot parse costs the launch entirely.
+
+        Cached per (subcommand, flag). The engine binary cannot change under a
+        running app, so probing per launch would spend a subprocess re-learning
+        a constant. Keyed per SUBCOMMAND because `start` and `pool start` are
+        different parsers on the engine side.
+        """
+        key = (tuple(subcommand), flag)
+        if key not in self._engine_flags:
+            report = run_engine([*subcommand, "--help"], timeout=30)
+            # argparse prints the usage block FIRST and lists every option in
+            # it, so the flag lands well inside the 1000-char cap run_engine
+            # puts on non-JSON stdout (~char 520 of an 8 KB help today). If it
+            # ever moves past that, tests/test_engine_gpu_flag.py fails loudly
+            # rather than letting the flag vanish from every launch in silence.
+            text = str(report.get("message") or "") if isinstance(report, dict) else ""
+            self._engine_flags[key] = flag in text
+        return self._engine_flags[key]
+
     def engine_doctor(self):
         """Readiness check: engine present, base images registered, QEMU/adb OK."""
         if engine_prefix() is None:
@@ -1929,7 +1969,12 @@ class Api:
                     "message": f"Unknown launch mode {asked!r}. Choose Gaming or Farming.",
                 }
             args += ["--mode", mode]
-        if isinstance(gpu, str) and gpu.strip().lower() in self.GPU_POLICIES:
+        # Only if this engine has the flag. A bundled engine older than the app
+        # rejects it outright and the launch never happens; without it the
+        # engine picks its own display policy, which is what it did before
+        # --gpu existed. See _engine_accepts().
+        if (isinstance(gpu, str) and gpu.strip().lower() in self.GPU_POLICIES
+                and self._engine_accepts(["start"], "--gpu")):
             args += ["--gpu", gpu.strip().lower()]
         if place is not None and str(place).strip():
             args += ["--place", str(place).strip()]
@@ -2124,7 +2169,8 @@ class Api:
         args = ["pool", "start", "--size", str(n), "--mode", mode, "--json"]
         if place:
             args += ["--place", place]
-        if gpu:
+        # Same engine, same flag, same argparse rejection as engine_start.
+        if gpu and self._engine_accepts(["pool", "start"], "--gpu"):
             args += ["--gpu", gpu]
         res = run_engine(args, progress=self._progress("pool"), timeout=POOL_TIMEOUT)
         if res.get("ok"):
@@ -2173,6 +2219,19 @@ class Api:
         error = self._bad_name(name)
         if error:
             return error
+        # REFUSE, do not degrade. This is the opposite call from engine_start's
+        # `--gpu`, and deliberately so: dropping an unsupported `--gpu` costs a
+        # display policy and the launch still happens, but dropping `--hide`
+        # turns this command into `view <name> --json`, which OPENS the viewer.
+        # Silently putting a window on screen for someone who asked to close
+        # one is worse than telling them this engine cannot do it.
+        if not self._engine_accepts(["view"], "--hide"):
+            return {
+                "ok": False,
+                "error": "unsupported_by_engine",
+                "message": ("This engine build cannot hide a window — close it "
+                            "with the window's own X, or stop the instance."),
+            }
         return run_engine(["view", name, "--hide", "--json"],
                           timeout=VIEW_TIMEOUT)
 
