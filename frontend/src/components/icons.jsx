@@ -275,3 +275,48 @@ export const CheckSquareIcon = (props) => (
     <path d="m8 12 3 3 5-6" />
   </svg>
 );
+
+/* Network. The rail's tab icon: rising signal bars, which read as
+   "connection quality" rather than the generic globe a "Network" section
+   usually gets — quality is exactly what the tab reports. */
+export const SignalIcon = (props) => (
+  <svg {...base} {...props}>
+    <path d="M3 20v-3" />
+    <path d="M8.5 20v-7" />
+    <path d="M14 20v-11" />
+    <path d="M19.5 20V4" />
+  </svg>
+);
+
+/* One host, out there. Used per-row inside the Network tab. */
+export const GlobeIcon = (props) => (
+  <svg {...base} {...props}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M3 12h18" />
+    <path d="M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18z" />
+  </svg>
+);
+
+/* The proxy: traffic taking a detour through somewhere else. */
+export const RouteIcon = (props) => (
+  <svg {...base} {...props}>
+    <circle cx="5.5" cy="18.5" r="2.5" />
+    <circle cx="18.5" cy="5.5" r="2.5" />
+    <path d="M8 18.5h5a3.5 3.5 0 0 0 0-7h-2a3.5 3.5 0 0 1 0-7h5" />
+  </svg>
+);
+
+/* Re-run the checks. */
+export const RefreshIcon = (props) => (
+  <svg {...base} {...props}>
+    <path d="M21 12a9 9 0 1 1-2.6-6.4" />
+    <path d="M21 4v5h-5" />
+  </svg>
+);
+
+export const ChartIcon = (props) => (
+  <svg {...base} {...props}>
+    <path d="M3 3v16a2 2 0 0 0 2 2h16" />
+    <path d="m7 15 3.5-4 3 2.5L18 8" />
+  </svg>
+);

@@ -30,6 +30,7 @@ import bootstrap
 import cloud
 import json
 import mimetypes
+import netcheck
 import os
 import re
 import subprocess
@@ -807,6 +808,121 @@ class Api:
         except Exception as exc:  # noqa: BLE001 — report, never crash the app
             return {"ok": False, "error": str(exc), "path": path}
 
+    # ---- stat track (premium) ----
+    #
+    # Turning Stat Track on writes ONE small file into the autoexec folder, and
+    # turning it off deletes it. That is the whole local mechanism, and it is
+    # deliberately the same folder the user already owns and can open: a
+    # feature whose "on" state is a file you can see and delete is one nobody
+    # has to trust a hidden setting for.
+    #
+    # The file only loadstrings the collector from the server. Keeping the
+    # collector server-side means it can be fixed under a fleet that is already
+    # running, and that 25 guests cannot end up with 25 versions of it. The
+    # premium check is the server's, on every report — this side is a
+    # convenience, not a wall.
+
+    STATTRACK_FILE = "10_omni_stattrack.lua"
+
+    def _stattrack_path(self):
+        from pathlib import Path
+        return Path(self.autoexec_dir()) / self.STATTRACK_FILE
+
+    def _stattrack_body(self):
+        base = self._exec_base()
+        return (
+            "-- OMNI STAT TRACK — written by Omni Executor, safe to delete.\n"
+            "--\n"
+            "-- Deleting this file (or switching Stat Track off in the app) stops\n"
+            "-- the tracker. It reports this account's in-game numbers — gems,\n"
+            "-- coins, level, whatever the game will show it — to your Omni\n"
+            "-- dashboard while the account is playing.\n"
+            "--\n"
+            "-- The collector itself lives on the Omni server so it can be fixed\n"
+            "-- without re-writing this file on every machine; this is only the\n"
+            "-- pointer to it.\n"
+            f'loadstring(game:HttpGet("{base}/omni/exec/stattrack.lua", true))()\n'
+        )
+
+    def stattrack_status(self):
+        """Is the tracker armed on this machine, and where does it report?"""
+        path = self._stattrack_path()
+        installed = path.exists()
+        stale = False
+        if installed:
+            # A file left behind by an older install can still point at a
+            # server this app no longer talks to, which would look "on" while
+            # reporting nowhere. Cheap to detect, so say so rather than lie.
+            try:
+                stale = self._exec_base() not in path.read_text(encoding="utf-8")
+            except OSError:
+                stale = True
+        return {
+            "ok": True,
+            "enabled": installed and not stale,
+            "installed": installed,
+            "stale": stale,
+            "file": str(path),
+            "dir": self.autoexec_dir(),
+            "base": self._exec_base(),
+        }
+
+    def stattrack_set(self, enabled):
+        """Arm or disarm the tracker by writing or deleting the autoexec file.
+
+        Rewrites the file when it is already there: that is what repairs a
+        stale pointer, and it makes the call idempotent so the toggle can be
+        driven from anywhere without checking first."""
+        path = self._stattrack_path()
+        try:
+            if enabled:
+                path.write_text(self._stattrack_body(), encoding="utf-8")
+            else:
+                path.unlink(missing_ok=True)
+        except OSError as exc:
+            return {"ok": False, "error": "write_failed", "message": str(exc),
+                    "file": str(path)}
+        # The engine pushes the autoexec folder to the server on every launch,
+        # so a change here is live on the next start with nothing to rebuild —
+        # but it does NOT reach an instance that is already running.
+        return {**self.stattrack_status(), "changed": True,
+                "message": ("Stat Track is on — it starts reporting on the next launch."
+                            if enabled else "Stat Track is off.")}
+
+    def stattrack_stats(self):
+        """The dashboard payload: every account with its latest reading.
+
+        A free account gets 402 from the server, which comes back here as
+        `error: subscription_inactive` so the tab renders the locked state
+        instead of an error — the same distinction the paywall middleware was
+        written to preserve."""
+        if not cloud.signed_in():
+            return {"ok": False, "error": "signed_out", "message": "Sign in to see your stats."}
+        try:
+            data = cloud.list_stats()
+        except cloud.CloudError as exc:
+            if exc.status == 402:
+                return {"ok": False, "error": "subscription_inactive", "message": exc.message}
+            if exc.status == 401:
+                return {"ok": False, "error": "signed_out",
+                        "message": "Your session expired — sign in again."}
+            return {"ok": False, "error": "unreachable", "message": exc.message}
+        return {"ok": True, **data}
+
+    def stattrack_account(self, username):
+        """One account's reading plus its recent history, for the detail pane."""
+        bad = self._bad_name(username)
+        if bad:
+            return bad
+        if not cloud.signed_in():
+            return {"ok": False, "error": "signed_out", "message": "Sign in to see your stats."}
+        try:
+            return {"ok": True, **cloud.account_stats(username)}
+        except cloud.CloudError as exc:
+            if exc.status == 402:
+                return {"ok": False, "error": "subscription_inactive", "message": exc.message}
+            return {"ok": False, "error": "unreachable", "message": exc.message}
+
     # ---- account / sign-in ----
 
     def auth_status(self):
@@ -1526,6 +1642,28 @@ class Api:
                 os.remove(path)
             except OSError:
                 pass
+
+    # ---- network ----
+
+    def net_probe(self):
+        """Latency and reachability for Roblox, the Omni server, and the
+        outbound proxy when one is configured.
+
+        The Network tab polls this. It runs on whatever thread pywebview hands
+        the call, and netcheck probes its targets in parallel behind a 6s
+        timeout, so the worst case the UI ever waits is one timeout — not one
+        per target. The proxy is read from settings on every call rather than
+        cached, so editing the field in the panel above and re-checking tests
+        what was just typed."""
+        try:
+            proxy = str((self.get_settings().get("captcha") or {}).get("proxy") or "")
+        except Exception:  # noqa: BLE001 - an unreadable settings file is "no proxy"
+            proxy = ""
+        try:
+            return netcheck.probe_all(self._api_base(), proxy=proxy)
+        except Exception as exc:  # noqa: BLE001 - a probe must never kill the tab
+            return {"ok": False, "error": "probe_failed",
+                    "message": f"{type(exc).__name__}: {exc}", "targets": []}
 
     # ---- account creation (roblox.com signup, captcha, vault) ----
 

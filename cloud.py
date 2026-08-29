@@ -371,6 +371,28 @@ def delete_account(username):
     return request("DELETE", f"/api/v1/accounts/{username}")
 
 
+# -------------------------------------------------------------- stat track
+
+def list_stats():
+    """Every account this user owns with its latest in-game reading.
+
+    PREMIUM. The server answers 402 for a free account, which the caller turns
+    into the locked state rather than an error — see main.py stattrack_stats.
+    The rows carry accounts that have never reported too, so the tab can show
+    the one that STOPPED reporting, which is the row someone came to look at.
+    """
+    res = request("GET", "/api/v1/stats")
+    data = res.get("data") or {}
+    return {"accounts": data.get("accounts") or [], "summary": data.get("summary") or {}}
+
+
+def account_stats(username):
+    """One account's latest reading plus its recent history."""
+    res = request("GET", f"/api/v1/stats/{username}")
+    data = res.get("data") or {}
+    return {"account": data.get("account") or {}, "history": data.get("history") or []}
+
+
 def set_state(username, state, mode=None, place_id=None):
     payload = {"state": state}
     if mode:

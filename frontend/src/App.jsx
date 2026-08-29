@@ -9,11 +9,21 @@ import EditorView from "./components/EditorView.jsx";
 import AccountsView from "./components/AccountsView.jsx";
 import SettingsView from "./components/SettingsView.jsx";
 import FarmingView from "./components/FarmingView.jsx";
+import StatTrackView from "./components/StatTrackView.jsx";
+import NetworkView from "./components/NetworkView.jsx";
 import BootstrapView from "./components/BootstrapView.jsx";
 import AuthView from "./components/AuthView.jsx";
 import { UpdateBanner, UpdateModal, useUpdates } from "./components/UpdateBanner.jsx";
 import Toast from "./components/Toast.jsx";
-import { CodeIcon, GearIcon, GridIcon, HomeIcon, UsersIcon } from "./components/icons.jsx";
+import {
+  ChartIcon,
+  CodeIcon,
+  GearIcon,
+  GridIcon,
+  HomeIcon,
+  SignalIcon,
+  UsersIcon,
+} from "./components/icons.jsx";
 
 // `premium: true` marks a section the free tier cannot use. The rail renders a
 // gold pip on it and the section itself shows its own locked state — it is NOT
@@ -23,7 +33,15 @@ const NAV = [
   { id: "editor", label: "Editor", Icon: CodeIcon, hint: "2" },
   { id: "accounts", label: "Accounts", Icon: UsersIcon, hint: "3" },
   { id: "farming", label: "Farming", Icon: GridIcon, hint: "4", premium: true },
-  { id: "settings", label: "Settings", Icon: GearIcon, hint: "5" },
+  // Stat Track sits next to Farming because it answers Farming's question —
+  // "is the fleet actually earning anything" — and the two are read together.
+  { id: "stattrack", label: "Stat Track", Icon: ChartIcon, hint: "5", premium: true },
+  // Network sits before Settings, not inside it: what it reports is a live
+  // condition of the machine — the same kind of thing as "3 running" — and
+  // the proxy it owns is a knob you set while watching that reading, not a
+  // preference you file away next to the theme.
+  { id: "network", label: "Network", Icon: SignalIcon, hint: "6" },
+  { id: "settings", label: "Settings", Icon: GearIcon, hint: "7" },
 ];
 
 const DEFAULT_LAUNCH = { mode: "gaming", gpu: "auto", place: "" };
@@ -39,6 +57,10 @@ export default function App() {
   const [profile, setProfile] = useState(DEFAULT_PROFILE);
   const [launch, setLaunch] = useState(DEFAULT_LAUNCH);
   const [toast, setToast] = useState(null);
+  // The Network tab's own verdict, reported upward so the context bar can
+  // carry it. Nothing else reads it: the bar states one true fact per tab,
+  // and for Network the only true fact is the last measurement.
+  const [netSummary, setNetSummary] = useState(null);
   // Window chrome: nothing in a browser, native traffic lights on macOS,
   // our own buttons on Windows/Linux. Resolved once from the backend.
   const [chrome, setChrome] = useState({ desktop: false, mac: false, platform: "browser" });
@@ -132,7 +154,7 @@ export default function App() {
     saveSettings({ launch: next });
   }, []);
 
-  // Ctrl/Cmd+1..5 jumps between sections, as long as you aren't typing.
+  // Ctrl/Cmd+1..N jumps between sections, as long as you aren't typing.
   useEffect(() => {
     const onKey = (e) => {
       if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
@@ -195,7 +217,7 @@ export default function App() {
           />
 
           <div className="flex min-w-0 flex-1 flex-col">
-            <ContextBar tab={tab} profile={profile} chrome={chrome} />
+            <ContextBar tab={tab} profile={profile} chrome={chrome} netSummary={netSummary} />
             <UpdateBanner updates={updates} onOpenSettings={() => switchTab("settings")} />
 
             {/* Every view stays mounted so the editor keeps its buffer and the
@@ -228,6 +250,13 @@ export default function App() {
                 onGo={switchTab}
                 showToast={showToast}
               />
+              <StatTrackView
+                active={tab === "stattrack"}
+                auth={auth}
+                onGo={switchTab}
+                showToast={showToast}
+              />
+              <NetworkView active={tab === "network"} onSummary={setNetSummary} />
               <SettingsView
                 active={tab === "settings"}
                 theme={theme}
@@ -252,7 +281,7 @@ export default function App() {
 }
 
 /** The strip reports what you're looking at and one true fact about it. */
-function ContextBar({ tab, profile, chrome }) {
+function ContextBar({ tab, profile, chrome, netSummary }) {
   const { accounts, running, health } = useEngine();
 
   const nav = NAV.find((n) => n.id === tab);
@@ -265,11 +294,22 @@ function ContextBar({ tab, profile, chrome }) {
         ? `Engine ${health.label.toLowerCase()}`
         : tab === "farming"
           ? `Engine ${health.label.toLowerCase()}`
-          : tab === "home"
+          : // The bar states one TRUE fact per tab, and the only one this side
+            // of the app knows for certain is how many instances are up HERE.
+            // "How many are reporting" is the server's answer and the tab
+            // itself carries it — repeating a guess at it here would be a
+            // second number that can disagree with the first.
+            tab === "stattrack"
             ? running.length
               ? `${running.length} running`
-              : `Engine ${health.label.toLowerCase()}`
-            : profile.name || "Guest";
+              : "Nothing running here"
+            : tab === "network"
+            ? netSummary || "Checking the link…"
+            : tab === "home"
+              ? running.length
+                ? `${running.length} running`
+                : `Engine ${health.label.toLowerCase()}`
+              : profile.name || "Guest";
 
   return <TitleBar title={nav?.label ?? "Omni Executor"} subtitle={subtitle} chrome={chrome} />;
 }
