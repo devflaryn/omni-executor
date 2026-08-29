@@ -665,6 +665,35 @@ def _exe(name: str) -> str:
     return name + (".exe" if sys.platform == "win32" else "")
 
 
+# Where macOS keeps the tools when PATH cannot be trusted.
+#
+# A Finder-launched .app is started by LAUNCHD, not by a shell, so it inherits
+# `/usr/bin:/bin:/usr/sbin:/sbin` and never sees the login shell's PATH.
+# Homebrew lives outside that set, so `shutil.which` — the only thing this
+# module used to consult on macOS — reports nothing on a machine where
+# `brew install qemu android-platform-tools` has plainly been run. Measured on
+# the Mac mini 2026-08-29: identical probe, `tools_ok: True` from a terminal
+# and `False` from the app, same machine, same code, only PATH differing.
+#
+# That was not a warning, it was a DEADLOCK. Readiness is
+# `(plan is empty) and tools_ok`, and once the images are installed the plan is
+# empty — so nothing downloads, no progress event is emitted, and the setup
+# screen sits on its default label ("Preparing…") forever with no error and no
+# way out from inside the app.
+#
+# Windows already had this class of fallback (ProgramFiles\qemu,
+# LOCALAPPDATA\Android\Sdk\platform-tools). This is the macOS half of it.
+#
+# ORDER MATTERS: Apple silicon Homebrew first. On an arm Mac carrying both
+# prefixes, /usr/local/bin is usually a leftover x86_64 install under Rosetta,
+# and preferring it would run the emulator through translation.
+_MAC_TOOL_DIRS = (
+    Path("/opt/homebrew/bin"),   # Homebrew, Apple silicon
+    Path("/usr/local/bin"),      # Homebrew, Intel
+    Path("/opt/local/bin"),      # MacPorts
+)
+
+
 def _looks_like_qemu_dir(d: Path) -> bool:
     """A directory holding a COMPLETE QEMU for this host.
 
@@ -703,6 +732,10 @@ def find_qemu(rt: Path) -> Path | None:
             cand = Path(root) / "qemu"
             if _looks_like_qemu_dir(cand):
                 return cand
+    if current_os() == "mac":
+        for cand in _MAC_TOOL_DIRS:
+            if _looks_like_qemu_dir(cand):
+                return cand
     return None
 
 
@@ -723,6 +756,10 @@ def find_adb(rt: Path) -> Path | None:
         if local:
             cand = Path(local) / "Android" / "Sdk" / "platform-tools"
             if (cand / "adb.exe").exists():
+                return cand
+    if current_os() == "mac":
+        for cand in _MAC_TOOL_DIRS:
+            if (cand / _exe("adb")).exists():
                 return cand
     return None
 
