@@ -374,3 +374,106 @@ def test_a_failed_swap_never_reaches_the_interpreter(tmp_path, monkeypatch):
     assert launched, "and put back on the version they already had"
     assert "used by another process" in (tmp_path / "update.log").read_text(
         encoding="utf-8"), "and it is still written down"
+
+
+# --------------------------------------------------- which binary does what
+#
+# A build directory holds TWO executables since the move off pywebview:
+# omni-exec (the Tauri shell, which owns the window) and omni-exec-py (the
+# frozen Python backend, which is also the omnidroid engine). Handing
+# `--apply-update` to the wrong one opens a window and updates nothing, so the
+# updater has to tell them apart.
+
+def _win(monkeypatch):
+    monkeypatch.setattr(updates.sys, "platform", "win32")
+
+
+def test_the_updater_is_the_backend_not_the_shell(tmp_path, monkeypatch):
+    _win(monkeypatch)
+    build = tmp_path / "build"
+    build.mkdir()
+    (build / "omni-exec.exe").write_bytes(b"MZ")
+    (build / "omni-exec-py.exe").write_bytes(b"MZ")
+
+    # `--apply-update` is a mode of main.py, and only the backend has it.
+    assert updates._updater_in(build).name == "omni-exec-py.exe"
+    # What the user launches, and what the swap relaunches afterwards.
+    assert updates._executable_in(build).name == "omni-exec.exe"
+
+
+def test_a_pre_tauri_build_can_still_be_updated_from(tmp_path, monkeypatch):
+    """The migration release has to be applicable BY a pywebview client, whose
+    own directory has only omni-exec.exe — and that binary does understand
+    `--apply-update`, because back then it was the whole app. Without this
+    fallback the one update that carries the new shell is the one that cannot
+    be installed."""
+    _win(monkeypatch)
+    build = tmp_path / "old"
+    build.mkdir()
+    (build / "omni-exec.exe").write_bytes(b"MZ")
+
+    assert updates._updater_in(build).name == "omni-exec.exe"
+
+
+def test_an_empty_build_has_neither(tmp_path, monkeypatch):
+    _win(monkeypatch)
+    build = tmp_path / "empty"
+    build.mkdir()
+    assert updates._updater_in(build) is None
+    assert updates._executable_in(build) is None
+
+
+def test_the_mac_backend_lives_inside_the_bundle(tmp_path, monkeypatch):
+    """Tauri builds the .app, so the backend is a resource inside it rather
+    than the bundle executable."""
+    monkeypatch.setattr(updates.sys, "platform", "darwin")
+    app = tmp_path / "Omni Executor.app"
+    macos = app / "Contents" / "MacOS"
+    backend = app / "Contents" / "Resources" / "backend"
+    macos.mkdir(parents=True)
+    backend.mkdir(parents=True)
+    (macos / "omni-exec").write_bytes(b"\x7fELF")
+    (backend / "omni-exec-py").write_bytes(b"\x7fELF")
+    (macos / "omni-exec").chmod(0o755)
+
+    assert updates._updater_in(app).name == "omni-exec-py"
+    assert updates._executable_in(app).name == "omni-exec"
+
+
+def test_update_app_restart_does_not_touch_the_window(monkeypatch):
+    """It must not try to close the window itself.
+
+    THE REGRESSION THIS PINS. `update_app_restart` used to end with
+
+        threading.Timer(0.6, self.close).start()
+
+    a pywebview leftover: back then the Api object owned a window and had a
+    `close()`. Under Tauri the window belongs to the Rust shell and this
+    process is a child speaking JSON over stdio, so the timer raised
+
+        AttributeError: 'Api' object has no attribute 'close'
+
+    on a BACKGROUND thread. Nothing failed loudly -- the RPC still answered
+    ok: true, the window stayed open, and the helper (which waits for this pid
+    to disappear before touching the install) sat out its 90 s timeout and gave
+    up. Every auto-update silently did nothing, and the only visible trace was
+    an error line inside the update modal.
+    """
+    import main
+    api = main.Api.__new__(main.Api)
+    monkeypatch.setattr(main.updates if hasattr(main, "updates") else __import__("updates"),
+                        "launch_apply", lambda: 4321)
+    res = main.Api.update_app_restart(api)
+    assert res["ok"] is True
+    assert res["helper_pid"] == 4321
+    # The frontend is what closes the window; the backend says so explicitly
+    # so a caller cannot mistake "started" for "the window is going away".
+    assert res["close_window"] is True
+
+
+def test_the_api_has_no_close_for_anyone_to_reach_for():
+    """The other half: `self.close` was reachable-looking, which is why it was
+    written. Nothing on the object is named that, and this fails the moment
+    somebody adds one back and wires the window to it."""
+    import main
+    assert not hasattr(main.Api, "close")

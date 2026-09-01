@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api, onEngineEvent, saveSettings } from "../api.js";
+import { close as closeWindow } from "../window.js";
 import { Button, Lamp, Panel, PanelHead } from "./ui.jsx";
 import { CpuIcon } from "./icons.jsx";
 
@@ -84,9 +85,25 @@ export function useUpdates() {
     }
   }, []);
 
+  /* The backend hands the swap to a helper that waits for THIS APP to exit,
+     then closes the window itself — because under Tauri the window belongs to
+     the shell, not to Python. The backend used to try to close it and raised
+     `AttributeError: 'Api' object has no attribute 'close'` (a pywebview
+     leftover), so the helper waited out its 90 s timeout and no update ever
+     applied. Closing the shell is what ends both processes, and the shell is
+     the one holding omni-exec.exe open. */
   const restartIntoUpdate = useCallback(async () => {
     const res = await api("update_app_restart");
-    if (!res?.ok) setError(res?.message || "Couldn't restart");
+    if (!res?.ok) {
+      setError(res?.message || "Couldn't restart");
+      return;
+    }
+    // Give the helper a moment to start waiting on our pid before we go.
+    setTimeout(() => {
+      closeWindow().catch(() => {
+        setError("Update is ready — close Omni Executor to finish installing it.");
+      });
+    }, 600);
   }, []);
 
   const setAutoUpdate = useCallback(
@@ -136,7 +153,7 @@ export function UpdateBanner({ updates, onOpenSettings }) {
   if (applying) {
     return (
       <Strip tone="busy">
-        <span className="truncate text-[12px] text-ink">
+        <span className="truncate text-[13px] text-ink">
           Updating to {status?.app?.available}… the app will restart on its own.
         </span>
       </Strip>
@@ -146,7 +163,7 @@ export function UpdateBanner({ updates, onOpenSettings }) {
   if (staged) {
     return (
       <Strip tone="live">
-        <span className="truncate text-[12px] text-ink">
+        <span className="truncate text-[13px] text-ink">
           <span className="font-medium">Version {staged.version} is ready.</span>{" "}
           <span className="text-ink-2">Restart to update.</span>
         </span>
@@ -174,7 +191,7 @@ export function UpdateBanner({ updates, onOpenSettings }) {
 
   return (
     <Strip tone={busy ? "busy" : "live"} pulse={Boolean(busy)}>
-      <span className="truncate text-[12px] text-ink">
+      <span className="truncate text-[13px] text-ink">
         {error || what}
         {pct != null && <span className="ml-2 font-mono text-ink-3">{pct}%</span>}
       </span>
@@ -220,8 +237,8 @@ export function UpdateModal({ updates, onDismiss }) {
     return (
       <Backdrop>
         <Card>
-          <h2 className="text-[15px] font-semibold text-ink">Updating…</h2>
-          <p className="mt-2 text-[12.5px] leading-snug text-ink-2">
+          <h2 className="text-[16px] font-semibold text-ink">Updating…</h2>
+          <p className="mt-2 text-[13.5px] leading-snug text-ink-2">
             Installing version {status?.app?.available}. The app will restart on its own.
           </p>
         </Card>
@@ -234,15 +251,15 @@ export function UpdateModal({ updates, onDismiss }) {
       <Card>
         <div className="flex items-center gap-2.5">
           <Lamp tone="live" size={7} />
-          <h2 className="text-[15px] font-semibold text-ink">Update found</h2>
+          <h2 className="text-[16px] font-semibold text-ink">Update found</h2>
         </div>
-        <p className="mt-2.5 text-[12.5px] leading-snug text-ink-2">
+        <p className="mt-2.5 text-[13.5px] leading-snug text-ink-2">
           <span className="font-medium text-ink">Version {staged.version}</span> is downloaded
           and ready. Restarting closes this window and reopens it on the new version — running
           instances are separate processes and keep going.
         </p>
         {error && (
-          <p className="mt-3 rounded-lg border border-danger/35 bg-danger/8 px-3 py-2 text-[12px] text-danger">
+          <p className="mt-3 rounded-lg border border-danger/35 bg-danger/8 px-3 py-2 text-[13px] text-danger">
             {error}
           </p>
         )}
@@ -267,7 +284,7 @@ function Backdrop({ children }) {
 
 function Card({ children }) {
   return (
-    <div className="animate-rise w-full max-w-[380px] rounded-2xl border border-line bg-surface p-5 shadow-2xl">
+    <div className="animate-rise w-full max-w-[380px] rounded-3xl border border-line bg-surface p-5 shadow-2xl">
       {children}
     </div>
   );
@@ -311,7 +328,7 @@ export default function UpdatePanel({ updates, showToast }) {
         icon={CpuIcon}
         title="Updates"
         right={
-          <span className="flex items-center gap-2 text-[11.5px] text-ink-2">
+          <span className="flex items-center gap-2 text-[12.5px] text-ink-2">
             <Lamp
               tone={status?.ok === false ? "fault" : runtime?.update || app?.update ? "busy" : "live"}
               size={6}
@@ -325,7 +342,7 @@ export default function UpdatePanel({ updates, showToast }) {
         }
       />
       <div className="flex flex-col gap-4 p-4">
-        <dl className="grid grid-cols-2 gap-x-4 gap-y-2.5 font-mono text-[11.5px]">
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-2.5 font-mono text-[12.5px]">
           <Row label="App version" value={app?.current ?? "—"} />
           <Row label="Latest" value={app?.available ?? "—"} />
         </dl>
@@ -333,13 +350,13 @@ export default function UpdatePanel({ updates, showToast }) {
         <label className="flex cursor-pointer items-start gap-3">
           <input
             type="checkbox"
-            className="mt-0.5"
+            className="check mt-0.5"
             checked={status?.autoUpdate !== false}
             onChange={(e) => setAutoUpdate(e.target.checked)}
           />
-          <span className="text-[12px] leading-snug text-ink">
+          <span className="text-[13px] leading-snug text-ink">
             Update automatically
-            <span className="mt-0.5 block text-[11px] text-ink-3">
+            <span className="mt-0.5 block text-[12px] text-ink-3">
               Installs a new version on launch, when nothing is running yet. While the app is
               open it only downloads — you choose when to restart.
             </span>
@@ -347,24 +364,24 @@ export default function UpdatePanel({ updates, showToast }) {
         </label>
 
         {status?.ok === false && (
-          <p className="text-[11px] text-ink-3">
+          <p className="text-[12px] text-ink-3">
             Couldn&apos;t reach the update server — {status.error}. Nothing was changed;
             this is a check, not a failure.
           </p>
         )}
 
         {runtime?.managed === false && (
-          <p className="text-[11px] leading-snug text-ink-3">
+          <p className="text-[12px] leading-snug text-ink-3">
             Base images are not managed here — {runtime.reason}
           </p>
         )}
 
         {runtime?.update && (
           <div className="rule-t pt-4">
-            <p className="mb-2 text-[12.5px] text-ink">
+            <p className="mb-2 text-[13.5px] text-ink">
               New base images — {fmtBytes(runtime.bytes)}
             </p>
-            <p className="mb-3 text-[11px] leading-snug text-ink-3">
+            <p className="mb-3 text-[12px] leading-snug text-ink-3">
               {runtime.artifacts.map((a) => a.name).join(", ")}. Stop every instance first;
               a running VM has these files open.
             </p>
@@ -376,7 +393,7 @@ export default function UpdatePanel({ updates, showToast }) {
 
         {app?.update && !staged && (
           <div className="rule-t pt-4">
-            <p className="mb-2 text-[12.5px] text-ink">
+            <p className="mb-2 text-[13.5px] text-ink">
               Version {app.available}
               {app.bytes ? ` — ${fmtBytes(app.bytes)}` : ""}
             </p>
@@ -385,17 +402,17 @@ export default function UpdatePanel({ updates, showToast }) {
                 {busy === "app" ? `Downloading… ${pct}%` : "Download"}
               </Button>
             ) : (
-              <p className="text-[11px] leading-snug text-ink-3">{app.reason}</p>
+              <p className="text-[12px] leading-snug text-ink-3">{app.reason}</p>
             )}
           </div>
         )}
 
         {staged && (
           <div className="rule-t pt-4">
-            <p className="mb-2 text-[12.5px] text-ink">
+            <p className="mb-2 text-[13.5px] text-ink">
               Version {staged.version} is downloaded and ready.
             </p>
-            <p className="mb-3 text-[11px] leading-snug text-ink-3">
+            <p className="mb-3 text-[12px] leading-snug text-ink-3">
               Restarting closes this window and reopens it on the new version. Running
               instances are unaffected — they are separate processes and keep running.
             </p>
@@ -406,7 +423,7 @@ export default function UpdatePanel({ updates, showToast }) {
         )}
 
         {error && (
-          <p className="rounded-lg border border-danger/35 bg-danger/8 px-3 py-2 text-[12px] text-danger">
+          <p className="rounded-lg border border-danger/35 bg-danger/8 px-3 py-2 text-[13px] text-danger">
             {error}
           </p>
         )}

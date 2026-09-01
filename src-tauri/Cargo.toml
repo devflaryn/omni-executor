@@ -1,0 +1,53 @@
+[package]
+name = "omni-exec"
+version = "1.0.34"
+description = "Omni Executor"
+edition = "2021"
+rust-version = "1.77.2"
+publish = false
+
+# The binary is `omni-exec(.exe)` on purpose. updates.py's `_executable_in()`
+# looks for exactly that name inside a staged build, and the installer, the
+# Start-menu shortcut and every `.omni-replaced-*` swap are named around it.
+# The PyInstaller backend beside it is `omni-exec-py(.exe)`.
+[[bin]]
+name = "omni-exec"
+path = "src/main.rs"
+
+# DO NOT REMOVE `custom-protocol`, AND DO NOT ASSUME `--release` IMPLIES IT.
+#
+# This feature is the ONLY thing that tells Tauri to embed `frontend/dist` in
+# the binary and serve it over the `tauri://` protocol. Without it the build --
+# release profile included -- bakes in `build.devUrl` instead and the shipped
+# app opens a WebView2 "localhost refused to connect" page. It costs nothing to
+# get wrong: the build succeeds, the exe runs, and it only fails on a machine
+# where no Vite dev server happens to be listening.
+#
+# The build scripts pass `--features custom-protocol` explicitly and then VERIFY
+# the asset actually landed in the binary, because this failed silently once.
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_HiDpi",
+] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

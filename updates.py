@@ -40,7 +40,7 @@ import bootstrap
 # the swap succeeds every time and nothing ever changes. push-app.mjs now reads
 # this constant and refuses to publish a mismatched version, which is what makes
 # the two move together. Compared against the manifest's `app.version`.
-APP_VERSION = "1.0.31"
+APP_VERSION = "1.0.34"
 
 # Where a downloaded app build is unpacked before it replaces the live one.
 STAGING_DIR = "app-update"
@@ -301,7 +301,10 @@ def launch_apply(build_dir=None):
         raise UpdateError("no staged build to apply")
 
     target = app_dir()
-    exe = _executable_in(build)
+    # The UPDATER, not the app. `--apply-update` is a mode of the Python
+    # backend (main.py); the Tauri shell beside it is a Rust binary that has
+    # never heard of the flag and would simply open a second window.
+    exe = _updater_in(build)
     if exe is None:
         raise UpdateError(f"no launchable binary inside {build}")
 
@@ -320,6 +323,13 @@ def launch_apply(build_dir=None):
 
 
 def _executable_in(build: Path):
+    """What a user launches: the Tauri shell, which owns the window.
+
+    A build directory holds TWO executables since the move off pywebview —
+    `omni-exec` (Rust, the window) and `omni-exec-py` (the frozen Python
+    backend, which is also the omnidroid engine). This returns the first; see
+    `_updater_in` for the second and why the difference matters.
+    """
     if sys.platform == "darwin" and build.suffix == ".app":
         macos = build / "Contents" / "MacOS"
         if macos.is_dir():
@@ -330,6 +340,30 @@ def _executable_in(build: Path):
     name = "omni-exec.exe" if sys.platform == "win32" else "omni-exec"
     candidate = build / name
     return candidate if candidate.exists() else None
+
+
+def _updater_in(build: Path):
+    """The binary that understands `--apply-update`: the Python backend.
+
+    The swap is Python's job and always has been (`apply_staged_app` lives in
+    this module). What changed is that the app's front door is no longer that
+    same binary, so launch_apply cannot just re-run "the executable" any more:
+    handing `--apply-update` to the Rust shell would open a window and update
+    nothing.
+
+    Falls back to `_executable_in` for a build laid out the old way, so a
+    client updating ACROSS the migration — from a pywebview build, whose
+    directory has only omni-exec — can still apply the first Tauri release. That
+    fallback is the entire reason this is not just a renamed constant.
+    """
+    if sys.platform == "darwin" and build.suffix == ".app":
+        backend = build / "Contents" / "Resources" / "backend" / "omni-exec-py"
+        if backend.is_file():
+            return backend
+        return _executable_in(build)
+    name = "omni-exec-py.exe" if sys.platform == "win32" else "omni-exec-py"
+    candidate = build / name
+    return candidate if candidate.exists() else _executable_in(build)
 
 
 # ------------------------------------------------- the swap (child process)

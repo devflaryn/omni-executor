@@ -1399,15 +1399,32 @@ class Api:
         of the time.
 
         The RUNTIME update still requires a stop, and that distinction is real:
-        those files are open by a live QEMU."""
+        those files are open by a live QEMU.
+
+        ⚠ THIS DOES NOT CLOSE THE WINDOW, AND MUST NOT TRY. It used to end with
+        `threading.Timer(0.6, self.close).start()` -- a leftover from pywebview,
+        where the Api object owned a window and had a `close()`. Under Tauri the
+        WINDOW IS THE SHELL'S: this process is a child speaking JSON over stdio
+        and has no handle on it. So the timer raised
+
+            AttributeError: 'Api' object has no attribute 'close'
+
+        on a background thread, the window stayed open, and the helper -- which
+        waits for this pid to disappear before it touches anything -- sat out
+        its 90 s and gave up. **Every auto-update was dead in the water**, and
+        the error was visible only inside the update modal, which is the one
+        place nobody screenshots. Found 2026-09-02 by clicking the button.
+
+        The caller closes the window (UpdateBanner's restartIntoUpdate ->
+        window.js `close()`), which ends the shell, which ends this process --
+        and the shell holds `omni-exec.exe` open, so it has to be the shell that
+        goes, not just the backend."""
         import updates
         try:
             pid = updates.launch_apply()
         except updates.UpdateError as exc:
             return {"ok": False, "error": "apply_failed", "message": str(exc)}
-        # Give the child a moment to start waiting on this pid before it goes.
-        threading.Timer(0.6, self.close).start()
-        return {"ok": True, "helper_pid": pid}
+        return {"ok": True, "helper_pid": pid, "close_window": True}
 
     # ---- presence heartbeat ----
 
