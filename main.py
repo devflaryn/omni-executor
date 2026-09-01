@@ -82,6 +82,13 @@ DEFAULT_SETTINGS = {
     # deliberately NOT persisted: it is a per-run override, and a password at
     # rest in settings.json is one leak away from being every account's.
     "creation": {"amount": 1, "usernameStyle": "name_no"},
+    # Master switch for the autoexec folder. ON, because an autoexec folder
+    # whose scripts do not run is a confusing default -- but it has to be
+    # reachable from the UI, because the scripts run in EVERY instance and one
+    # of them putting a full-screen GUI over the game is not something you
+    # want to have to fix by deleting files. Off pushes an EMPTY bundle rather
+    # than skipping the push; see omnidroid/autoexec.py's NO_AUTOEXEC_ENV.
+    "autoexecEnabled": True,
     # `proxy` is the outbound proxy the SIGNUP BROWSER uses. It has nothing to
     # do with captchas: Roblox rate-limits signup per IP (roughly ten attempts
     # before it answers "an unknown error occurred" with no captcha at all), so
@@ -727,10 +734,25 @@ class Api:
             pass
         return str(d)
 
+    # One script switched off WITHOUT deleting it. Must match
+    # omnidroid/autoexec.py's DISABLED_SUFFIX -- the ENGINE is what actually
+    # skips these, this app only renames.
+    #
+    # A suffix rather than a prefix or a subfolder, because in an autoexec
+    # folder the FILENAME IS THE RUN ORDER: `20-loot.lua` ->
+    # `20-loot.lua.disabled` keeps its place in the sequence, so switching it
+    # back on cannot silently reorder everything around it.
+    AUTOEXEC_DISABLED_SUFFIX = ".disabled"
+
     def list_autoexec(self):
         """The scripts currently in the autoexec folder, in the order they run
         (filename order). Powers the Home widget so the user can see at a glance
-        what every instance will execute at start."""
+        what every instance will execute at start.
+
+        `name` is always the ENABLED name (no `.disabled`), so the UI, the
+        editor tabs and the run-order numbering do not change when a script is
+        switched off — only `enabled` does. `master` is the folder-wide switch.
+        """
         from pathlib import Path
         d = Path(self.autoexec_dir())
         skip = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".zip", ".gz",
@@ -738,14 +760,102 @@ class Api:
         out = []
         try:
             for p in sorted(d.iterdir()):
-                if p.is_file() and p.suffix.lower() not in skip:
-                    try:
-                        out.append({"name": p.name, "bytes": p.stat().st_size})
-                    except OSError:
-                        out.append({"name": p.name, "bytes": 0})
+                if not p.is_file():
+                    continue
+                off = p.name.lower().endswith(self.AUTOEXEC_DISABLED_SUFFIX)
+                stem = p.name[:-len(self.AUTOEXEC_DISABLED_SUFFIX)] if off else p.name
+                if Path(stem).suffix.lower() in skip:
+                    continue
+                try:
+                    size = p.stat().st_size
+                except OSError:
+                    size = 0
+                out.append({"name": stem, "bytes": size, "enabled": not off})
         except OSError:
             pass
-        return {"ok": True, "dir": str(d), "scripts": out}
+        return {"ok": True, "dir": str(d), "scripts": out,
+                "master": self.autoexec_master()}
+
+    def autoexec_master(self):
+        """Is the autoexec folder armed at all? Never raises."""
+        try:
+            return self.get_settings().get("autoexecEnabled") is not False
+        except Exception:      # noqa: BLE001 - a settings problem must not
+            return True        # silently disarm the folder
+
+    def set_autoexec_master(self, enabled):
+        """Arm or disarm the whole autoexec folder.
+
+        Takes effect on the NEXT launch, not on instances already running:
+        the scripts do not live on this machine at run time, they live in the
+        exec server's channel for the account, and only a launch rewrites it.
+        `_apply_autoexec_env` is what carries the decision to the engine.
+        """
+        want = bool(enabled)
+        try:
+            self.save_settings({"autoexecEnabled": want})
+        except OSError:
+            return {"ok": False, "error": "settings_unwritable"}
+        self._apply_autoexec_env()
+        return {"ok": True, "master": want,
+                "message": ("Autoexec is ON — every script in the folder runs "
+                            "in every instance at start."
+                            if want else
+                            "Autoexec is OFF — nothing auto-runs. Instances "
+                            "already running keep whatever they were given; "
+                            "the change lands on the next launch.")}
+
+    def _apply_autoexec_env(self):
+        """Carry the master switch into the environment the engine inherits.
+
+        `run_engine` spawns with `env=None`, i.e. this process's environment,
+        which is also how bootstrap hands the engine OMNI_DATA_DIR and friends.
+        Set it on every launch rather than once at startup so a toggle takes
+        effect without restarting the app, and DELETE the variable when armed
+        rather than setting it to "0" — the engine reads truthiness, and a
+        stale "1" left behind would be a folder that silently never runs.
+        """
+        if self.autoexec_master():
+            os.environ.pop("OMNI_NO_AUTOEXEC", None)
+        else:
+            os.environ["OMNI_NO_AUTOEXEC"] = "1"
+
+    def set_autoexec_enabled(self, name, enabled):
+        """Switch ONE script on or off, by renaming it. Never deletes.
+
+        The rename is the mechanism on purpose: the file stays in the folder,
+        keeps its contents and keeps its position in the run order, and the
+        engine is the thing that decides to skip it. Nothing here has to stay
+        in sync with a list of disabled names in settings.json — the folder is
+        still the single source of truth, which is what makes "drop a file in
+        and it runs" keep working.
+        """
+        from pathlib import Path
+        want = bool(enabled)
+        base = str(name or "")
+        if base.lower().endswith(self.AUTOEXEC_DISABLED_SUFFIX):
+            base = base[:-len(self.AUTOEXEC_DISABLED_SUFFIX)]
+        on_p = self._autoexec_path(base)
+        off_p = self._autoexec_path(base + self.AUTOEXEC_DISABLED_SUFFIX)
+        if on_p is None or off_p is None:
+            return {"ok": False, "error": "bad_name",
+                    "message": f"{name!r} is not a file in the autoexec folder."}
+        src, dst = (off_p, on_p) if want else (on_p, off_p)
+        if not src.exists():
+            # Already in the state that was asked for is a SUCCESS, not an
+            # error: the UI toggles optimistically and a double-click must not
+            # produce a red banner for a folder that is already correct.
+            if dst.exists():
+                return {"ok": True, "name": base, "enabled": want}
+            return {"ok": False, "error": "not_found",
+                    "message": f"{base} is not in the autoexec folder."}
+        try:
+            if dst.exists():
+                dst.unlink()
+            src.rename(dst)
+        except OSError as e:
+            return {"ok": False, "error": "rename_failed", "message": str(e)}
+        return {"ok": True, "name": base, "enabled": want}
 
     def _autoexec_path(self, name):
         """Resolve a bare filename inside the autoexec folder, or None. Bare
@@ -759,26 +869,47 @@ class Api:
         p = (d / name).resolve()
         return p if p.parent == d else None
 
+    def _autoexec_live_path(self, name):
+        """The file behind `name`, whether or not it is switched off.
+
+        The UI, the editor tabs and `list_autoexec` all speak the ENABLED name
+        (`20-loot.lua`), because a tab whose title changed when you flicked a
+        switch would be its own bug. On disk a disabled script is
+        `20-loot.lua.disabled`, so every read/write has to look for both --
+        otherwise switching a script off makes it un-editable, which is the
+        opposite of "off, not deleted".
+        """
+        p = self._autoexec_path(name)
+        if p is not None and p.is_file():
+            return p
+        off = self._autoexec_path(str(name) + self.AUTOEXEC_DISABLED_SUFFIX)
+        if off is not None and off.is_file():
+            return off
+        return p
+
     def read_autoexec(self, name):
         """One autoexec script's text, for editing in the app's editor."""
-        p = self._autoexec_path(name)
+        p = self._autoexec_live_path(name)
         if not p or not p.is_file():
             return {"ok": False, "error": "not_found", "name": name}
         try:
-            return {"ok": True, "name": p.name,
+            return {"ok": True, "name": name,
                     "content": p.read_text(encoding="utf-8", errors="replace")}
         except OSError as exc:
             return {"ok": False, "error": str(exc), "name": name}
 
     def save_autoexec(self, name, content=""):
         """Write (or create) one autoexec script. The editor autosaves through
-        this, so it is called on the same debounce as editor.json."""
-        p = self._autoexec_path(name)
+        this, so it is called on the same debounce as editor.json.
+
+        Writes THROUGH to a disabled file rather than resurrecting it: editing
+        a script you have switched off must not switch it back on."""
+        p = self._autoexec_live_path(name)
         if not p:
             return {"ok": False, "error": "bad_name", "name": name}
         try:
             p.write_text(str(content or ""), encoding="utf-8")
-            return {"ok": True, "name": p.name}
+            return {"ok": True, "name": name}
         except OSError as exc:
             return {"ok": False, "error": str(exc), "name": name}
 
@@ -1991,6 +2122,10 @@ class Api:
             args += ["--gpu", gpu.strip().lower()]
         if place is not None and str(place).strip():
             args += ["--place", str(place).strip()]
+        # The master autoexec switch reaches the engine through the
+        # environment, and it is applied HERE rather than once at startup so a
+        # toggle lands on the very next launch without an app restart.
+        self._apply_autoexec_env()
         result = run_engine(args, progress=self._progress(name),
                             timeout=ENGINE_IDLE_TIMEOUT)
         if result.get("ok"):
