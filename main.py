@@ -1,17 +1,25 @@
-"""Omni Executor — desktop GUI (pywebview + React) for the omnidroid engine.
+"""Omni Executor — the backend behind the Tauri window, and the omnidroid engine.
+
+This module used to BE the window (pywebview). It is now the headless half:
+the Tauri shell in `src-tauri/` owns the window and runs this as a child
+process, speaking newline-delimited JSON over the pipe between them. Every
+method on `Api` is still reachable from the page exactly as it was — the
+frontend's `api("engine_start", ...)` lands on `Api.engine_start` — only the
+transport changed. See rpc.py for the frame format.
 
 Setup:
     pip install -r requirements.txt
-    cd frontend && npm install && npm run build
+    npm install && npm --prefix frontend install
 
 Run:
-    python main.py
+    npm run tauri dev            # the app (root package.json, Tauri CLI)
+    python main.py --rpc         # this half alone, on stdio
 
-Platform notes (pywebview picks the native backend automatically):
-    - Windows: uses WebView2 / EdgeChromium (preinstalled on Windows 10/11).
-    - macOS:   uses Cocoa / WKWebView (built into the OS).
-    - Linux:   needs GTK WebKit:  sudo apt install python3-gi gir1.2-webkit2-4.1
-               (or install the Qt backend instead: pip install pywebview[qt])
+Window chrome is no longer this file's problem. Tauri creates a frameless,
+transparent window on all three platforms; the page draws the 33 px sheet and
+its own titlebar, macOS keeps its native traffic lights top-left, and
+Windows/Linux get our buttons on the right. What used to be windowchrome.py's
+Win32 surgery is now src-tauri/src/chrome.rs.
 
 Engine:
     The Accounts tab drives the omnidroid engine (omnidroid.exe on Windows,
@@ -29,7 +37,6 @@ import atexit
 import bootstrap
 import cloud
 import json
-import mimetypes
 import netcheck
 import os
 import re
@@ -39,13 +46,12 @@ import threading
 import time
 from pathlib import Path
 
-import webview
-import windowchrome
+import rpc
 
 APP_NAME = "omni-executor"
 PROJECT_DIR = Path(__file__).resolve().parent
-FRONTEND_DIST = PROJECT_DIR / "frontend" / "dist"
-IS_MAC = sys.platform == "darwin"
+# The frontend is the Tauri shell's to serve (tauri.conf.json's
+# `frontendDist`), not this process's. Nothing here reads it any more.
 
 # OMNI-EXEC remote-execute bridge base (serves the in-game UI + the exec queue).
 # Override with the OMNI_EXEC_BASE env var or a settings.json "execBase" value.
@@ -58,10 +64,6 @@ try:
     import devserver as _devserver
 except ImportError:  # pragma: no cover - the production path
     _devserver = None
-
-# Some Windows installs register .js as text/plain, which makes the webview
-# refuse to load ES modules.
-mimetypes.add_type("text/javascript", ".js")
 
 DEFAULT_SETTINGS = {
     "theme": "dark",
@@ -519,7 +521,11 @@ def accountsync():
 
 
 class Api:
-    """Methods exposed to JavaScript as window.pywebview.api.*"""
+    """The backend's whole surface.
+
+    Every public method here is callable from the page as
+    `api("<name>", ...args)` — rpc.dispatch looks the name up on this object.
+    A leading underscore makes a method internal and unreachable from JS."""
 
     # How often this machine renews the running lease on its instances. Must be
     # comfortably under the server's RUNNING_LEASE_MS (90 s) so a single missed
@@ -534,11 +540,10 @@ class Api:
     UPDATE_POLL_SECONDS = 1800
 
     def __init__(self):
-        self._window = None  # set in main() after the window is created
-        self._maximized = False
-        # Windows only: the WndProc subclass that removes the OS caption while
-        # keeping the OS frame (see windowchrome.py). None elsewhere.
-        self._chrome = None
+        # The write end of the Tauri bridge, set by rpc.serve(). Only _push
+        # uses it; a None bridge means nothing is listening yet, which is the
+        # case for the brief window between construction and serve().
+        self._bridge = None
         self._bootstrapping = False
         # Set once WHPX has been turned on but Windows has not restarted yet.
         # Sticky for the process: DISM already reported the reboot, and the
@@ -548,6 +553,9 @@ class Api:
         # Accounts this machine last reported as running, so the loop can send
         # exactly one "stopped" on the transition instead of every tick.
         self._known_running = set()
+        # What the last successful launch would like kept warm, or None.
+        # Read and cleared by the heartbeat; see _autowarm_after_launch.
+        self._autowarm_want = None
         self._heartbeat_stop = threading.Event()
         self._heartbeat_thread = None
         self._updating = False
@@ -563,72 +571,15 @@ class Api:
         # once.
         self._engine_flags = {}
 
-    # ---- window controls (used by the custom title bar) ----
+    # ---- platform ----
 
     def get_platform(self):
         """'darwin' | 'win32' | 'linux' — the frontend picks its window chrome
-        from this: native traffic lights on macOS, custom buttons elsewhere."""
+        from this: native traffic lights on macOS, our own buttons elsewhere.
+
+        The window CONTROLS are Tauri's now (see frontend/src/window.js); this
+        only says which layout to draw."""
         return sys.platform
-
-    def minimize(self):
-        if self._window:
-            self._window.minimize()
-
-    def toggle_maximize(self):
-        """Maximize or restore the window; returns the resulting maximized state."""
-        if not self._window:
-            return False
-        if self._chrome:
-            # Ask the OS rather than trust a flag: Win+Up, a snap or a drag to
-            # the top edge all change the state without passing through here.
-            self._maximized = self._chrome.is_maximized()
-        self._maximized = not self._maximized
-        if self._maximized:
-            self._window.maximize()
-        else:
-            self._window.restore()
-        return self._maximized
-
-    def get_window_state(self):
-        maximized = self._chrome.is_maximized() if self._chrome else self._maximized
-        return {"maximized": bool(maximized)}
-
-    def begin_window_drag(self):
-        """The titlebar was pressed: start the NATIVE move loop, so snapping,
-        drag-to-top and the window manager's own gestures all apply."""
-        return self._begin_native("caption")
-
-    def begin_window_resize(self, edge):
-        """A resize edge over the web content was pressed (the top edge, on
-        Windows/Linux -- the others are the OS frame's own)."""
-        if edge not in windowchrome.EDGE_HIT_TEST or edge == "caption":
-            return False
-        return self._begin_native(edge)
-
-    def _begin_native(self, edge):
-        if not self._window:
-            return False
-        if self._chrome:
-            return self._chrome.begin_drag(edge)
-        if IS_MAC:
-            return windowchrome.mac_begin_drag(self._window) if edge == "caption" else False
-        if sys.platform.startswith("linux"):
-            return windowchrome.gtk_begin_drag(self._window, edge)
-        return False
-
-    def titlebar_double_click(self):
-        """What the OS does when its own caption is double-clicked."""
-        if not self._window:
-            return False
-        if self._chrome:
-            return self._chrome.double_click()
-        if IS_MAC:
-            return windowchrome.mac_double_click(self._window)
-        return self.toggle_maximize()
-
-    def close(self):
-        if self._window:
-            self._window.destroy()
 
     # ---- settings ----
 
@@ -795,6 +746,58 @@ class Api:
         except OSError:
             pass
         return {"ok": True, "dir": str(d), "scripts": out}
+
+    def _autoexec_path(self, name):
+        """Resolve a bare filename inside the autoexec folder, or None. Bare
+        means bare: anything that could step outside the folder (separators,
+        dot-dots) is refused rather than sanitised."""
+        from pathlib import Path
+        name = str(name or "").strip()
+        if not name or name in {".", ".."} or "/" in name or "\\" in name:
+            return None
+        d = Path(self.autoexec_dir()).resolve()
+        p = (d / name).resolve()
+        return p if p.parent == d else None
+
+    def read_autoexec(self, name):
+        """One autoexec script's text, for editing in the app's editor."""
+        p = self._autoexec_path(name)
+        if not p or not p.is_file():
+            return {"ok": False, "error": "not_found", "name": name}
+        try:
+            return {"ok": True, "name": p.name,
+                    "content": p.read_text(encoding="utf-8", errors="replace")}
+        except OSError as exc:
+            return {"ok": False, "error": str(exc), "name": name}
+
+    def save_autoexec(self, name, content=""):
+        """Write (or create) one autoexec script. The editor autosaves through
+        this, so it is called on the same debounce as editor.json."""
+        p = self._autoexec_path(name)
+        if not p:
+            return {"ok": False, "error": "bad_name", "name": name}
+        try:
+            p.write_text(str(content or ""), encoding="utf-8")
+            return {"ok": True, "name": p.name}
+        except OSError as exc:
+            return {"ok": False, "error": str(exc), "name": name}
+
+    def rename_autoexec(self, old, new):
+        """Rename an autoexec script — filename order IS run order, so renaming
+        is how a script moves in the sequence. Refuses to overwrite."""
+        src = self._autoexec_path(old)
+        dst = self._autoexec_path(new)
+        if not src or not src.is_file():
+            return {"ok": False, "error": "not_found", "name": old}
+        if not dst:
+            return {"ok": False, "error": "bad_name", "name": new}
+        if dst.exists() and dst != src:
+            return {"ok": False, "error": "exists", "name": new}
+        try:
+            src.rename(dst)
+            return {"ok": True, "name": dst.name}
+        except OSError as exc:
+            return {"ok": False, "error": str(exc), "name": old}
 
     def open_autoexec_folder(self):
         """Open the autoexec folder in the OS file manager. Every file here is
@@ -1342,6 +1345,13 @@ class Api:
                 self._beat_once()
             except Exception:  # noqa: BLE001 — a heartbeat must never kill the app
                 pass
+            try:
+                # The one background thread this app has is the one that does
+                # background work. See _autowarm_after_launch for why nothing
+                # spawns a second.
+                self._autowarm_tick()
+            except Exception:  # noqa: BLE001 — same rule
+                pass
 
     def start_heartbeat(self):
         if self._heartbeat_thread and self._heartbeat_thread.is_alive():
@@ -1362,15 +1372,18 @@ class Api:
     # ---- engine ----
 
     def _push(self, event, payload=None):
-        """Fire an event into the main window's JS (window.omniEvent)."""
-        if not self._window:
+        """Fire an event at the page (arrives as `window.omniEvent`).
+
+        Was `evaluate_js` into pywebview's window; it is now a frame on the
+        bridge, which the Tauri shell re-emits and api.js turns back into the
+        same `window.omniEvent(event, payload)` call the frontend always had.
+        Best-effort by design: these fire from engine progress callbacks on
+        whatever thread ran the call, and a closing window must not turn one
+        into an error."""
+        bridge = self._bridge
+        if bridge is None:
             return
-        try:
-            self._window.evaluate_js(
-                f"window.omniEvent && window.omniEvent({json.dumps(event)}, {json.dumps(payload)})"
-            )
-        except Exception:
-            pass  # window may be closing; events are best-effort
+        bridge.push(event, payload)
 
     def _progress(self, scope):
         return lambda line: self._push("engine-progress", {"scope": scope, "line": line})
@@ -1689,10 +1702,10 @@ class Api:
         """Latency and reachability for Roblox, the Omni server, and the
         outbound proxy when one is configured.
 
-        The Network tab polls this. It runs on whatever thread pywebview hands
-        the call, and netcheck probes its targets in parallel behind a 6s
-        timeout, so the worst case the UI ever waits is one timeout — not one
-        per target. The proxy is read from settings on every call rather than
+        The Network tab polls this. It runs on whatever worker thread the
+        bridge hands the call, and netcheck probes its targets in parallel
+        behind a 6s timeout, so the worst case the UI ever waits is one
+        timeout — not one per target. The proxy is read from settings on every call rather than
         cached, so editing the field in the panel above and re-checking tests
         what was just typed."""
         try:
@@ -1986,8 +1999,176 @@ class Api:
             # account is registered as launched, so a late beat would show up as
             # "no live session" for the first half-minute of every launch.
             self._beat_now(name, "running", mode=mode, place=place)
+            self._autowarm_after_launch(mode, place, gpu)
         self._push("accounts-changed", {})
         return result
+
+    # How many slots auto-warm keeps. ONE, deliberately: the complaint this
+    # answers is "every launch cold-boots", and one slot removes the boot from
+    # the next launch. A second slot doubles a real cost (a warm slot is a
+    # running VM) to help only the case where two launches happen back to back
+    # before the pool refills. Somebody who wants that can ask for more.
+    AUTOWARM_SIZE = 1
+
+    def _autowarm_after_launch(self, mode, place, gpu):
+        """Keep one slot warm for the settings that just launched.
+
+        WHY IT RUNS AFTER A LAUNCH AND NOT AT STARTUP. A warm slot is only
+        adopted by a launch that resolves to the SAME machine -- the key hashes
+        mode, mem, vCPU, panel, offset and the rest -- and `--place` is part of
+        that, because the engine raises guest RAM to a per-game floor
+        (PS99 -> 3072 MB) which is itself hashed in. At startup this app does
+        not know what the user is about to launch, so a pool warmed then is
+        very likely warmed for the wrong machine: it costs a whole running VM
+        and is INVISIBLE to the launch, which cold-boots anyway while
+        `pool status` reports slots ready. A launch that just happened is the
+        one moment those settings are known to be real.
+
+        WHAT IT BUYS. Measured on this box: the boot stage of a launch is
+        33-60 s cold and 0.08-0.09 s when a slot is adopted. Nothing is
+        serialised, which is why this and not a snapshot -- WHPX registers a
+        migration blocker, so on Windows a pool of live machines is the only
+        fast path that exists.
+
+        WHAT IT COSTS, and why it is affordable enough to be a default. A slot
+        used to be the one running instance nothing governed, at 575-747 MB of
+        host RSS each. `park_slot` applies the mode's own working-set floor the
+        moment a slot is ready and holds it at 384-406 MB, and releases the cap
+        at adoption before any session is delivered.
+
+        Never raises and never blocks the launch it follows: it runs on its own
+        thread, and every failure is silent here (the pool's own status line in
+        the UI is where pool errors belong). A user who has explicitly turned
+        the pool off is left alone.
+
+        ⚠ IT ONLY RECORDS THE INTENT. Two attempts at doing the work from
+        here were wrong, and the second was wrong in an instructive way:
+
+        * Doing it inline adds a subprocess (`engine_version`, then `pool
+          start`) to the tail of every launch, on the thread the UI is
+          waiting on.
+        * Doing it on a thread spawned HERE is worse than it looks. It made
+          `engine_start`'s last `run_engine` call be the auto-warm's version
+          probe rather than the start itself -- which is precisely what
+          tests/test_slow_pc_boot.py inspects to prove the app imposes no boot
+          deadline on the engine -- and, because the thread outlives the call,
+          it went on writing into whatever `run_engine` was mocked to during
+          LATER tests. Three tests in two files failed, none of them about
+          auto-warm, and only when the suite ran as a whole. A background
+          thread that reaches the engine on its own schedule is a thing this
+          app already has exactly one of, and one is the right number.
+
+        So the launch records what it would like warmed and returns. The
+        HEARTBEAT does it, on its own thread, at its own cadence -- which is
+        also better behaviour: a user who launches three accounts in a row
+        gets one warm attempt after the flurry rather than three that stop
+        each other's pools.
+        """
+        self._autowarm_want = {"mode": mode, "place": place, "gpu": gpu}
+
+    def _autowarm_tick(self):
+        """Act on the last recorded intent, if any. Called from the heartbeat."""
+        want = getattr(self, "_autowarm_want", None)
+        if not want:
+            return
+        self._autowarm_want = None
+        self._autowarm_worker(want.get("mode"), want.get("place"),
+                              want.get("gpu"))
+
+    def _autowarm_enabled(self):
+        """False when the user turned it off, or when the engine has no pool.
+
+        Default ON. The setting is read every time rather than cached: turning
+        it off should take effect on the next launch, not on the next restart.
+        """
+        try:
+            if str(os.environ.get("OMNI_NO_AUTOWARM", "")).strip().lower() in (
+                    "1", "true", "yes", "on"):
+                return False
+            settings = self.get_settings()
+            saved = settings.get("pool")
+            if isinstance(saved, dict) and saved.get("autoWarm") is False:
+                return False
+            return self.engine_version().get("pool_supported") is True
+        except Exception:      # noqa: BLE001
+            return False
+
+    # A warm slot has to leave this much host memory free AFTER it exists.
+    # A pool is a speed optimisation, and an optimisation that pushes the
+    # machine into its pagefile is not one -- a host that swaps misses QEMU's
+    # vCPU deadlines, so the instance the user is actually playing gets slower
+    # in exchange for the next launch being faster. On the box this was
+    # written on the trade is free; on an 8 GB laptop running one gaming
+    # instance it is not, and that laptop is exactly who complained.
+    AUTOWARM_FREE_RAM_FLOOR_MB = 3072
+
+    def _autowarm_affordable(self):
+        """Is there room for a spare VM? Unknown answers NO.
+
+        The opposite of the engine's own "an unreadable host costs you the
+        upgrade, never the boot" rule, and deliberately: there, refusing to
+        guess costs a feature the user asked for. Here, guessing wrong costs
+        the user memory on a machine that may not have it, to speed up a
+        launch that has not been asked for yet.
+        """
+        try:
+            report = run_engine(["doctor", "--json"], timeout=POOL_TIMEOUT)
+            walls = ((report.get("capacity_farming") or {}).get("walls") or {})
+            free = (walls.get("ram") or {}).get("free_mb")
+            if not free:
+                return False
+            return int(free) >= self.AUTOWARM_FREE_RAM_FLOOR_MB
+        except Exception:      # noqa: BLE001
+            return False
+
+    def _autowarm_worker(self, mode, place, gpu):
+        """Warm one slot, unless one matching these settings is already warm.
+
+        The receipt check is what keeps this from re-warming on every launch:
+        `pool_start` STOPS the running pool before taking the config over
+        (otherwise the old slots are stranded, adopted by nothing, holding
+        their memory), so calling it when nothing has changed would tear down
+        a perfectly good warm slot and boot it again.
+        """
+        try:
+            if not self._autowarm_enabled():
+                return
+            if not self._autowarm_affordable():
+                return
+            wanted = {
+                "mode": (mode or "").strip().lower(),
+                "place": str(place).strip() if place is not None else "",
+                "gpu": gpu.strip().lower() if isinstance(gpu, str) else "",
+            }
+            if wanted["gpu"] not in self.GPU_POLICIES:
+                wanted["gpu"] = ""
+            if self._pool_receipt() == wanted:
+                status = run_engine(["pool", "status", "--json"],
+                                    timeout=POOL_TIMEOUT)
+                if isinstance(status, dict) and status.get("configured"):
+                    return
+            self.pool_start(self.AUTOWARM_SIZE, wanted["mode"],
+                            wanted["place"], wanted["gpu"])
+        except Exception:      # noqa: BLE001 - see _autowarm_after_launch
+            pass
+
+    def pool_set_auto_warm(self, enabled):
+        """Turn auto-warm on or off. Returns the value that was stored."""
+        want = bool(enabled)
+        try:
+            saved = self.get_settings().get("pool")
+            saved = dict(saved) if isinstance(saved, dict) else {}
+            saved["autoWarm"] = want
+            self.save_settings({"pool": saved})
+        except OSError:
+            return {"ok": False, "error": "settings_unwritable"}
+        if not want:
+            # Turning it OFF stops what it started. Leaving the slots up would
+            # be the worst of both: the cost of a pool with no promise that
+            # anything will adopt it.
+            run_engine(["pool", "stop", "--json"], timeout=POOL_STOP_TIMEOUT)
+            self._remember_pool(None)
+        return {"ok": True, "autoWarm": want}
 
     def engine_stop(self, name):
         """Explicit power-off (adb shutdown -> QMP quit -> kill)."""
@@ -2252,34 +2433,6 @@ class Api:
         self._update_stop.set()
 
 
-def _show_macos_traffic_lights(window):
-    """pywebview's frameless mode gives exactly the blended titlebar we want
-    (transparent, hidden title, content underneath — applied at creation,
-    which matters: macOS builds the titlebar backdrop at first show and
-    ignores later transparency flips). It also hides the traffic lights,
-    so bring just those back."""
-    try:
-        import AppKit
-
-        def apply():
-            try:
-                ns_window = window.native
-                for kind in (
-                    AppKit.NSWindowCloseButton,
-                    AppKit.NSWindowMiniaturizeButton,
-                    AppKit.NSWindowZoomButton,
-                ):
-                    button = ns_window.standardWindowButton_(kind)
-                    if button is not None:
-                        button.setHidden_(False)
-            except Exception:
-                pass
-
-        AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(apply)
-    except Exception:
-        pass
-
-
 def _apply_update_mode(argv):
     """`--apply-update <target-dir> <pid>`: replace an installed build.
 
@@ -2349,38 +2502,39 @@ def _unblock_app_files(log=None):
     """Strip Mark-of-the-Web from this install, or the app cannot start at all.
 
     A user who downloads the zip and extracts it with Explorer gets a
-    `Zone.Identifier` stream on EVERY extracted file. The .NET Framework
-    assembly loader then refuses to load Python.Runtime.dll out of the
-    Internet zone, clr_loader cannot resolve its entry point, and pywebview's
-    WinForms backend dies on import — before a single line of this program's
-    own logic runs:
+    `Zone.Identifier` stream on EVERY extracted file.
+
+    HISTORY, because it explains why this is still here. Under pywebview the
+    .NET Framework assembly loader refused to load Python.Runtime.dll out of
+    the Internet zone, clr_loader could not resolve its entry point, and the
+    WinForms backend died on import before a single line of this program's own
+    logic ran:
 
         RuntimeError: Failed to resolve Python.Runtime.Loader.Initialize from
         ...\\_internal\\pythonnet\\runtime\\Python.Runtime.dll
 
-    Reproduced exactly by putting that one stream on that one DLL, and cured
-    by removing it. It is invisible in development because a build produced
-    locally was never downloaded, so it is never marked.
+    The Tauri shell has no CLR and no pythonnet, so that exact failure is gone
+    with them. This stays as insurance rather than as a cure: MotW still marks
+    every extracted file, SmartScreen still reads it, and clearing it costs one
+    stat on a normal launch. The real fix remains shipping the installer —
+    files an installer writes are never marked.
 
-    The proper fix is to ship an installer (files an installer writes are not
-    marked). This stays anyway: people extract zips, and a program that cannot
-    start is not the place to be principled about whose fault it is.
-
-    Cheap on a normal launch — one stat of the DLL that actually matters, and
-    a full sweep only when that comes back marked. Best-effort throughout: an
-    install in a read-only location cannot be unmarked, but it also cannot
-    have been marked, because an installer put it there.
+    Best-effort throughout: an install in a read-only location cannot be
+    unmarked, but it also cannot have been marked, because an installer put it
+    there.
     """
     if sys.platform != "win32" or not getattr(sys, "frozen", False):
         return 0
     root = Path(sys.executable).resolve().parent
-    probe = root / "_internal" / "pythonnet" / "runtime" / "Python.Runtime.dll"
+    # This process is the BACKEND, so sys.executable is omni-exec-py.exe and
+    # `root` is the install directory it shares with the Tauri omni-exec.exe.
+    # base_library.zip is the one file every PyInstaller one-dir build has.
+    probe = root / "_internal" / "base_library.zip"
     if not _has_motw(probe) and not _has_motw(Path(sys.executable)):
         return 0
     cleared = 0
-    # The whole tree, not just that DLL: Python.Runtime.dll pulls in ~100
-    # netstandard facade assemblies beside it, and each is refused on the same
-    # grounds. Clearing one file only moves the error to the next one.
+    # The whole tree, not one file: a marked extraction marks everything, the
+    # Tauri shell beside us included.
     for path in root.rglob("*"):
         try:
             if not path.is_file() or not _has_motw(path):
@@ -2423,10 +2577,8 @@ def main():
         except OSError:
             pass
 
-    # Before anything imports the CLR. webview.start() is what pulls in the
-    # WinForms backend, so this only has to beat the bottom of this function —
-    # but it is first because everything below it is downstream of the app
-    # being loadable at all.
+    # First, because everything below it is downstream of this install being
+    # loadable at all.
     _unblock_app_files(log=lambda m: print(m, file=sys.stderr))
 
     if len(sys.argv) > 1 and sys.argv[1] == "--doctor":
@@ -2474,11 +2626,15 @@ def main():
     # bootstrap_start() alone.
     _configure_engine_on_launch()
 
-    index = FRONTEND_DIST / "index.html"
-    if not index.exists():
+    if "--rpc" not in sys.argv:
+        # The window is the Tauri shell's, and it is what launches this. Say
+        # so rather than sitting on a stdin nobody is writing to.
         sys.exit(
-            f"Frontend build not found: {index}\n"
-            "Build it first:  cd frontend && npm install && npm run build"
+            "This is the Omni Executor BACKEND; it has no window of its own."
+            "\n"
+            "Run the app:        npm run tauri dev"
+            "\n"
+            "Run this half:      python main.py --rpc   (JSON-RPC on stdio)"
         )
 
     api = Api()
@@ -2488,66 +2644,15 @@ def main():
     # Ask what is out of date on every launch — base images, offsets and this
     # app alike. Background, so nothing waits on the network.
     api._check_updates_on_launch()
-    window = webview.create_window(
-        "Omni Executor",
-        url=str(index),
-        js_api=api,
-        width=1380,
-        height=840,
-        min_size=(720, 480),
-        background_color="#17181b",  # matches the dark sheet, prevents a white flash on startup
-        # The frontend draws the titlebar everywhere; the WINDOW stays the
-        # OS's. Windows: windowchrome puts the frame styles back on the HWND
-        # and keeps the client area full-window, so snap, double-click,
-        # shadows and native move/size loops all work. macOS: frameless is a
-        # titled window with a transparent titlebar (the traffic lights come
-        # back below). Linux: undecorated, the WM is asked to move/resize.
-        frameless=True,
-        easy_drag=False,  # dragging is the frontend's call (begin_window_drag)
-    )
-    api._window = window
-
-    if IS_MAC:
-        window.events.shown += lambda *a: _show_macos_traffic_lights(window)
-    elif windowchrome.IS_WIN:
-        def _install_chrome(*_args):
-            api._chrome = windowchrome.install_windows(window)
-        window.events.shown += _install_chrome
-
-    # Keep the maximize state in sync when the OS changes it (e.g. Win+Up snap),
-    # and tell the titlebar so its button glyph follows.
-    def _window_state(maximized):
-        api._maximized = maximized
-        api._push("window-state", {"maximized": maximized})
-    try:
-        window.events.maximized += lambda *a: _window_state(True)
-        window.events.restored += lambda *a: _window_state(False)
-    except AttributeError:
-        pass  # older pywebview without these events; manual toggling still works
-
-    window.events.closed += lambda *a: api._shutdown()
     atexit.register(api._shutdown)
 
+    # Serves until the shell closes our stdin, which is how a Tauri process
+    # that has exited (cleanly or not) tells us it is gone. No separate
+    # shutdown message to miss, and no orphaned backend.
     try:
-        webview.start()
-    except RuntimeError as e:
-        # This is where the WinForms/CLR backend is actually loaded, and the
-        # one failure a user can do something about. _unblock_app_files() has
-        # already handled the common cause; anything left is a machine
-        # problem, and a raw traceback dialog tells the reader nothing.
-        if "Python.Runtime" not in str(e):
-            raise
-        _fatal_dialog(
-            "Omni Executor could not start",
-            "Windows blocked part of Omni Executor from loading.\n\n"
-            "This normally happens when the app is run straight out of a "
-            "downloaded .zip. Two fixes, either works:\n\n"
-            "  1. Install it with the Omni Executor installer instead of "
-            "unzipping it.\n"
-            "  2. Right-click the .zip you downloaded, choose Properties, "
-            "tick Unblock, then extract it again.\n\n"
-            f"Details: {e}")
-        sys.exit(1)
+        rpc.serve(api)
+    finally:
+        api._shutdown()
 
 
 if __name__ == "__main__":
