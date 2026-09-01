@@ -1,10 +1,10 @@
 /* Settings: identity, appearance, and the engine's own facts. */
 
 import { useEffect, useRef, useState } from "react";
-import { api } from "../api.js";
+import { api, loadSettings } from "../api.js";
 import { useEngine } from "../engine.jsx";
-import { Button, Field, Lamp, Panel, PanelHead, Toggle } from "./ui.jsx";
-import { CpuIcon, GearIcon, LockIcon, MoonIcon, SunIcon, UserIcon } from "./icons.jsx";
+import { Button, Field, Lamp, Panel, PanelHead } from "./ui.jsx";
+import { CpuIcon, GearIcon, MoonIcon, RocketIcon, SunIcon, UserIcon } from "./icons.jsx";
 import UpdatePanel from "./UpdateBanner.jsx";
 
 function initials(name) {
@@ -16,8 +16,6 @@ export default function SettingsView({
   active,
   theme,
   onTheme,
-  compact,
-  onCompact,
   profile,
   onProfile,
   showToast,
@@ -133,8 +131,8 @@ export default function SettingsView({
           <div className="flex flex-col gap-4 p-4">
             <div className="flex items-center justify-between gap-4">
               <span>
-                <span className="block text-[12.5px] font-medium text-ink">Theme</span>
-                <span className="block text-[11px] text-ink-3">
+                <span className="block text-[13.5px] font-medium text-ink">Theme</span>
+                <span className="block text-[12px] text-ink-3">
                   Dark is the default sheet; light is the daylight version.
                 </span>
               </span>
@@ -153,7 +151,7 @@ export default function SettingsView({
                     role="radio"
                     aria-checked={theme === id}
                     onClick={() => onTheme(id)}
-                    className={`ring-focus flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[11.5px]
+                    className={`ring-focus flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12.5px]
                                 font-semibold transition-colors duration-150 ${
                                   theme === id
                                     ? "bg-accent text-accent-ink"
@@ -167,20 +165,10 @@ export default function SettingsView({
               </div>
             </div>
 
-            <div className="rule-t pt-4">
-              <Toggle
-                id="compact-sidebar"
-                checked={compact}
-                onChange={onCompact}
-                label="Compact sidebar"
-                hint="Collapse the rail to icons and give the panels more room."
-              />
-            </div>
           </div>
         </Panel>
 
-        {/* Outbound proxy for account creation */}
-        <CaptchaPanel />
+        <LaunchSpeedPanel active={active} showToast={showToast} />
 
         {/* Engine */}
         <Panel className="overflow-hidden">
@@ -188,14 +176,14 @@ export default function SettingsView({
             icon={CpuIcon}
             title="Engine"
             right={
-              <span className="flex items-center gap-2 text-[11.5px] text-ink-2">
+              <span className="flex items-center gap-2 text-[12.5px] text-ink-2">
                 <Lamp tone={engine.health.tone} pulse={engine.health.tone === "busy"} size={6} />
                 {engine.health.label}
               </span>
             }
           />
           <div className="flex flex-col gap-4 p-4">
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-2.5 font-mono text-[11.5px]">
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-2.5 font-mono text-[12.5px]">
               <Row label="Contract" value={engine.version?.contract ?? "—"} />
               <Row
                 label="Arch aware"
@@ -349,7 +337,7 @@ function OmniAccountPanel({ auth, onAuthChange, showToast }) {
         icon={UserIcon}
         title="Omni account"
         right={
-          <span className="flex items-center gap-2 text-[11.5px] text-ink-2">
+          <span className="flex items-center gap-2 text-[12.5px] text-ink-2">
             {/* "off", not "fault": free is a normal state of a working
                 account, and a red lamp would read as something being broken. */}
             <Lamp tone={premium ? "live" : "off"} size={6} />
@@ -358,7 +346,7 @@ function OmniAccountPanel({ auth, onAuthChange, showToast }) {
         }
       />
       <div className="flex flex-col gap-4 p-4">
-        <dl className="grid grid-cols-2 gap-x-4 gap-y-2.5 font-mono text-[11.5px]">
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-2.5 font-mono text-[12.5px]">
           <Row label="Username" value={auth?.username || "—"} />
           <Row label="Signed in" value={auth?.email || "—"} />
           <Row label="Server" value={(auth?.apiBase || "").replace(/^https?:\/\//, "") || "—"} />
@@ -411,7 +399,7 @@ function OmniAccountPanel({ auth, onAuthChange, showToast }) {
         </Field>
 
         {auth?.stale && (
-          <p className="text-[11px] text-ink-3">
+          <p className="text-[12px] text-ink-3">
             Working offline — {auth.message || "the server could not be reached"}. Accounts and
             plan shown from the last successful check.
           </p>
@@ -430,89 +418,6 @@ function OmniAccountPanel({ auth, onAuthChange, showToast }) {
   );
 }
 
-/* Outbound proxy for account creation. This is NOT about captchas: Roblox
-   rate-limits signup per IP (after roughly ten attempts the form returns "an
-   unknown error occurred" and never even shows a challenge), so a fresh
-   address is what keeps a batch running. The third-party captcha providers
-   that used to live here were removed - Arkose refuses to issue a puzzle to a
-   solver's IP at all, so no service could produce a token for Roblox. */
-function CaptchaPanel() {
-  const [proxy, setProxy] = useState("");
-  const [proxyErr, setProxyErr] = useState("");
-  const [loaded, setLoaded] = useState(false);
-  const saveTimer = useRef(null);
-
-  useEffect(() => {
-    let alive = true;
-    api("creation_get_config").then((cfg) => {
-      if (!alive) return;
-      setProxy(String(cfg?.captcha?.proxy || ""));
-      setLoaded(true);
-    });
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  const save = (nextProxy) => {
-    clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(async () => {
-      const res = await api("creation_save_config", {
-        captcha: { proxy: nextProxy.trim() },
-      });
-      // The proxy can be malformed and the backend validates it, so surface
-      // its verdict rather than silently keeping a string that fails a batch.
-      setProxyErr(res?.ok === false ? String(res.message || "Invalid proxy.") : "");
-    }, 500);
-  };
-
-  return (
-    <Panel className="overflow-hidden">
-      <PanelHead
-        icon={LockIcon}
-        title="Account creation proxy"
-        right={
-          <span className="flex items-center gap-2 text-[11.5px] text-ink-2">
-            <Lamp tone={proxy.trim() ? "live" : "off"} size={6} />
-            {proxy.trim() ? "Via proxy" : "Direct"}
-          </span>
-        }
-      />
-      <div className="flex flex-col gap-4 p-4">
-        <Field
-          label="Outbound proxy"
-          htmlFor="captcha-proxy"
-          hint="host:port:user:pass - a fresh IP per batch avoids Roblox's signup rate limit."
-        >
-          <input
-            id="captcha-proxy"
-            type="text"
-            className="input font-mono tracking-wide"
-            placeholder="gate.provider.io:7000:user:pass"
-            value={proxy}
-            disabled={!loaded}
-            autoComplete="off"
-            spellCheck={false}
-            onChange={(e) => {
-              setProxy(e.target.value);
-              save(e.target.value);
-            }}
-          />
-        </Field>
-
-        {proxyErr && (
-          <p className="text-[11px] leading-relaxed text-danger">{proxyErr}</p>
-        )}
-
-        <p className="text-[11px] leading-relaxed text-ink-3">
-          Captchas are solved by hand in the browser window that opens.
-          Automatic solving is being rebuilt to play the puzzle in that window.
-        </p>
-      </div>
-    </Panel>
-  );
-}
-
 function Row({ label, value }) {
   return (
     <div className="flex items-baseline justify-between gap-3 border-b border-line-soft pb-2">
@@ -523,3 +428,71 @@ function Row({ label, value }) {
 }
 
 const fmtFlag = (v) => (v == null ? "—" : v ? "present" : "missing");
+
+
+/* Launch speed: the warm-instance switch, and nothing else.
+
+   OFF by default, and here rather than buried, because the version that
+   shipped it ON put `_pool0`, `_pool1`, `_pool2` in the user's Accounts list
+   and left a virtual machine running after the window closed. The switch has
+   to be findable by whoever wants the speed and invisible to everyone else,
+   which is what a Settings row is for.
+
+   Self-contained on purpose: it reads and writes its own setting rather than
+   taking props, so App.jsx does not grow state only one panel ever reads. */
+function LaunchSpeedPanel({ active, showToast }) {
+  const [on, setOn] = useState(null);
+
+  useEffect(() => {
+    if (!active) return undefined;
+    let alive = true;
+    loadSettings().then((s) => {
+      if (alive) setOn(s?.autoWarm === true);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [active]);
+
+  const toggle = async (next) => {
+    setOn(next);
+    const res = await api("pool_set_auto_warm", next);
+    if (!res?.ok) {
+      setOn(!next);
+      showToast?.("Could not save that setting", "error");
+      return;
+    }
+    showToast?.(
+      next
+        ? "Keeping one instance warm — your next launch will skip the boot."
+        : "Warm instance off. Anything kept warm has been shut down.",
+      "info"
+    );
+  };
+
+  return (
+    <Panel className="overflow-hidden">
+      <PanelHead icon={RocketIcon} title="Launch speed" />
+      <div className="flex flex-col gap-4 p-4">
+        <label className="flex cursor-pointer items-start gap-3">
+          <input
+            type="checkbox"
+            className="check mt-0.5"
+            checked={on === true}
+            disabled={on === null}
+            onChange={(e) => toggle(e.target.checked)}
+          />
+          <span className="text-[13px] leading-snug text-ink">
+            Keep one instance warm
+            <span className="mt-0.5 block text-[12px] text-ink-3">
+              After a launch, quietly pre-boot one machine with the same settings so the next
+              launch skips the boot &mdash; measured 33&ndash;39&nbsp;s down to 0.08&nbsp;s. It
+              costs one running virtual machine while the app is open, is skipped when this PC
+              is short on memory, and is shut down when you close the app.
+            </span>
+          </span>
+        </label>
+      </div>
+    </Panel>
+  );
+}

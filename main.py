@@ -89,6 +89,14 @@ DEFAULT_SETTINGS = {
     # want to have to fix by deleting files. Off pushes an EMPTY bundle rather
     # than skipping the push; see omnidroid/autoexec.py's NO_AUTOEXEC_ENV.
     "autoexecEnabled": True,
+    # Keep one instance pre-booted so the NEXT launch skips the boot entirely
+    # (33-39 s -> 0.08 s). OFF by default, and that default was learned the
+    # hard way: it shipped ON in 1.0.33 and the first thing it did was put
+    # `_pool0`, `_pool1`, `_pool2` in the user's Accounts list and leave a
+    # multi-gigabyte VM running after the window was closed. A speed
+    # optimisation that spawns machines nobody asked for is not a default, it
+    # is a surprise. It stays available, one switch away, in Settings.
+    "autoWarm": False,
     # `proxy` is the outbound proxy the SIGNUP BROWSER uses. It has nothing to
     # do with captchas: Roblox rate-limits signup per IP (roughly ten attempts
     # before it answers "an unknown error occurred" with no captcha at all), so
@@ -1790,8 +1798,39 @@ class Api:
         return run_engine(["setup"], progress=self._progress("setup"))
 
     def engine_list(self):
-        """All accounts with base, ports and running state."""
-        return run_engine(["list", "--json"], timeout=60)
+        """All accounts with base, ports and running state.
+
+        ⚠ WARM-POOL SLOTS ARE NOT ACCOUNTS AND MUST NEVER BE SHOWN AS ONE.
+        A slot is an ordinary instance named `_pool<n>` -- that is deliberate
+        in the engine, because it means `runtime/_pool0/run.json` is a normal
+        record and every guard, sweep and `stop` works on it with no special
+        case (see omnidroid/pool.py). `omnidroid list` therefore returns them,
+        tagged `pool_slot: true`, and the engine's own CLI prints them with a
+        `[warm pool]` marker.
+
+        This app had no such marker. So the moment auto-warm turned the pool
+        on for people who had never asked for a pool, `_pool0`, `_pool1`,
+        `_pool2`... started appearing in the Accounts list as if they were
+        Roblox accounts the user owned -- with a Launch button, a Stop button
+        and a DELETE button next to each. Reported 2026-09-02 as "it always
+        spawns something like _pool0, 1, 2".
+
+        The names climb because that is what the pool is for: when a launch
+        ADOPTS `_pool0`, the manager boots `_pool1` to replace it, and the
+        adopted one keeps its slot name for the life of the instance (adoption
+        copies run.json rather than renaming, because a QEMU process cannot be
+        renamed after spawn). So a few launches leave a row of them.
+
+        They are filtered here, at the one place the UI learns what exists,
+        rather than in each view -- Home, Accounts and the launch bay all read
+        this. `pool status` is where a pool is supposed to be visible.
+        """
+        res = run_engine(["list", "--json"], timeout=60)
+        accounts = res.get("accounts") if isinstance(res, dict) else None
+        if isinstance(accounts, list):
+            res["accounts"] = [a for a in accounts
+                               if not (isinstance(a, dict) and a.get("pool_slot"))]
+        return res
 
     def _publish_account(self, result):
         """Upload a freshly-captured Roblox account to the signed-in Omni user.
@@ -2228,18 +2267,26 @@ class Api:
                               want.get("gpu"))
 
     def _autowarm_enabled(self):
-        """False when the user turned it off, or when the engine has no pool.
+        """True only when the user has asked for it AND the engine can do it.
 
-        Default ON. The setting is read every time rather than cached: turning
-        it off should take effect on the next launch, not on the next restart.
+        OPT-IN. See DEFAULT_SETTINGS["autoWarm"] for why the opposite default
+        did not survive contact with a user. The setting is read every time
+        rather than cached, so flipping it takes effect on the next launch
+        instead of the next restart.
         """
         try:
             if str(os.environ.get("OMNI_NO_AUTOWARM", "")).strip().lower() in (
                     "1", "true", "yes", "on"):
                 return False
             settings = self.get_settings()
+            # `pool.autoWarm` is where 1.0.33 wrote it; the top-level
+            # `autoWarm` is where it lives now. An existing OFF in the old
+            # place still means off -- somebody who turned this thing off must
+            # not have it turned back on by an update.
             saved = settings.get("pool")
             if isinstance(saved, dict) and saved.get("autoWarm") is False:
+                return False
+            if settings.get("autoWarm") is not True:
                 return False
             return self.engine_version().get("pool_supported") is True
         except Exception:      # noqa: BLE001
@@ -2305,13 +2352,17 @@ class Api:
             pass
 
     def pool_set_auto_warm(self, enabled):
-        """Turn auto-warm on or off. Returns the value that was stored."""
+        """Turn auto-warm on or off. Returns the value that was stored.
+
+        Writes BOTH the new top-level flag and the old `pool.autoWarm` one, so
+        a downgrade to 1.0.33 does not silently re-enable something the user
+        switched off."""
         want = bool(enabled)
         try:
             saved = self.get_settings().get("pool")
             saved = dict(saved) if isinstance(saved, dict) else {}
             saved["autoWarm"] = want
-            self.save_settings({"pool": saved})
+            self.save_settings({"pool": saved, "autoWarm": want})
         except OSError:
             return {"ok": False, "error": "settings_unwritable"}
         if not want:
@@ -2583,6 +2634,36 @@ class Api:
         # Stop the update watcher too, so a 30-minute wait cannot hold the
         # interpreter open past the window closing.
         self._update_stop.set()
+        self._stop_autowarmed_pool()
+
+    def _stop_autowarmed_pool(self):
+        """Power off a pool THIS APP warmed, on the way out.
+
+        ⚠ THE ONE PLACE THE "INSTANCES OUTLIVE THE APP" RULE DOES NOT APPLY.
+        Everywhere else that rule is right and load-bearing: a user launched
+        those instances on purpose, QEMU is detached so they keep farming with
+        the window closed, and stopping them here would throw away exactly
+        what the product is for.
+
+        A warm slot is the opposite. Nobody launched it; it exists only to
+        make THIS APP'S next launch instant, and once the app is gone there is
+        no next launch. Leaving it up meant a multi-gigabyte VM and a detached
+        pool manager running indefinitely after the window closed, re-warming
+        itself forever -- which is half of what "it always spawns _pool0, 1,
+        2" was describing (2026-09-02). The other half is engine_list.
+
+        Only a pool we have a RECEIPT for is stopped. Somebody who ran
+        `omnidroid pool start` by hand meant it, and their pool is not ours to
+        collect. Best-effort and quick: this runs while the process is exiting,
+        so a slow or missing engine must not hold the window open.
+        """
+        try:
+            if not self._pool_receipt():
+                return
+            run_engine(["pool", "stop", "--json"], timeout=POOL_STOP_TIMEOUT)
+            self._remember_pool(None)
+        except Exception:      # noqa: BLE001 - we are on the way out
+            pass
 
 
 def _apply_update_mode(argv):
