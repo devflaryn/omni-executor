@@ -65,7 +65,7 @@ Stale build dirs (`out`, `out2`, `out3`, `dist-new`) are already cleaned up —
 | Latest build (73 MB, verified `ready: true`) | `omni-executor\dist\omni-exec\` |
 | Product runtime (images, accounts, paths.json) | `%LOCALAPPDATA%\OmniExec\` |
 | Scratch configs for CLI work | `Omni Apps\_work\*.json` |
-| VPS | `72.62.59.232`, root password in a `# VPS` comment in `omni-backend\.env.development.local` |
+| VPS | `179.198.197.7`, root password in a `# VPS` comment in `omni-backend\.env.development.local` |
 
 `omni-executor\.venv` has pytest, pyinstaller, selenium, pillow.
 omnidroid has no venv — run its tests with the executor's interpreter.

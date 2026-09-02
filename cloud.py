@@ -38,7 +38,7 @@ from pathlib import Path
 # Default public backend. Overridable with OMNI_API_BASE (env) or an
 # "apiBase" value in settings.json, which is how a dev points the app at a
 # local server without a rebuild.
-DEFAULT_API_BASE = "http://72.62.59.232"
+DEFAULT_API_BASE = "http://179.198.197.7"
 
 # DEV MODE, ABSENT FROM RELEASE BUILDS. Both PyInstaller specs exclude
 # `devserver`, so in a shipped bundle this import fails and api_base() returns

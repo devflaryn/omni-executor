@@ -68,11 +68,11 @@ function StatTrackLocked({ subscription, onGo }) {
       </span>
 
       <div>
-        <p className="flex items-center justify-center gap-2.5 text-[15px] font-semibold text-ink">
+        <p className="flex items-center justify-center gap-2.5 text-[16px] font-semibold text-ink">
           Stat Track
-          <span className="chip border-premium/45 bg-premium/8 text-premium">Premium</span>
+          <span className="chip chip-premium">Premium</span>
         </p>
-        <p className="mx-auto mt-2 max-w-[46ch] text-[12.5px] leading-relaxed text-ink-3">
+        <p className="mx-auto mt-2 max-w-[46ch] text-[13.5px] leading-relaxed text-ink-3">
           {lapsed
             ? "Your plan has expired, so Stat Track stopped reporting. Redeem a key to pick it back up — nothing you collected is lost."
             : "See what every account is actually earning, live, without opening a single screen."}
@@ -88,8 +88,8 @@ function StatTrackLocked({ subscription, onGo }) {
           <li key={title} className="rule-b flex items-start gap-3 px-1 py-2.5 last:after:hidden">
             <span className="mt-[5px] h-[6px] w-[6px] shrink-0 rounded-full bg-premium" />
             <span className="min-w-0">
-              <span className="block text-[12.5px] font-medium text-ink">{title}</span>
-              <span className="block text-[11.5px] leading-relaxed text-ink-3">{detail}</span>
+              <span className="block text-[13.5px] font-medium text-ink">{title}</span>
+              <span className="block text-[12.5px] leading-relaxed text-ink-3">{detail}</span>
             </span>
           </li>
         ))}
@@ -160,11 +160,11 @@ function StatConsole({ active, showToast }) {
     <>
       <div className="flex items-end justify-between gap-4 px-1">
         <div>
-          <h2 className="flex flex-wrap items-center gap-2.5 text-[22px] font-semibold tracking-[-0.01em] text-ink">
+          <h2 className="flex flex-wrap items-center gap-2.5 text-[30px] font-semibold tracking-[-0.01em] text-ink">
             Stat Track
-            <span className="chip border-premium/45 bg-premium/8 text-premium">Premium</span>
+            <span className="chip chip-premium">Premium</span>
           </h2>
-          <p className="mt-1 text-[12.5px] text-ink-3">
+          <p className="mt-1 text-[13.5px] text-ink-3">
             {status?.enabled
               ? `Reporting from every instance this machine launches · ${summary.tracking ?? 0} live`
               : "Switch it on to have every launch report what it earns."}
@@ -193,7 +193,7 @@ function StatConsole({ active, showToast }) {
           }
         />
         {status?.file && (
-          <p className="mt-2.5 truncate font-mono text-[10.5px] text-ink-3" title={status.file}>
+          <p className="mt-2.5 truncate font-mono text-[11.5px] text-ink-3" title={status.file}>
             {status.file}
           </p>
         )}
@@ -234,11 +234,11 @@ function StatConsole({ active, showToast }) {
           </ul>
         ) : (
           <div className="px-3.5 py-8 text-center">
-            <p className="text-[12.5px] text-ink-2">
+            <p className="text-[13.5px] text-ink-2">
               {data ? "No accounts yet." : "Loading…"}
             </p>
             {data && (
-              <p className="mt-1 text-[11.5px] text-ink-3">
+              <p className="mt-1 text-[12.5px] text-ink-3">
                 Add an account and launch it — its numbers land here.
               </p>
             )}
@@ -273,10 +273,10 @@ function AccountRow({ row, open, onToggle }) {
       >
         <Lamp tone={tone} pulse={row.tracking} size={6} />
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-[12.5px] font-medium text-ink">
+          <span className="block truncate text-[13.5px] font-medium text-ink">
             {row.customName || row.username}
           </span>
-          <span className="block truncate text-[11px] text-ink-3">
+          <span className="block truncate text-[12px] text-ink-3">
             {row.placeName || (row.placeId ? `Place ${row.placeId}` : "—")}
           </span>
         </span>
@@ -287,22 +287,22 @@ function AccountRow({ row, open, onToggle }) {
           {headline.map((m) => (
             <span key={m.key} className="text-right">
               <span className="silk block text-ink-3">{m.label}</span>
-              <span className="block font-mono text-[12.5px] text-ink">{m.display || "—"}</span>
+              <span className="block font-mono text-[13.5px] text-ink">{m.display || "—"}</span>
             </span>
           ))}
           {!metrics.length && (
-            <span className="font-mono text-[10.5px] text-ink-3">no readings yet</span>
+            <span className="font-mono text-[11.5px] text-ink-3">no readings yet</span>
           )}
         </span>
 
-        <span className="w-[104px] shrink-0 text-right font-mono text-[10.5px] text-ink-3">
+        <span className="w-[124px] shrink-0 text-right font-mono text-[11.5px] text-ink-3">
           {state}
         </span>
       </button>
 
       {open && (
         <div className="rule-b px-3.5 pt-1 pb-3.5 last:after:hidden">
-          <dl className="grid grid-cols-3 gap-x-6 gap-y-1 text-[11.5px]">
+          <dl className="grid grid-cols-3 gap-x-6 gap-y-1 text-[12.5px]">
             <Detail label="Roblox id" value={row.userId ?? "—"} />
             <Detail label="In game for" value={formatUptime(row.uptimeSec)} />
             <Detail label="Last report" value={formatAgo(row.reportedAt)} />
@@ -333,7 +333,7 @@ function Stat({ label, value, tone, icon: Icon }) {
         <span className="silk text-ink-3">{label}</span>
       </span>
       <span
-        className={`font-mono text-[26px] leading-none font-semibold ${
+        className={`text-[32px] leading-none font-bold tracking-[-0.03em] ${
           tone === "live" && value ? "text-live" : "text-ink"
         }`}
       >

@@ -11,21 +11,45 @@ CORRECTLY solved captcha arrives inside a high-risk token and Roblox answers
 for the captcha all over again. A normal browser on the same machine and the
 same VPN sails through, which is exactly what was observed.
 
-The fix is not to solve harder; it is to stop announcing the automation:
+The fix is not to solve harder; it is to stop announcing the automation, in
+two ORTHOGONAL layers — the driver, then the page:
 
-  1. If ``undetected_chromedriver`` is installed, use it. It BINARY-PATCHES
-     the chromedriver executable to strip the ``cdc_*`` variables — the one
-     signal no JavaScript patching can hide — and handles the rest.
-  2. Otherwise fall back to hardened vanilla Selenium: drop the automation
-     switch and extension, disable the AutomationControlled blink feature,
-     and inject a stealth script (webdriver, window.chrome, plugins,
-     languages) into every document before any page script runs.
+  THE DRIVER. If ``undetected_chromedriver`` is installed, use it: it
+  BINARY-PATCHES the chromedriver executable to strip the ``cdc_*``
+  variables, the one signal no JavaScript patching can hide. Otherwise a
+  vanilla Chrome is hardened by hand instead — drop the ``--enable-automation``
+  switch and the automation extension, disable the AutomationControlled blink
+  feature.
 
-The injected signals are kept CONSISTENT with what the rest of the flow
-asserts (force_english sets an en-US Accept-Language header, so the script
-reports ``['en-US', 'en']``). WebGL vendor/renderer and hardwareConcurrency
-are deliberately LEFT ALONE: the real values are self-consistent, and a fake
-GPU string beside a real canvas hash is a bigger flag than a common one.
+  THE PAGE. Whichever driver came out of that is then handed to
+  ``selenium-stealth`` (https://pypi.org/project/selenium-stealth/), which
+  installs its masking bundle through ``Page.addScriptToEvaluateOnNewDocument``
+  so it runs before any page script: navigator.webdriver, window.chrome.app
+  and .runtime, plugins, mimeTypes/media codecs, permissions,
+  navigator.vendor, iframe contentWindow, window.outer* — plus a UA override
+  that stops a headless run announcing ``HeadlessChrome``. It is Chrome-only,
+  which is all this flow drives, and it works on the undetected driver too
+  (``uc.Chrome`` subclasses ``selenium.webdriver.Chrome``, which is what its
+  type check demands). If the package is missing, ``_FALLBACK_JS`` below still
+  covers the handful of signals that matter most.
+
+The masked values are kept CONSISTENT with what the rest of the flow asserts
+and with the real machine — an inconsistent lie fingerprints harder than the
+truth:
+
+  * ``languages=["en-US", "en"]`` matches the en-US Accept-Language header
+    force_english sets on the way out.
+  * ``platform`` is this browser's REAL ``navigator.platform``, not
+    selenium-stealth's ``Win32`` default, which would have a Mac claim to be
+    a PC next to a Mac user-agent string.
+  * ``webgl_vendor``/``renderer`` are read back OUT of the browser and passed
+    straight back in, making that one override a deliberate no-op. The
+    library defaults to "Intel Inc."/"Intel Iris OpenGL Engine", and a fake
+    GPU string beside a real canvas hash is a bigger flag than a common one.
+    Only when the read fails do the library defaults stand.
+  * ``user_agent`` is NOT passed, so selenium-stealth reads the real one over
+    CDP and only strips "HeadlessChrome" from it. Passing a string instead
+    pins the library's 2020-era Chrome/83 UA — ancient, and a flag by itself.
 """
 
 import base64
@@ -37,7 +61,10 @@ import threading
 import urllib.parse
 
 
-STEALTH_JS = """
+# Used ONLY when selenium-stealth is not importable. It is a strict subset of
+# what that package installs, kept here so a missing dependency degrades the
+# masking instead of removing it.
+_FALLBACK_JS = """
 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
 
 if (!window.chrome) {
@@ -80,6 +107,93 @@ if (_origQuery) {
       : _origQuery(p));
 }
 """
+
+
+# ---------------------------------------------------------------------------
+# selenium-stealth — the page-visible masking
+# ---------------------------------------------------------------------------
+
+# navigator.platform when the browser cannot be asked (it always can, in
+# practice — this is belt and braces so `platform` is never None, which CDP's
+# Network.setUserAgentOverride would reject).
+_PLATFORM_BY_OS = {"win32": "Win32", "darwin": "MacIntel",
+                   "linux": "Linux x86_64"}
+
+# Selenium wraps a script body in a function, so `return` is legal here.
+_REAL_WEBGL_JS = """
+try {
+  const c = document.createElement('canvas');
+  const gl = c.getContext('webgl') || c.getContext('experimental-webgl');
+  if (!gl) { return null; }
+  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  if (!dbg) { return null; }
+  return [gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL),
+          gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)];
+} catch (e) { return null; }
+"""
+
+
+def _real_fingerprint(drv):
+    """(platform, webgl_vendor, renderer) as THIS browser really reports them.
+
+    The two WebGL strings come back None when the box has no GL at all (a
+    headless server, a VM without a driver), and the caller then leaves
+    selenium-stealth's own defaults in place — there is nothing real to be
+    consistent WITH in that case."""
+    platform = None
+    try:
+        platform = drv.execute_script("return navigator.platform") or None
+    except Exception:  # noqa: BLE001 - about:blank should answer, but never
+        pass           # let a fingerprint read be what kills the browser
+    if not platform:
+        platform = _PLATFORM_BY_OS.get(sys.platform, "Win32")
+
+    vendor = renderer = None
+    try:
+        pair = drv.execute_script(_REAL_WEBGL_JS)
+        if pair and len(pair) == 2 and all(pair):
+            vendor, renderer = str(pair[0]), str(pair[1])
+    except Exception:  # noqa: BLE001 - no GL here; library defaults stand
+        pass
+    return platform, vendor, renderer
+
+
+def _apply_stealth(drv, on_status):
+    """Hide the page-visible automation signals with selenium-stealth.
+
+    MUST run before any navigation: every patch is installed through
+    Page.addScriptToEvaluateOnNewDocument, which only reaches documents
+    created after the call. See the module docstring for why each argument
+    is the value it is."""
+    try:
+        from selenium_stealth import stealth
+    except ImportError:
+        try:
+            drv.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument",
+                                {"source": _FALLBACK_JS})
+            on_status("[stealth] selenium-stealth is not installed — running "
+                      "on the built-in fallback patches; "
+                      "`pip install selenium-stealth` for the full set")
+        except Exception as e:  # noqa: BLE001 - no CDP, or an odd build
+            on_status(f"[stealth] could not inject any stealth script ({e})")
+        return False
+
+    platform, webgl_vendor, renderer = _real_fingerprint(drv)
+    kwargs = {"languages": ["en-US", "en"],   # force_english says the same
+              "vendor": "Google Inc.",        # what Chrome genuinely reports
+              "platform": platform,
+              "fix_hairline": True}
+    if webgl_vendor and renderer:
+        kwargs["webgl_vendor"] = webgl_vendor
+        kwargs["renderer"] = renderer
+    try:
+        stealth(drv, **kwargs)
+    except Exception as e:  # noqa: BLE001 - masking must not lose the browser
+        on_status(f"[stealth] selenium-stealth could not be applied ({e})")
+        return False
+    on_status(f"[stealth] selenium-stealth applied (platform={platform}, "
+              f"webgl={renderer or 'library default'})")
+    return True
 
 
 def _resolve_paths():
@@ -394,21 +508,21 @@ def _uc_driver(headless, proxy, on_status):
         on_status(f"[stealth] undetected_chromedriver failed ({e}); "
                   "falling back to stealth patches")
         return None
-    try:
-        drv.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument",
-                            {"source": STEALTH_JS})
-    except Exception:  # noqa: BLE001 - uc already patches the essentials
-        pass
     on_status("[stealth] driving through undetected_chromedriver")
+    # uc patches the DRIVER; selenium-stealth patches the PAGE. Both.
+    _apply_stealth(drv, on_status)
     return drv
 
 
 def _vanilla_stealth_driver(headless, proxy, on_status):
-    """Hardened vanilla Selenium: hides everything a CDP script can hide.
+    """Hardened vanilla Selenium, masked by selenium-stealth.
 
     What this path CANNOT hide is the chromedriver binary's cdc_* variables
     (only a patched binary — the uc path above — removes those), which is why
-    installing undetected_chromedriver is the recommended configuration."""
+    installing undetected_chromedriver is the recommended configuration.
+    The two experimental options set here are the ones selenium-stealth's own
+    documented example sets, and they cover what its injected scripts cannot:
+    a browser switch and an extension are not page state."""
     from selenium import webdriver
     opts = webdriver.ChromeOptions()
     # AutomationControlled is the blink feature behind navigator.webdriver.
@@ -435,13 +549,9 @@ def _vanilla_stealth_driver(headless, proxy, on_status):
                                options=opts)
     else:
         drv = webdriver.Chrome(options=opts)
-    try:
-        drv.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument",
-                            {"source": STEALTH_JS})
-    except Exception as e:  # noqa: BLE001 - no CDP, or an odd build
-        on_status(f"[stealth] could not inject the stealth script ({e})")
     on_status("[stealth] driving through hardened Selenium "
               "(install undetected-chromedriver for full masking)")
+    _apply_stealth(drv, on_status)
     return drv
 
 
@@ -455,14 +565,24 @@ def make_driver(headless=False, proxy=None, on_status=lambda m: None):
 
 
 if __name__ == "__main__":
-    # A five-second smoke check: start a driver, read back the two signals
-    # Roblox's page scripts read first, print them, quit.
-    d = make_driver()
+    # A five-second smoke check: start a driver, read back the signals
+    # Roblox's page scripts read first, print them, quit. Every line must
+    # look like an ordinary browser — webdriver undefined above all.
+    d = make_driver(headless="--headless" in sys.argv)
     try:
         d.get("data:text/html,<title>t</title>")
-        print("navigator.webdriver =", d.execute_script("return navigator.webdriver"))
-        print("window.chrome       =", bool(d.execute_script("return window.chrome")))
-        print("languages           =", d.execute_script("return navigator.languages"))
+        for name, js in (
+            ("navigator.webdriver", "return navigator.webdriver"),
+            ("window.chrome", "return !!window.chrome"),
+            ("chrome.runtime", "return !!(window.chrome && window.chrome.runtime)"),
+            ("languages", "return navigator.languages"),
+            ("vendor", "return navigator.vendor"),
+            ("platform", "return navigator.platform"),
+            ("plugins", "return navigator.plugins.length"),
+            ("userAgent", "return navigator.userAgent"),
+            ("webgl", _REAL_WEBGL_JS),
+        ):
+            print(f"{name:<20} = {d.execute_script(js)}")
     finally:
         d.quit()
     sys.exit(0)

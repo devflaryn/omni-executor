@@ -1,8 +1,9 @@
-pywebview>=5.0
-# Linux only — pywebview needs a webview backend. Either install the GTK one:
-#   sudo apt install python3-gi gir1.2-webkit2-4.1
-# or uncomment the Qt extra below:
-# pywebview[qt]>=5.0
+# NO GUI TOOLKIT LIVES HERE ANY MORE. The window is a Tauri (Rust) app in
+# src-tauri/ and this half is headless — it talks to it over stdio (rpc.py).
+# What used to be `pywebview>=5.0` plus a per-platform webview backend (GTK
+# WebKit on Linux, pythonnet + WinForms on Windows) is now a `cargo build`, and
+# the OS webview Tauri uses is the same one those backends were reaching for.
+# Building the app therefore needs Rust as well as Python; see README.md.
 
 # The "add account" browser login. omnidroid/accounts.py imports selenium
 # LAZILY (inside the login functions), so nothing fails at startup when it is
@@ -20,6 +21,17 @@ selenium>=4.6
 # cdc_* variables) — the one signal no JS patching hides. stealth.make_driver
 # uses it when present and falls back to hardened vanilla Selenium otherwise.
 undetected-chromedriver>=3.5
+
+# The other half of that: undetected-chromedriver hides the DRIVER, and
+# selenium-stealth (https://pypi.org/project/selenium-stealth/) hides the
+# PAGE. stealth._apply_stealth hands it whichever driver came out and it
+# injects navigator.webdriver, window.chrome.app/.runtime, plugins, media
+# codecs, permissions, navigator.vendor, iframe contentWindow, window.outer*
+# and a real-user-agent override into every document before any page script
+# runs. Imported lazily, so a missing copy degrades to stealth._FALLBACK_JS
+# rather than failing -- but it must be present at BUILD time too, or the
+# frozen app is stuck on that reduced fallback forever.
+selenium-stealth>=1.0.6
 
 # The built-in VNC viewer (the View button -> omnidroid's `_vncview`). It
 # decodes RFB framebuffers through PIL and renders them in a Tk window, and

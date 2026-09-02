@@ -178,11 +178,11 @@ export default function CreateAccountModal({ onClose, showToast, onCreated }) {
                   </option>
                 ))}
               </select>
-              <p className="font-mono text-[10.5px] leading-snug text-ink-3">{styleExample}</p>
+              <p className="font-mono text-[11.5px] leading-snug text-ink-3">{styleExample}</p>
             </Field>
           </div>
 
-          <p className="text-[11px] leading-relaxed text-ink-3">
+          <p className="text-[12px] leading-relaxed text-ink-3">
             Each account gets a random birthday (18+), a random gender and a secure password.
             A browser window opens per account; captchas are solved automatically when an API
             key is set in Settings → Captcha, otherwise you solve them in that window.
@@ -221,13 +221,13 @@ export default function CreateAccountModal({ onClose, showToast, onCreated }) {
         </div>
       ) : (
         <div className="flex flex-col gap-3">
-          <div className="flex items-center justify-between text-[12px] text-ink-2">
+          <div className="flex items-center justify-between text-[13px] text-ink-2">
             <span>
               {at.total > 0
                 ? `Account ${Math.min(at.index + 1, at.total)} of ${at.total}`
                 : "Working…"}
             </span>
-            <span className="font-mono text-[11px] text-ink-3">
+            <span className="font-mono text-[12px] text-ink-3">
               {results.filter((r) => r.ok).length} created ·{" "}
               {results.filter((r) => !r.ok).length} failed
             </span>
@@ -236,7 +236,7 @@ export default function CreateAccountModal({ onClose, showToast, onCreated }) {
           <div
             ref={logRef}
             className="h-[168px] overflow-y-auto rounded-lg border border-line bg-raised px-2.5 py-2
-                       font-mono text-[10.5px] leading-relaxed text-ink-3"
+                       font-mono text-[11.5px] leading-relaxed text-ink-3"
           >
             {log.map((line, i) => (
               <div key={i} className="whitespace-pre-wrap break-all">
@@ -250,7 +250,7 @@ export default function CreateAccountModal({ onClose, showToast, onCreated }) {
               {results.map((r, i) => (
                 <li
                   key={i}
-                  className="flex items-center gap-2 rounded-md border border-line px-2 py-1.5 text-[12px]"
+                  className="flex items-center gap-2 rounded-md border border-line px-2 py-1.5 text-[13px]"
                 >
                   <span
                     className={`h-1.5 w-1.5 shrink-0 rounded-full ${
@@ -283,7 +283,7 @@ export default function CreateAccountModal({ onClose, showToast, onCreated }) {
                     </button>
                     </>
                   ) : (
-                    <span className="ml-auto truncate pl-2 text-right text-[10.5px] text-ink-3">
+                    <span className="ml-auto truncate pl-2 text-right text-[11.5px] text-ink-3">
                       {r.error}
                     </span>
                   )}
@@ -292,7 +292,7 @@ export default function CreateAccountModal({ onClose, showToast, onCreated }) {
             </ul>
           )}
 
-          <p className="text-[11px] leading-relaxed text-ink-3">
+          <p className="text-[12px] leading-relaxed text-ink-3">
             You can close this window — the batch keeps running in the background.
           </p>
 

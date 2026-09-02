@@ -13,7 +13,7 @@ import { Button, Field } from "./ui.jsx";
 import { CpuIcon } from "./icons.jsx";
 
 const INPUT =
-  "h-9 w-full rounded-lg border border-line bg-raised px-3 text-[13px] text-ink " +
+  "h-9 w-full rounded-lg border border-line bg-raised px-3 text-[14px] text-ink " +
   "outline-none placeholder:text-ink-3 focus:border-accent focus:ring-2 focus:ring-accent/30";
 
 // Kept in step with the server's own rule (auth.controller.js): checking it
@@ -69,8 +69,8 @@ export default function AuthView({ onSignedIn, apiBase, deviceName }) {
       <div className="w-full max-w-[340px]">
         <div className="mb-7 flex flex-col items-center gap-2">
           <CpuIcon className="h-5 w-5 text-accent" />
-          <h1 className="text-[15px] font-semibold tracking-tight">Omni Executor</h1>
-          <p className="text-[11.5px] text-ink-3">
+          <h1 className="text-[16px] font-semibold tracking-tight">Omni Executor</h1>
+          <p className="text-[12.5px] text-ink-3">
             {isRegister ? "Create your free account" : "Sign in to continue"}
           </p>
         </div>
@@ -120,7 +120,7 @@ export default function AuthView({ onSignedIn, apiBase, deviceName }) {
           </Field>
 
           {error && (
-            <p className="rounded-lg border border-danger/35 bg-danger/8 px-3 py-2 text-[12px] text-danger">
+            <p className="rounded-lg border border-danger/35 bg-danger/8 px-3 py-2 text-[13px] text-danger">
               {error}
             </p>
           )}
@@ -139,7 +139,7 @@ export default function AuthView({ onSignedIn, apiBase, deviceName }) {
           <button type="submit" className="hidden" aria-hidden="true" tabIndex={-1} />
         </form>
 
-        <p className="mt-5 text-center text-[12px] text-ink-3">
+        <p className="mt-5 text-center text-[13px] text-ink-3">
           {isRegister ? "Already have an account?" : "No account?"}{" "}
           <button
             type="button"
@@ -150,7 +150,7 @@ export default function AuthView({ onSignedIn, apiBase, deviceName }) {
           </button>
         </p>
 
-        <p className="mt-7 text-center text-[10.5px] text-ink-3">
+        <p className="mt-7 text-center text-[11.5px] text-ink-3">
           {deviceName ? `This device: ${deviceName}` : null}
           {deviceName && apiBase ? " · " : null}
           {apiBase ? apiBase.replace(/^https?:\/\//, "") : null}

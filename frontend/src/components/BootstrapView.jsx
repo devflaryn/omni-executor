@@ -115,7 +115,7 @@ export default function BootstrapView({ onReady }) {
   if (status?.reboot_required) {
     return (
       <Shell>
-        <div className="max-w-md rounded-lg border border-amber-600/40 bg-amber-950/20 p-4 text-[13px]">
+        <div className="max-w-md rounded-lg border border-amber-600/40 bg-amber-950/20 p-4 text-[14px]">
           <p className="mb-2 font-medium text-amber-400">Restart required</p>
           <p className="mb-3 text-ink-2">
             Windows Hypervisor Platform has been turned on. Windows needs to
@@ -145,7 +145,7 @@ export default function BootstrapView({ onReady }) {
           Showing a virtualization-is-off warning on a machine that is
           actually fine would be worse than saying nothing. */}
       {status?.whpx_ok === false && (
-        <div className="max-w-md rounded-lg border border-amber-600/40 bg-amber-950/20 p-4 text-[13px]">
+        <div className="max-w-md rounded-lg border border-amber-600/40 bg-amber-950/20 p-4 text-[14px]">
           {/* "will be slow", not "is broken". The engine falls back to
               software emulation rather than refusing to boot, so this is a
               speed warning with an offer attached — wording it as a blocker
@@ -164,11 +164,11 @@ export default function BootstrapView({ onReady }) {
 
       {!error && (
         <div className="w-full max-w-md">
-          <div className="mb-2 flex justify-between text-[11px] text-ink-3">
+          <div className="mb-2 flex justify-between text-[12px] text-ink-3">
             <span>{label}</span>
             {showBar && <span>{pct}%</span>}
           </div>
-          <div className="h-2 w-full overflow-hidden rounded bg-raised">
+          <div className="h-2 w-full overflow-hidden rounded-full bg-raised">
             <div
               className={
                 showBar
@@ -178,7 +178,7 @@ export default function BootstrapView({ onReady }) {
               style={showBar ? { width: `${pct}%` } : undefined}
             />
           </div>
-          <p className="mt-3 text-center text-[11px] text-ink-3">
+          <p className="mt-3 text-center text-[12px] text-ink-3">
             This only happens once. It downloads several GB, so it can take a
             while.
           </p>
@@ -187,7 +187,7 @@ export default function BootstrapView({ onReady }) {
 
       {error && (
         <div className="max-w-md text-center">
-          <p className="mb-3 text-[13px] text-danger">{error}</p>
+          <p className="mb-3 text-[14px] text-danger">{error}</p>
           <Button
             variant="solid"
             size="sm"

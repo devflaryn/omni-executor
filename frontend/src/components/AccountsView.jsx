@@ -132,7 +132,7 @@ export default function AccountsView({ active, launch, onLaunch, showToast, addR
           >
             <p>{issue.text}</p>
             {settingUp && (
-              <p className="mt-1 truncate font-mono text-[11px] opacity-70">
+              <p className="mt-1 truncate font-mono text-[12px] opacity-70">
                 {progress.setup || "Working…"}
               </p>
             )}
@@ -150,7 +150,7 @@ export default function AccountsView({ active, launch, onLaunch, showToast, addR
                 <>
                   {accounts.length > 0 && (
                     <label
-                      className="mr-1 flex cursor-pointer items-center gap-1.5 text-[11.5px] text-ink-3 select-none hover:text-ink-2"
+                      className="mr-1 flex cursor-pointer items-center gap-1.5 text-[12.5px] text-ink-3 select-none hover:text-ink-2"
                       title="Tick every account in the list"
                     >
                       <input
@@ -171,7 +171,7 @@ export default function AccountsView({ active, launch, onLaunch, showToast, addR
                       placeholder="Filter"
                       aria-label="Filter accounts by name"
                       spellCheck={false}
-                      className="input h-7 w-[132px] py-0 pl-8 text-[12px]"
+                      className="input h-7 w-[132px] py-0 pl-8 text-[13px]"
                     />
                   </div>
                   <Button size="sm" onClick={() => setCreating(true)} disabled={!usable}>
@@ -241,7 +241,7 @@ export default function AccountsView({ active, launch, onLaunch, showToast, addR
                     );
                   })}
                 </select>
-                <p className="text-[11px] leading-snug text-ink-3">{describeMode(launch.mode).note}</p>
+                <p className="text-[12px] leading-snug text-ink-3">{describeMode(launch.mode).note}</p>
               </Field>
 
               {/* This used to be hidden for farming, on the grounds that
@@ -268,7 +268,7 @@ export default function AccountsView({ active, launch, onLaunch, showToast, addR
                       </option>
                     ))}
                   </select>
-                  <p className="text-[11px] leading-snug text-ink-3">{describeGpu(launch.gpu || "auto").note}</p>
+                  <p className="text-[12px] leading-snug text-ink-3">{describeGpu(launch.gpu || "auto").note}</p>
                 </Field>
               )}
 
@@ -283,7 +283,7 @@ export default function AccountsView({ active, launch, onLaunch, showToast, addR
                   inputMode="numeric"
                   value={launch.place || ""}
                   onChange={(e) => onLaunch({ ...launch, place: e.target.value })}
-                  className="input font-mono text-[12.5px]"
+                  className="input font-mono text-[13.5px]"
                   placeholder="8737899170"
                   autoComplete="off"
                   spellCheck={false}
@@ -316,7 +316,7 @@ export default function AccountsView({ active, launch, onLaunch, showToast, addR
                         Stop {bulkRunning.length} running
                       </Button>
                     )}
-                    <p className="text-center text-[11px] leading-snug text-ink-3">
+                    <p className="text-center text-[12px] leading-snug text-ink-3">
                       {bulkBusy
                         ? "Working on the selection…"
                         : bulkStopped.length
@@ -326,7 +326,7 @@ export default function AccountsView({ active, launch, onLaunch, showToast, addR
                     <button
                       type="button"
                       onClick={() => setChecked(new Set())}
-                      className="ring-focus mx-auto rounded px-1 text-[11px] text-ink-3 underline-offset-2 hover:text-ink hover:underline"
+                      className="ring-focus mx-auto rounded px-1 text-[12px] text-ink-3 underline-offset-2 hover:text-ink hover:underline"
                     >
                       Clear selection
                     </button>
@@ -352,7 +352,7 @@ export default function AccountsView({ active, launch, onLaunch, showToast, addR
                         </>
                       )}
                     </Button>
-                    <p className="text-center text-[11px] leading-snug text-ink-3">
+                    <p className="text-center text-[12px] leading-snug text-ink-3">
                       {selectedBusy
                         ? `${selectedBusy} ${selectedAccount.name}…`
                         : selectedAccount
@@ -461,7 +461,7 @@ function AccountRow({
       />
       <span
         className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border font-mono
-                    text-[11px] font-bold transition-colors duration-150
+                    text-[12px] font-bold transition-colors duration-150
                     ${
                       selected
                         ? "border-accent/60 bg-accent/15 text-accent"
@@ -474,22 +474,22 @@ function AccountRow({
 
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
-          <span className="truncate text-[13px] font-medium text-ink">{account.name}</span>
+          <span className="truncate text-[14px] font-medium text-ink">{account.name}</span>
           {account.arch && (
             <span
               title={`CPU architecture: ${account.arch}`}
-              className={`chip ${account.arch === "arm" ? "border-accent/40 text-accent" : ""}`}
+              className={`chip uppercase ${account.arch === "arm" ? "chip-accent" : ""}`}
             >
               {account.arch}
             </span>
           )}
-          {account.base && <span className="chip hidden md:inline-block">{account.base}</span>}
+          {account.base && <span className="chip hidden md:inline-flex">{account.base}</span>}
           {running && account.mode && (
-            <span className="chip border-live/40 text-live">{account.mode}</span>
+            <span className="chip chip-live capitalize">{account.mode}</span>
           )}
           {remote && (
             <span
-              className="chip border-accent/40 text-accent"
+              className="chip chip-accent"
               title={`This account is running on ${where.device?.deviceName || "another device"}`}
             >
               {where.device?.deviceName || "elsewhere"}
@@ -498,7 +498,7 @@ function AccountRow({
         </div>
         <div className="mt-1 flex items-center gap-2">
           <Lamp tone={tone} pulse={tone === "busy"} size={6} />
-          <span className="truncate font-mono text-[11px] text-ink-3">
+          <span className="truncate font-mono text-[12px] text-ink-3">
             {progressLine || status}
           </span>
         </div>
@@ -569,7 +569,7 @@ function EmptyState({ filtered, query, usable, onAdd, onClear }) {
     return (
       <div className="flex flex-col items-center gap-2.5 px-4 py-14 text-center">
         <SearchIcon className="h-6 w-6 text-ink-3" />
-        <p className="text-[13px] text-ink-2">
+        <p className="text-[14px] text-ink-2">
           No account matches “<span className="font-mono">{query}</span>”
         </p>
         <Button size="sm" onClick={onClear}>
@@ -582,8 +582,8 @@ function EmptyState({ filtered, query, usable, onAdd, onClear }) {
     <div className="flex flex-col items-center gap-3 px-4 py-14 text-center">
       <LayersIcon className="h-7 w-7 text-ink-3" strokeWidth={1.4} />
       <div>
-        <p className="text-[13px] font-medium text-ink">No accounts yet</p>
-        <p className="mx-auto mt-1 max-w-[36ch] text-[11.5px] leading-relaxed text-ink-3">
+        <p className="text-[14px] font-medium text-ink">No accounts yet</p>
+        <p className="mx-auto mt-1 max-w-[36ch] text-[12.5px] leading-relaxed text-ink-3">
           Each account gets its own Android instance with its own storage, ports and game data.
         </p>
       </div>
@@ -634,7 +634,7 @@ function AddAccountModal({ onClose, onAdded }) {
               setMethod(option.id);
               setError("");
             }}
-            className={`ring-focus flex-1 rounded-md px-3 py-1.5 text-[12px] font-semibold transition-colors
+            className={`ring-focus flex-1 rounded-md px-3 py-1.5 text-[13px] font-semibold transition-colors
                         duration-150 ${
                           method === option.id
                             ? "bg-accent text-accent-ink"
@@ -648,7 +648,7 @@ function AddAccountModal({ onClose, onAdded }) {
 
       <form onSubmit={submit} className="mt-4 flex flex-col gap-3">
         {method === "browser" ? (
-          <p className="text-[12.5px] leading-relaxed text-ink-2">
+          <p className="text-[13.5px] leading-relaxed text-ink-2">
             A browser window opens for Roblox sign-in. When it completes, the engine provisions a
             fresh Android instance named after the account.
           </p>
@@ -661,14 +661,14 @@ function AddAccountModal({ onClose, onAdded }) {
                 setToken(e.target.value);
                 setError("");
               }}
-              className="input min-h-[86px] resize-y font-mono text-[11.5px]"
+              className="input min-h-[86px] resize-y font-mono text-[12.5px]"
               placeholder=".ROBLOSECURITY=…"
               spellCheck={false}
             />
           </Field>
         )}
 
-        <p className={`text-[11px] leading-relaxed ${error ? "text-danger" : "text-ink-3"}`}>
+        <p className={`text-[12px] leading-relaxed ${error ? "text-danger" : "text-ink-3"}`}>
           {error || "First-time provisioning takes roughly 3–15 minutes."}
         </p>
 

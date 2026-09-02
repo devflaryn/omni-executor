@@ -4,7 +4,7 @@
    Tabs, text and the active tab persist across relaunches (editorStore). */
 
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
-import { highlightLua } from "../lua.js";
+import { highlightLua, LUA_KEYWORDS, LUA_BUILTINS, LUA_MEMBERS } from "../lua.js";
 import { api } from "../api.js";
 import { useEngine } from "../engine.jsx";
 import { useEditorStore } from "../editorStore.jsx";
@@ -104,26 +104,26 @@ export default function EditorView({ active, showToast }) {
   return (
     <div className={`min-h-0 flex-1 flex-col p-5 pt-2 ${active ? "flex" : "hidden"}`}>
       <div className="animate-rise flex min-h-0 flex-1 flex-col overflow-hidden">
-        <TabBar
-          tabs={tabs}
-          activeId={activeId}
-          onSelect={store.selectTab}
-          onClose={store.closeTab}
-          onNew={() => store.newTab()}
-          onRename={store.renameTab}
-        />
-
-        {/* Toolbar. It used to restate the active tab's name under the tab
-            bar, one line below the tab already showing it; the file icon moved
-            onto the tab itself and the restatement went. */}
-        <div className="rule-b flex h-11 shrink-0 items-center gap-2 px-3.5">
-          <div className="ml-auto flex items-center gap-1">
+        {/* Header — ONE row: tabs on the left, the run tools on the right.
+            They used to be two stacked bars (tabs above, tools below) that
+            never lined up; now both sit on the same rule, tabs bottom-aligned
+            so the active underline touches it, tools vertically centered. */}
+        <div className="rule-b flex h-11 shrink-0 items-end gap-2 pr-3.5">
+          <TabBar
+            tabs={tabs}
+            activeId={activeId}
+            onSelect={store.selectTab}
+            onClose={store.closeTab}
+            onNew={() => store.newTab()}
+            onRename={store.renameTab}
+          />
+          <div className="flex shrink-0 items-center gap-1 self-center">
             <select
               value={target}
               onChange={(e) => setTarget(e.target.value)}
               title="Where to run — every running instance, or one of them"
               className="mr-1 max-w-[170px] cursor-pointer rounded-md border border-line bg-raised px-2 py-1
-                         font-mono text-[11px] text-ink-2 outline-none focus:border-accent/60"
+                         font-mono text-[12px] text-ink-2 outline-none focus:border-accent/60"
             >
               <option value={ALL}>
                 {runningAccounts.length ? `All (${runningAccounts.length} running)` : "None"}
@@ -188,7 +188,7 @@ export default function EditorView({ active, showToast }) {
 
         {/* Exec output — one line per instance it ran on */}
         {results && (
-          <div className="rule-t max-h-32 shrink-0 overflow-auto px-3.5 py-2 font-mono text-[11px]">
+          <div className="rule-t max-h-32 shrink-0 overflow-auto px-3.5 py-2 font-mono text-[12px]">
             {results.map((r) => (
               <div
                 key={r.name}
@@ -204,7 +204,7 @@ export default function EditorView({ active, showToast }) {
         )}
 
         {/* Status bar */}
-        <div className="rule-t flex h-8 shrink-0 items-center gap-4 px-3.5 font-mono text-[10.5px] text-ink-3">
+        <div className="rule-t flex h-8 shrink-0 items-center gap-4 px-3.5 font-mono text-[11.5px] text-ink-3">
           <span className="flex items-center gap-2">
             <Lamp tone={running ? "busy" : "live"} pulse={running} size={6} />
             {running ? "Running" : "Ready"}
@@ -243,7 +243,7 @@ function TabBar({ tabs, activeId, onSelect, onClose, onNew, onRename }) {
   };
 
   return (
-    <div className="flex h-9 shrink-0 items-end gap-0.5 overflow-x-auto px-1" role="tablist" ref={barRef}>
+    <div className="flex min-w-0 flex-1 items-end gap-0.5 self-stretch overflow-x-auto px-1" role="tablist" ref={barRef}>
       {tabs.map((tab) => {
         const selected = tab.id === activeId;
         const isEditing = editing?.id === tab.id;
@@ -265,11 +265,17 @@ function TabBar({ tabs, activeId, onSelect, onClose, onNew, onRename }) {
               }
             }}
             className={`ring-focus group relative flex h-8 max-w-[200px] min-w-0 cursor-pointer items-center gap-1.5
-                        rounded-t-md px-2.5 pr-1.5 font-mono text-[11.5px] transition-colors duration-150
+                        rounded-t-md px-2.5 pr-1.5 font-mono text-[12.5px] transition-colors duration-150
                         ${selected ? "bg-surface text-ink" : "text-ink-3 hover:bg-raised/60 hover:text-ink-2"}`}
-            title={tab.name}
+            title={tab.kind === "autoexec" ? `${tab.name} — autoexec, runs in every instance at start` : tab.name}
           >
-            <FileIcon className={`h-3 w-3 shrink-0 ${selected ? "text-ink-2" : "text-ink-3"}`} />
+            {/* The rocket marks a tab that IS an autoexec file — edits write
+                through to the folder, not just to the editor's state. */}
+            {tab.kind === "autoexec" ? (
+              <RocketIcon className={`h-3 w-3 shrink-0 ${selected ? "text-ink-2" : "text-ink-3"}`} />
+            ) : (
+              <FileIcon className={`h-3 w-3 shrink-0 ${selected ? "text-ink-2" : "text-ink-3"}`} />
+            )}
             {isEditing ? (
               <input
                 autoFocus
@@ -282,7 +288,7 @@ function TabBar({ tabs, activeId, onSelect, onClose, onNew, onRename }) {
                   e.stopPropagation();
                 }}
                 onClick={(e) => e.stopPropagation()}
-                className="w-[140px] rounded border border-accent/50 bg-raised px-1 py-0.5 font-mono text-[11.5px]
+                className="w-[140px] rounded border border-accent/50 bg-raised px-1 py-0.5 font-mono text-[12.5px]
                            text-ink outline-none select-text"
                 spellCheck={false}
               />
@@ -316,13 +322,79 @@ function TabBar({ tabs, activeId, onSelect, onClose, onNew, onRename }) {
 
 /* -------------------------------------------------------------------------- */
 
+/* --- Editing smarts ------------------------------------------------------ */
+
+/* Auto-close pairs. Quotes are here too — they double as their own closer,
+   which is what makes "step over" work for them. */
+const PAIR = { "(": ")", "[": "]", "{": "}", '"': '"', "'": "'" };
+const CLOSERS = new Set([")", "]", "}"]);
+const WORD_CH = /[A-Za-z0-9_]/;
+
+/* Look of a completion row's kind tag — the little letter VS Code draws as an
+   icon. Reuses the syntax palette so a keyword completes in keyword purple. */
+const KIND_STYLE = {
+  kw: { tag: "k", cls: "text-code-kw" },
+  fn: { tag: "f", cls: "text-code-fn" },
+  prop: { tag: "m", cls: "text-code-prop" },
+  var: { tag: "v", cls: "text-ink-3" },
+};
+
+/* Completion candidates for the word `prefix` ending at `caret`. After a `.`
+   or `:` the menu is members — the curated LUA_MEMBERS list merged with every
+   `base.x` the buffer already contains, so anything used once completes
+   everywhere. Otherwise: keywords + builtins + the buffer's own identifiers.
+   `force` (Ctrl+Space) opens even on an empty word. */
+function completionsFor(source, caret, prefix, force = false) {
+  const before = source.slice(0, caret - prefix.length);
+  const member = before.match(/([A-Za-z_]\w*)\s*[.:]$/);
+  const seen = new Set();
+  const items = [];
+  const push = (label, kind) => {
+    if (label === prefix || seen.has(label)) return;
+    if (prefix && !label.toLowerCase().startsWith(prefix.toLowerCase())) return;
+    seen.add(label);
+    items.push({ label, kind });
+  };
+  if (member) {
+    for (const m of LUA_MEMBERS[member[1]] || []) push(m, "prop");
+    const used = new RegExp(`\\b${member[1]}\\s*[.:]([A-Za-z_]\\w*)`, "g");
+    for (const m of source.matchAll(used)) push(m[1], "prop");
+  } else {
+    if (!prefix && !force) return [];
+    for (const k of LUA_KEYWORDS) push(k, "kw");
+    for (const b of LUA_BUILTINS) push(b, "fn");
+    for (const m of source.matchAll(/[A-Za-z_]\w{2,}/g)) push(m[0], "var");
+  }
+  // Shortest first — the tightest continuation of what was typed sits on top.
+  items.sort((a, b) => a.label.length - b.label.length || a.label.localeCompare(b.label));
+  return items.slice(0, 8);
+}
+
 /* Gutter + highlight layer + textarea, sharing .editor-metrics so the caret
-   lands on the glyphs. Owns its own scroll and caret; reports the caret up. */
+   lands on the glyphs. Owns its own scroll and caret; reports the caret up.
+   Carries the VS-Code-ish smarts: auto-closing pairs (wrap the selection,
+   step over the closer, Backspace eats both halves) and a completion menu
+   (letters open it, Ctrl+Space forces it, arrows + Enter/Tab drive it). */
 const CodeSurface = forwardRef(function CodeSurface({ value, visible, onChange, onCaret, onRun }, ref) {
   const inputRef = useRef(null);
   const highlightRef = useRef(null);
   const gutterRef = useRef(null);
   const [line, setLine] = useState(1);
+  const [menu, setMenu] = useState(null); // { items, index, prefix, left, top }
+  const menuKeyRef = useRef(false); // keyup after a menu-nav keydown must not refilter
+  const charWRef = useRef(0);
+
+  // One glyph's width — the surface is strictly monospace, so caret pixel
+  // positions are arithmetic, not DOM measurement.
+  const charWidth = () => {
+    if (!charWRef.current) {
+      const s = getComputedStyle(inputRef.current);
+      const ctx = document.createElement("canvas").getContext("2d");
+      ctx.font = `${s.fontWeight} ${s.fontSize} ${s.fontFamily}`;
+      charWRef.current = ctx.measureText("M").width || 8;
+    }
+    return charWRef.current;
+  };
 
   const html = useMemo(() => highlightLua(value), [value]);
   const lineCount = useMemo(() => value.split("\n").length, [value]);
@@ -381,22 +453,145 @@ const CodeSurface = forwardRef(function CodeSurface({ value, visible, onChange, 
     },
   }));
 
+  /* Build (or close) the completion menu for the word at the caret, anchored
+     under that word's first character. */
+  const openMenu = (force = false) => {
+    const input = inputRef.current;
+    if (!input || input.selectionStart !== input.selectionEnd) return setMenu(null);
+    const caret = input.selectionStart;
+    const text = input.value;
+    const prefix = (text.slice(0, caret).match(/[A-Za-z_]\w*$/) || [""])[0];
+    const items = completionsFor(text, caret, prefix, force);
+    if (!items.length) return setMenu(null);
+    const upTo = text.slice(0, caret - prefix.length);
+    const line0 = (upTo.match(/\n/g) || []).length;
+    const lineText = upTo.slice(upTo.lastIndexOf("\n") + 1);
+    let col = 0; // visual column — tabs render 4 wide (tab-size)
+    for (const ch of lineText) col += ch === "\t" ? 4 - (col % 4) : 1;
+    const PAD = 16, LINE_H = 22, WIDTH = 230;
+    const box = input.parentElement; // the relative wrapper
+    const height = items.length * 25 + 8;
+    const left = Math.max(4, Math.min(PAD + col * charWidth() - input.scrollLeft, box.clientWidth - WIDTH - 4));
+    let top = PAD + (line0 + 1) * LINE_H - input.scrollTop + 2;
+    if (top + height > box.clientHeight - 4) top = PAD + line0 * LINE_H - input.scrollTop - height - 2;
+    setMenu({ items, index: 0, prefix, left, top });
+  };
+
+  const accept = (item) => {
+    insertText(item.label.slice(menu.prefix.length));
+    setMenu(null);
+    updateCaret();
+  };
+
   const onKeyDown = (e) => {
+    const input = inputRef.current;
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
+      setMenu(null);
       onRun();
-    } else if (e.key === "Tab") {
+      return;
+    }
+    if (e.ctrlKey && e.code === "Space") {
+      e.preventDefault();
+      openMenu(true);
+      return;
+    }
+    if (menu) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        menuKeyRef.current = true;
+        const step = e.key === "ArrowDown" ? 1 : -1;
+        setMenu((m) => m && { ...m, index: (m.index + step + m.items.length) % m.items.length });
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        menuKeyRef.current = true;
+        accept(menu.items[menu.index]);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        menuKeyRef.current = true;
+        setMenu(null);
+        return;
+      }
+    }
+    const s = input.selectionStart;
+    const t = input.selectionEnd;
+    const prev = input.value[s - 1] || "";
+    const next = input.value[t] || "";
+    // Step over the closer (or closing quote) auto-close already placed.
+    if (s === t && next === e.key && (CLOSERS.has(e.key) || PAIR[e.key] === e.key)) {
+      e.preventDefault();
+      input.setSelectionRange(s + 1, s + 1);
+      updateCaret();
+      return;
+    }
+    if (PAIR[e.key]) {
+      const isQuote = PAIR[e.key] === e.key;
+      if (s !== t) {
+        // Wrap the selection instead of overtyping it.
+        e.preventDefault();
+        const inner = input.value.slice(s, t);
+        insertText(e.key + inner + PAIR[e.key]);
+        input.setSelectionRange(s + 1, s + 1 + inner.length);
+        return;
+      }
+      // A quote against a word (it's, don't) stays a lone quote.
+      if (isQuote && (WORD_CH.test(prev) || WORD_CH.test(next))) return;
+      e.preventDefault();
+      insertText(e.key + PAIR[e.key]);
+      input.setSelectionRange(s + 1, s + 1);
+      return;
+    }
+    // Deleting an opener takes its untouched closer with it.
+    if (e.key === "Backspace" && s === t && s > 0 && PAIR[prev] === next && next !== "") {
+      e.preventDefault();
+      input.setSelectionRange(s - 1, s + 1);
+      if (!document.execCommand("delete")) {
+        input.setRangeText("", s - 1, s + 1, "end");
+        onChange(input.value);
+      }
+      updateCaret();
+      return;
+    }
+    if (e.key === "Tab") {
       e.preventDefault();
       insertText("    ");
-    } else if (e.key === "Enter") {
+      return;
+    }
+    if (e.key === "Enter") {
       e.preventDefault();
-      const input = inputRef.current;
-      const before = input.value.slice(0, input.selectionStart);
+      const before = input.value.slice(0, s);
       const currentLine = before.slice(before.lastIndexOf("\n") + 1);
       const indent = (currentLine.match(/^[ \t]*/) || [""])[0];
-      const opensBlock = /\b(function|then|do|repeat|else)\s*$|{\s*$/.test(currentLine);
+      // Enter inside a fresh pair puts the closer on its own line, the
+      // caret indented on the line between.
+      if ((prev === "{" && next === "}") || (prev === "(" && next === ")")) {
+        insertText("\n" + indent + "    \n" + indent);
+        const mid = s + 1 + indent.length + 4;
+        input.setSelectionRange(mid, mid);
+        updateCaret();
+        return;
+      }
+      const opensBlock = /\b(function|then|do|repeat|else)\s*$|[{(]\s*$/.test(currentLine);
       insertText("\n" + indent + (opensBlock ? "    " : ""));
     }
+  };
+
+  /* The menu lives off keyUP: by then the character is in the buffer, so the
+     word under the caret is current. Nav keys were consumed by keydown and
+     must not refilter (menuKeyRef); chorded keys are shortcuts, not typing. */
+  const onKeyUp = (e) => {
+    updateCaret();
+    if (menuKeyRef.current) {
+      menuKeyRef.current = false;
+      return;
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key.length === 1 || e.key === "Backspace") openMenu();
+    else if (menu) setMenu(null);
   };
 
   return (
@@ -436,12 +631,53 @@ const CodeSurface = forwardRef(function CodeSurface({ value, visible, onChange, 
           onKeyDown={onKeyDown}
           onScroll={syncScroll}
           onSelect={updateCaret}
-          onKeyUp={updateCaret}
-          onClick={updateCaret}
+          onKeyUp={onKeyUp}
+          onClick={() => {
+            updateCaret();
+            setMenu(null);
+          }}
+          onBlur={() => setMenu(null)}
+          onWheel={() => menu && setMenu(null)}
           className="editor-metrics absolute inset-0 resize-none overflow-auto bg-transparent py-4 pr-4
                      pl-4 font-mono whitespace-pre text-transparent caret-accent outline-none
                      select-text selection:bg-accent/25"
         />
+
+        {/* Completion menu, anchored under the word it completes. mousedown
+            (not click) accepts, so the textarea never loses focus. */}
+        {menu && (
+          <div
+            role="listbox"
+            aria-label="Completions"
+            className="absolute z-20 w-[230px] overflow-hidden rounded-lg border border-line bg-raised py-1
+                       shadow-xl shadow-black/40"
+            style={{ left: menu.left, top: menu.top }}
+          >
+            {menu.items.map((item, i) => (
+              <button
+                key={item.label}
+                type="button"
+                role="option"
+                aria-selected={i === menu.index}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  accept(item);
+                }}
+                onMouseEnter={() => setMenu((m) => m && { ...m, index: i })}
+                className={`flex h-[25px] w-full items-center gap-2 px-2.5 text-left font-mono text-[12.5px]
+                            ${i === menu.index ? "bg-accent/20 text-ink" : "text-ink-2"}`}
+              >
+                <span className={`w-3 shrink-0 text-center text-[10px] font-bold ${KIND_STYLE[item.kind].cls}`}>
+                  {KIND_STYLE[item.kind].tag}
+                </span>
+                <span className="truncate">
+                  <span className="font-semibold text-ink">{item.label.slice(0, menu.prefix.length)}</span>
+                  {item.label.slice(menu.prefix.length)}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

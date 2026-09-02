@@ -1,51 +1,92 @@
 @import "tailwindcss";
+@import "@fontsource-variable/plus-jakarta-sans";
 
 /* ---------------------------------------------------------------------------
-   Omni Executor — one-sheet monochrome theme.
+   Omni Executor — soft near-black theme.
 
-   The whole app is a single surface: no panel backgrounds, no chrome bars.
-   Structure comes from floating hairlines — every divider is inset and fades
-   out before it reaches an edge. The accent is white on black (black on white
-   in daylight); the only colour left is the status lamps.
+   Four grounds, darkest on the left: the rail, the canvas it sits beside,
+   the surfaces that carry content on that canvas, and the raised controls on
+   those. Corners are soft everywhere — pill buttons, rounded
+   cards, a radius scale two steps past the stock one — and the type is a
+   wide geometric grotesque set a size up from typical UI copy, so a panel
+   reads as a card of content rather than a dense table.
+
+   The accent is a blue, the same blue in both themes; everything else in
+   colour is a status — the lamps and the tinted chips they tag rows with.
 
    Every colour comes from a semantic token below, so `.light` on <html>
    re-points the same names and no component needs a per-theme variant.
    --------------------------------------------------------------------------- */
 
 @theme {
+  /* Plus Jakarta Sans: a wide geometric grotesque with open apertures and a
+     tall x-height — the app's whole voice, display sizes and body alike. It
+     carries UI copy a size larger than Inter would at the same measure, which
+     is what the roomier type scale here depends on. */
   --font-sans:
-    system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
-    sans-serif;
+    "Plus Jakarta Sans Variable", "Plus Jakarta Sans", system-ui, -apple-system,
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono:
     "Cascadia Code", "SF Mono", "JetBrains Mono", "Fira Code", Consolas,
     "DejaVu Sans Mono", monospace;
 
-  /* Sheet — graphite, not black: a slate-grey ground the content sits on. */
-  --color-canvas: #17181b;
-  --color-surface: #1d1e22;
-  --color-raised: #25262b;
-  --color-line: #31333a;
-  --color-line-soft: #282a30;
+  /* Soft-corner scale: every named radius sits two steps rounder than the
+     stock scale, so the whole app rounds up without touching call sites.
+     `lg` is the workhorse (rows, icon buttons), `xl` the field/notice radius
+     and `2xl` the card — a card corner has to read as round from across the
+     window, which is what pushes it past the usual 16px. */
+  --radius-md: 0.625rem;
+  --radius-lg: 0.875rem;
+  --radius-xl: 1.125rem;
+  --radius-2xl: 1.375rem;
+  --radius-3xl: 1.625rem;
+
+  /* The WINDOW's radius — not part of the scale above, because it is not a
+     taste call: on Windows the same number is cut out of the HWND by
+     CORNER_RADIUS in src-tauri/src/chrome.rs, and the page's corner and the
+     window's corner must be the same arc. Change one, change both. Also
+     mirrored in index.html's pre-mount paint, and in CORNER_LEN in
+     TitleBar.jsx, whose corner resize handles have to reach the arc. */
+  --window-radius: 33px;
+
+  /* Ground — a near-black charcoal with only a whisper of blue left in it,
+     matched to the reference sheet: the canvas sits at ~#181a25 and the
+     surfaces barely step above it, so panels read via hairlines more than
+     value.
+     `rail` is its own token and not a shade of the canvas: the icon rail now
+     sits a step ABOVE the canvas — a lighter band, with the hairline spine
+     sharpening the edge. */
+  --color-rail: #22252f;
+  --color-canvas: #181a25;
+  --color-surface: #1e222d;
+  --color-raised: #262b39;
+  --color-line: #333949;
+  --color-line-soft: #232732;
 
   /* Text */
-  --color-ink: #ebebed;
-  --color-ink-2: #a1a3aa;
-  --color-ink-3: #6c6f78;
+  --color-ink: #f2f2f5;
+  --color-ink-2: #9aa1b3;
+  --color-ink-3: #6c6c78;
 
-  /* Accent — white: selection, primary action, "work in progress" */
-  --color-accent: #fafafa;
-  --color-accent-hi: #ffffff;
-  --color-accent-ink: #0c0c0c;
+  /* Accent — blue: selection, primary action, "work in progress". Bright
+     enough to carry white type at button sizes, which is what `accent-ink`
+     assumes. */
+  --color-accent: #3b7bfd;
+  --color-accent-hi: #5a92ff;
+  --color-accent-ink: #ffffff;
 
-  /* Status lamps — the only colour in the app */
-  --color-live: #6fb583;
-  --color-danger: #d96161;
+  /* Status lamps — the only other colour in the app */
+  --color-live: #4ec98a;
+  /* Between live and danger: a link that answers, slowly. Amber rather than
+     the gold --color-premium, which means "a plan", not "a warning". */
+  --color-warn: #e0a94f;
+  --color-danger: #ef6f6f;
   /* Premium. Its own token rather than a borrowed one: --color-code-num is a
      near-identical gold, but it means "a number in a Lua buffer", and a UI that
      reuses it would drift the day the editor palette is retuned. Desaturated to
      sit with live/danger — a pure #ffd700 would be the loudest thing on a sheet
      whose accent is off-white. */
-  --color-premium: #d8b45f;
+  --color-premium: #f0b429;
 
   /* Lua syntax — a restrained coloured set: each token class gets one hue,
      the ink stays the ink for plain variables. */
@@ -83,24 +124,29 @@
 
 /* Daylight sheet: soft white paper, black accent. */
 html.light {
-  --color-canvas: #f7f7f7;
-  --color-surface: #efefef;
-  --color-raised: #e9e9e9;
-  --color-line: #d9d9d9;
-  --color-line-soft: #e6e6e6;
+  --color-rail: #ececed;
+  --color-canvas: #f7f7f8;
+  --color-surface: #ffffff;
+  --color-raised: #eeeef0;
+  --color-line: #e0e0e4;
+  --color-line-soft: #e9e9ec;
 
   --color-ink: #161616;
   --color-ink-2: #606060;
   --color-ink-3: #8f8f8f;
 
-  --color-accent: #171717;
-  --color-accent-hi: #000000;
-  --color-accent-ink: #fafafa;
+  /* The same blue, darkened for a white sheet: #3b7ff5 on #f7f7f8 is legible
+     but too pale to carry white button type, and the accent has to stay the
+     app's identity colour across both themes. */
+  --color-accent: #2563eb;
+  --color-accent-hi: #1d4ed8;
+  --color-accent-ink: #ffffff;
 
-  --color-live: #33814f;
-  --color-danger: #bf4a41;
-  /* Darkened hard for the light sheet: the dark theme's #d8b45f is legible on
-     #17181b and near-invisible on #f7f7f7. Same move live/danger make. */
+  --color-live: #2c7d4b;
+  --color-warn: #8f5d0f;
+  --color-danger: #c0453c;
+  /* Darkened hard for the light sheet: the dark theme's #f0b429 is legible on
+     #141419 and near-invisible on #f7f7f8. Same move live/danger make. */
   --color-premium: #8a6410;
 
   --color-code-kw: #8a3fc5;
@@ -120,8 +166,18 @@ html.light {
     height: 100%;
   }
   body {
-    background: var(--color-canvas);
+    /* NOT the canvas colour: a body background is propagated to the canvas
+       when <html> has none, and the canvas is painted over the whole viewport
+       with no radius — it would square the corners straight back off. The
+       sheet colour lives on .window-sheet (and index.html's ::before before
+       React mounts), both of which are clipped to --window-radius. */
+    background: transparent;
     color: var(--color-ink);
+    /* Inter at near-normal tracking, with its UI alternates on — the smooth
+       grotesque voice. The editor resets spacing so caret metrics stay
+       exact. */
+    letter-spacing: -0.004em;
+    font-feature-settings: "cv05", "cv11";
   }
   /* Native form controls should follow the sheet, not the OS. */
   select option {
@@ -132,9 +188,16 @@ html.light {
 
 /* Real utilities (not component classes) so other rules can @apply them. */
 
-/* Silkscreen label — the app's structural voice for system data. */
+/* Silkscreen label — the app's structural voice for system data: the quiet
+   name over a value, a field, a tile, a definition row.
+
+   It USED to uppercase at 10px on 0.1em tracking. It no longer does: a sheet
+   of shouted micro-labels is the opposite of this theme's voice, and every
+   string passed to it is already written in sentence case at the call site.
+   What is left is the smallest legible weight-and-size step below body copy —
+   a label reads as a label because it is smaller and quieter, not louder. */
 @utility silk {
-  @apply font-mono text-[10px] font-semibold tracking-[0.16em] uppercase;
+  @apply font-sans text-[11.5px] font-semibold tracking-[0.005em];
 }
 
 @utility ring-focus {
@@ -198,58 +261,83 @@ html.light {
   .rule-t::after {
     top: 0;
   }
+  /* The rail's edge is the one divider that runs the full height: a visible
+     splitter line where the rail meets the main sheet. Full --color-line, not
+     the soft one — the rail now sits close to the canvas in value, so a soft
+     hairline would vanish into it. */
   .spine-r::after {
     content: "";
     position: absolute;
-    top: 18px;
+    top: 0;
     right: 0;
-    bottom: 18px;
+    bottom: 0;
     width: 1px;
-    background: linear-gradient(
-      180deg,
-      transparent,
-      var(--color-line) 12%,
-      var(--color-line) 88%,
-      transparent
-    );
+    background: var(--color-line);
   }
 
   .input {
-    @apply w-full rounded-lg border border-line bg-raised px-3 py-2 text-[13px] text-ink
+    @apply w-full rounded-xl border border-line bg-raised px-4 py-2.5 text-[14px] text-ink
       transition-colors duration-150 outline-none select-text
       placeholder:text-ink-3 hover:border-line
-      focus:border-accent/70 focus:ring-2 focus:ring-accent/20;
+      focus:border-accent/70 focus:ring-2 focus:ring-accent/25;
   }
 
   .btn {
-    @apply ring-focus inline-flex shrink-0 items-center justify-center gap-2 rounded-lg
-      text-[12.5px] font-semibold whitespace-nowrap transition-all duration-150
+    @apply ring-focus inline-flex shrink-0 items-center justify-center gap-2 rounded-full
+      text-[13.5px] font-semibold whitespace-nowrap transition-all duration-150
       active:scale-[0.97] disabled:pointer-events-none disabled:opacity-45;
   }
   .btn-solid {
     @apply bg-accent text-accent-ink hover:bg-accent-hi;
   }
+  /* Quiet is a FILLED pill, not an outlined one: on a sheet this soft an
+     unfilled hairline button reads as disabled next to a solid one. */
   .btn-quiet {
-    @apply border border-line text-ink-2 hover:border-line hover:bg-raised hover:text-ink;
+    @apply border border-line bg-surface text-ink-2 hover:border-ink-3/45 hover:bg-raised hover:text-ink;
   }
   .btn-danger {
     @apply bg-danger text-white hover:brightness-110;
   }
 
   .icon-btn {
-    @apply ring-focus flex h-7 w-7 shrink-0 items-center justify-center rounded-md
+    @apply ring-focus flex h-8 w-8 shrink-0 items-center justify-center rounded-lg
       text-ink-3 transition-colors duration-150
       hover:bg-raised hover:text-ink
       disabled:pointer-events-none disabled:opacity-35;
   }
 
+  /* Chip — a tag on a row. A TINTED FILL rather than an outline, because a
+     chip's job is to be picked out of a row of text at a glance and a hairline
+     box does not do that at this size. The tones below are the whole set: a
+     chip is either neutral or it is reporting one of the four statuses, and
+     nothing else may invent a colour for one. */
   .chip {
-    @apply silk shrink-0 rounded border border-line px-1.5 py-[3px] text-ink-3;
+    @apply inline-flex shrink-0 items-center rounded-full bg-raised px-2.5 py-[3px]
+      text-[11.5px] font-semibold tracking-[0.005em] text-ink-2;
+  }
+  .chip-accent {
+    @apply bg-accent/16 text-accent-hi;
+  }
+  .chip-live {
+    @apply bg-live/14 text-live;
+  }
+  .chip-warn {
+    @apply bg-warn/14 text-warn;
+  }
+  .chip-premium {
+    @apply bg-premium/14 text-premium;
+  }
+
+  /* Card — the sheet's one container. A panel of content sits on one of these
+     rather than straight on the canvas; the radius is what makes the app read
+     as a set of rounded plates rather than a table. */
+  .card {
+    @apply rounded-2xl border border-line bg-surface;
   }
 
   /* Tick box: the sheet's own, not the OS's. */
   .check {
-    @apply h-4 w-4 cursor-pointer appearance-none rounded-[4px] border border-line bg-raised
+    @apply h-4 w-4 cursor-pointer appearance-none rounded-[6px] border border-line bg-raised
       transition-colors duration-150 outline-none
       checked:border-accent checked:bg-accent
       focus-visible:ring-2 focus-visible:ring-accent/55 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas;
@@ -257,24 +345,58 @@ html.light {
     background-repeat: no-repeat;
     background-size: 12px;
   }
+  /* One tick for both themes: it is drawn on the accent, and the accent
+     carries white type in both. */
   .check:checked {
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230c0c0c' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 12 5 5 9-10'/%3E%3C/svg%3E");
-  }
-  html.light .check:checked {
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fafafa' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 12 5 5 9-10'/%3E%3C/svg%3E");
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 12 5 5 9-10'/%3E%3C/svg%3E");
   }
 
-  /* Stat tile on Home: a quiet plate the number sits on. */
+  /* Stat tile on Home: a card the number sits on. */
   .tile {
-    @apply ring-focus flex flex-col gap-1 rounded-xl border border-line bg-surface px-4 py-3.5
-      text-left transition-colors duration-150 hover:border-ink-3/60 hover:bg-raised;
+    @apply ring-focus flex flex-col gap-1.5 rounded-2xl border border-line bg-surface px-4 py-4
+      text-left transition-colors duration-150 hover:border-ink-3/50 hover:bg-raised;
   }
 }
 
-/* Native-window resize handles drawn over the web content (Windows/Linux,
-   see TitleBar.jsx). Invisible; only the cursor gives them away. */
-.resize-edge {
+/* The window's own edge (see WindowShell in TitleBar.jsx). The sheet carries
+   the app's --window-radius and clips everything to it, and the pixels outside
+   that arc are left UNPAINTED on purpose: the Tauri window is transparent, so
+   an unpainted pixel is alpha 0.
+
+   On macOS and Linux that alone IS the corner — both compositors handle
+   partial alpha, so the arc antialiases itself. On Windows it is not enough:
+   WebView2's windowed hosting honours alpha 0 but has no PARTIAL alpha, so the
+   arc would step. chrome.rs cuts the matching round-rect out of the HWND
+   (SetWindowRgn) and the two arcs are the same number — they have to stay that
+   way. DWM still draws the shadow; its own corner rounding is turned off,
+   because it only does 8px.
+
+   Maximised is the exception — every OS squares a maximised window and
+   chrome.rs drops the region, so the page drops the radius with it. */
+.window-shell {
   position: fixed;
+  inset: 0;
+  display: flex;
+}
+.window-sheet {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: var(--window-radius);
+  background: var(--color-canvas);
+}
+.window-shell.is-maximized .window-sheet {
+  border-radius: 0;
+}
+
+/* Native-window resize handles drawn over the web content (Windows/Linux,
+   see TitleBar.jsx). Absolute, not fixed: they anchor to the sheet, which is
+   the whole window. */
+.resize-edge {
+  position: absolute;
   z-index: 90;
 }
 
@@ -285,6 +407,7 @@ html.light {
   line-height: 22px;
   tab-size: 4;
   font-variant-ligatures: none;
+  letter-spacing: 0;
 }
 
 ::-webkit-scrollbar {

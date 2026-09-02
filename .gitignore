@@ -24,3 +24,10 @@ dist/
 
 # throwaway PyInstaller output dirs (a running omni-exec.exe locks dist/)
 dist-*/
+
+# Tauri shell (src-tauri/). `target/` is cargo's build tree and `gen/` holds
+# the permission schemas the CLI regenerates on every build; node_modules/ at
+# the root is just the Tauri CLI (the app's own deps live in frontend/).
+node_modules/
+src-tauri/target/
+src-tauri/gen/

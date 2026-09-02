@@ -1,17 +1,22 @@
 """Mark-of-the-Web: the reason a downloaded build would not start at all.
 
 Windows puts a `Zone.Identifier` alternate data stream on every file extracted
-from a downloaded .zip. The .NET Framework assembly loader then refuses to
-load Python.Runtime.dll out of the Internet zone, so clr_loader cannot resolve
-its entry point and pywebview's WinForms backend dies on import:
+from a downloaded .zip.
+
+HISTORY. Under pywebview the .NET Framework assembly loader refused to load
+Python.Runtime.dll out of the Internet zone, so clr_loader could not resolve
+its entry point and the WinForms backend died on import:
 
     RuntimeError: Failed to resolve Python.Runtime.Loader.Initialize from
     ...\\_internal\\pythonnet\\runtime\\Python.Runtime.dll
 
-Reported from a fresh PC, and reproduced here by putting that one stream on
-that one DLL in a working venv — the error was identical, and removing the
-stream cured it. It is structurally invisible in development: a build made
-locally was never downloaded, so it is never marked.
+Reported from a fresh PC, and reproduced by putting that one stream on that one
+DLL in a working venv — the error was identical, and removing the stream cured
+it. The Tauri shell has no CLR and no pythonnet, so that specific failure is
+gone; the sweep stays because the marking has not, and these tests hold it to
+the behaviour that matters: cheap when clean, thorough when not, and never
+fatal. It is structurally invisible in development: a build made locally was
+never downloaded, so it is never marked.
 """
 import os
 import sys
@@ -32,64 +37,65 @@ def _mark(path: Path):
 
 
 def _fake_install(root: Path) -> Path:
-    """A one-dir PyInstaller layout, in miniature."""
-    runtime = root / "_internal" / "pythonnet" / "runtime"
-    runtime.mkdir(parents=True)
-    (runtime / "Python.Runtime.dll").write_bytes(b"MZ")
-    # The facades Python.Runtime.dll pulls in. Each is refused on the same
-    # grounds, which is why clearing only the one file is not enough.
-    for n in ("netstandard.dll", "System.Runtime.dll", "System.Linq.dll"):
-        (runtime / n).write_bytes(b"MZ")
-    (root / "omni-exec.exe").write_bytes(b"MZ")
-    (root / "_internal" / "base_library.zip").write_bytes(b"PK")
-    return runtime / "Python.Runtime.dll"
+    """An installed build, in miniature: the Tauri shell, the backend beside
+    it, and the backend's one-dir tree. Returns the sweep's probe file."""
+    internal = root / "_internal"
+    internal.mkdir(parents=True)
+    (internal / "base_library.zip").write_bytes(b"PK")
+    for n in ("python311.dll", "libssl-3.dll", "select.pyd"):
+        (internal / n).write_bytes(b"MZ")
+    (root / "omni-exec.exe").write_bytes(b"MZ")        # the Tauri shell
+    (root / "omni-exec-py.exe").write_bytes(b"MZ")     # the backend
+    return internal / "base_library.zip"
 
 
 @pytest.fixture
 def frozen(tmp_path, monkeypatch):
     root = tmp_path / "omni-exec"
     root.mkdir()
-    dll = _fake_install(root)
+    probe = _fake_install(root)
     monkeypatch.setattr(main.sys, "frozen", True, raising=False)
-    monkeypatch.setattr(main.sys, "executable", str(root / "omni-exec.exe"))
+    # The sweep runs in the BACKEND, so sys.executable is omni-exec-py.exe.
+    monkeypatch.setattr(main.sys, "executable", str(root / "omni-exec-py.exe"))
     monkeypatch.setattr(main.sys, "platform", "win32")
-    return root, dll
+    return root, probe
 
 
 def test_a_marked_install_is_unblocked(frozen):
-    root, dll = frozen
+    root, probe = frozen
     for p in root.rglob("*"):
         if p.is_file():
             _mark(p)
-    assert main._has_motw(dll)
+    assert main._has_motw(probe)
 
     cleared = main._unblock_app_files()
 
     assert cleared >= 5
-    assert not main._has_motw(dll)
-    # Every file, not just the DLL that trips first: Python.Runtime.dll loads
-    # ~100 netstandard facades beside it and each would be refused in turn, so
-    # clearing one only moves the error along.
+    assert not main._has_motw(probe)
+    # THE WHOLE TREE, and that includes the Tauri shell sitting beside the
+    # backend: a marked extraction marks every file, and the sweep is run by
+    # the one process that is already loaded.
     for p in root.rglob("*"):
         if p.is_file():
             assert not main._has_motw(p), f"{p.name} is still marked"
+    assert not main._has_motw(root / "omni-exec.exe")
 
 
 def test_an_unmarked_install_is_left_alone(frozen):
     """The normal case — an installer-placed build — must cost one stat, not
     a walk of 1,200 files on every launch."""
-    root, dll = frozen
+    root, probe = frozen
     assert main._unblock_app_files() == 0
 
 
-def test_only_the_dll_marked_still_triggers_the_sweep(frozen):
-    """The probe is Python.Runtime.dll, not the exe: a user who right-clicks
-    the EXE and unblocks it has fixed nothing, because the assembly loader
-    cares about the assembly."""
-    root, dll = frozen
-    _mark(dll)
+def test_a_mark_inside_the_tree_still_triggers_the_sweep(frozen):
+    """The probe is a file INSIDE _internal, not the exe: a user who
+    right-clicks the executable and unblocks just that has fixed one file out
+    of a thousand, and the sweep still has to notice."""
+    root, probe = frozen
+    _mark(probe)
     assert main._unblock_app_files() == 1
-    assert not main._has_motw(dll)
+    assert not main._has_motw(probe)
 
 
 def test_running_from_source_is_a_no_op(tmp_path, monkeypatch):
@@ -102,8 +108,8 @@ def test_running_from_source_is_a_no_op(tmp_path, monkeypatch):
 def test_an_unremovable_mark_does_not_crash_the_launch(frozen, monkeypatch):
     """Best-effort by design: a read-only install cannot be unmarked, and
     failing to start is far worse than starting and possibly failing later."""
-    root, dll = frozen
-    _mark(dll)
+    root, probe = frozen
+    _mark(probe)
 
     def boom(path):
         raise PermissionError("read-only")

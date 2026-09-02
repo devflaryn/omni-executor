@@ -12,7 +12,7 @@
 # Usage:
 #   scripts/e2e-macos.sh [RUNTIME_DIR]
 # Env:
-#   OMNI_EXEC_BASE   backend base URL (default http://72.62.59.232)
+#   OMNI_EXEC_BASE   backend base URL (default http://179.198.197.7)
 #   OMNIDROID_REPO   sibling omnidroid checkout (default ../omnidroid)
 #
 set -euo pipefail
@@ -24,7 +24,7 @@ export OMNIEXEC_RUNTIME_DIR="$RT"
 
 echo "== Slice B e2e =="
 echo "runtime dir : $RT"
-echo "backend     : ${OMNI_EXEC_BASE:-http://72.62.59.232}"
+echo "backend     : ${OMNI_EXEC_BASE:-http://179.198.197.7}"
 echo "omnidroid   : $OMNIDROID_REPO"
 echo
 

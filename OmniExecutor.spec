@@ -1,11 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for the Omni Executor macOS app.
+"""PyInstaller spec for the Omni Executor macOS BACKEND.
 
-Freezes main.py (the pywebview + React GUI) together with the sibling
-`omnidroid` engine package so the frozen app's `--omnidroid` in-binary
-dispatch (see main.py's `main()` / `engine_prefix()`) can
-`from omnidroid.cli import main as engine_main` without any separate
-binary or source checkout sitting next to the .app at runtime.
+NOT the .app the user launches. Tauri builds that (src-tauri/); this produces
+the headless backend it spawns and talks to over stdio (rpc.py), which
+build-macos.sh then copies into Contents/Resources/backend/ inside the bundle.
+
+It freezes main.py together with the sibling `omnidroid` engine package so the
+frozen backend's `--omnidroid` in-binary dispatch (see main.py's `main()` /
+`engine_prefix()`) can `from omnidroid.cli import main as engine_main` without
+any separate binary or source checkout sitting next to the .app at runtime.
+THE BACKEND IS STILL THE ENGINE.
 
 Build with:  python -m PyInstaller --noconfirm OmniExecutor.spec
 (normally invoked via ./build-macos.sh, which also builds the frontend
@@ -24,7 +28,7 @@ hiddenimports = []
 # This app's own modules — see OmniExecutor-win.spec: declared for the record,
 # not out of need. Kept identical to the Windows spec on purpose (tests/
 # test_packaging.py asserts the two agree).
-hiddenimports += ["accountsync", "accountcreator", "cloud", "bootstrap", "updates", "windowchrome"]
+hiddenimports += ["accountsync", "accountcreator", "cloud", "bootstrap", "updates", "rpc"]
 hiddenimports += collect_submodules("omnidroid")
 # Selenium drives the "add account" browser login (omnidroid/accounts.py). It is
 # imported LAZILY inside the login functions, so PyInstaller's static analysis
@@ -32,13 +36,19 @@ hiddenimports += collect_submodules("omnidroid")
 # machine where it is. This was fixed in the Windows spec when it bit there and
 # never mirrored here — the Mac build had the same bug waiting.
 hiddenimports += collect_submodules("selenium")
+# selenium-stealth masks the page-visible automation signals for the
+# account-creation browser (stealth._apply_stealth). Same lazy-import
+# problem as selenium itself, and it ships its patch scripts as package
+# DATA (selenium_stealth/js/*.js) which the module list alone leaves out
+# -- a frozen build without them silently drops to the reduced fallback.
+hiddenimports += collect_submodules("selenium_stealth")
 # The built-in VNC viewer (omnidroid/vncview.py) imports tkinter and PIL INSIDE
 # its run function, so the frozen viewer died with "Pillow is required".
 hiddenimports += ["tkinter", "PIL.Image", "PIL.ImageTk"]
 
 # ---------------------------------------------------------------- dev mode
 # DEV MODE IS NOT SHIPPED. `devserver` (omni-executor) and `omnidroid.devserver`
-# redirect every call bound for http://72.62.59.232 to a local omni-backend, so
+# redirect every call bound for http://179.198.197.7 to a local omni-backend, so
 # an update can be exercised end to end before it is published. Every call site
 # imports them in a try/except and falls back to the production server, which
 # means keeping them OUT of the bundle is the whole enforcement: a customer's
@@ -63,12 +73,18 @@ else:
     dev_excludes = list(DEV_MODULES)
 
 datas = [
-    (os.path.join(PROJECT_DIR, "frontend", "dist"), "frontend/dist"),
+    # The frontend is NOT bundled here any more: the Tauri shell embeds
+    # frontend/dist itself (tauri.conf.json's frontendDist), and shipping a
+    # second copy inside the backend would only be a stale one.
 ]
 datas += collect_data_files("omnidroid")
 # Selenium Manager is a NATIVE BINARY shipped as package data; collecting the
 # Python modules alone is not enough to resolve a chromedriver.
 datas += collect_data_files("selenium", include_py_files=False)
+# selenium_stealth/js/*.js -- read off disk at runtime by each patch
+# (Path(__file__).parent.joinpath("js/...").read_text()), so without
+# these the import succeeds and every patch then raises.
+datas += collect_data_files("selenium_stealth")
 
 a = Analysis(
     ["main.py"],
@@ -91,7 +107,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="OmniExecutor",
+    name="omni-exec-py",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -112,21 +128,19 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="OmniExecutor",
+    name="omni-exec-py",
 )
 
-# Placeholder icon lives at packaging/icon.icns (a solid-color square
-# generated via sips/iconutil — swap it for real branding by replacing
-# packaging/icon.icns with a proper 1024x1024-sourced .icns before shipping;
-# no spec changes needed since it's referenced by path here).
-_icon = os.path.join(PROJECT_DIR, "packaging", "icon.icns")
-if not os.path.isfile(_icon):
-    _icon = None
-
-app = BUNDLE(
-    coll,
-    name="Omni Executor.app",
-    icon=_icon,
-    bundle_identifier="com.omniapps.executor",
-    info_plist=os.path.join(PROJECT_DIR, "packaging", "Info.plist"),
-)
+# NO BUNDLE() ANY MORE, and that is the point of this file now.
+#
+# `Omni Executor.app` is built by Tauri (src-tauri/tauri.conf.json), which owns
+# the icon, the identifier and the Info.plist. This spec produces the plain
+# one-dir backend that build-macos.sh copies into
+#
+#     Omni Executor.app/Contents/Resources/backend/
+#
+# after the bundle exists. Two .app builders would only disagree with each
+# other, and the one the user double-clicks has to be the one with the window
+# in it. packaging/icon.icns is still the source art — src-tauri/icons/ is
+# generated from it — and packaging/Info.plist is kept as the reference for any
+# key Tauri's generated plist needs to carry.

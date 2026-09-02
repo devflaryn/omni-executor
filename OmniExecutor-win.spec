@@ -1,11 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for the Omni Executor Windows app (omni-exec.exe).
+"""PyInstaller spec for the Omni Executor Windows BACKEND (omni-exec-py.exe).
 
-Mirrors OmniExecutor.spec (macOS): freezes main.py (the pywebview + React
-GUI) together with the sibling `omnidroid` engine package, so the frozen
-app's `--omnidroid` in-binary dispatch (see main.py's `main()` /
-`engine_prefix()`) can `from omnidroid.cli import main as engine_main`
-with NO omnidroid.exe and no source checkout next to the app at runtime.
+NOT the app the user launches. That is omni-exec.exe, the Tauri shell built
+from src-tauri/, which spawns this binary and talks to it over stdio (rpc.py).
+The two ship side by side in one folder; build-windows.ps1 assembles them.
+
+This freezes main.py together with the sibling `omnidroid` engine package, so
+the frozen backend's `--omnidroid` in-binary dispatch (see main.py's `main()` /
+`engine_prefix()`) can `from omnidroid.cli import main as engine_main` with NO
+omnidroid.exe and no source checkout next to the app at runtime. THE BACKEND IS
+STILL THE ENGINE, which is why it is frozen this way and why it must sit in the
+same directory as the shell.
 
 ONE-DIR, deliberately. A one-file build unpacks the whole bundle to a fresh
 %TEMP%\\_MEIxxxx on EVERY launch, and main.py re-executes ITSELF
@@ -34,13 +39,19 @@ hiddenimports = []
 # PyInstaller walks bytecode and does find a plain `import x` inside a
 # function. Naming them keeps a future dynamic import (importlib, __import__)
 # from silently dropping out of the bundle.
-hiddenimports += ["accountsync", "accountcreator", "cloud", "bootstrap", "updates", "windowchrome"]
+hiddenimports += ["accountsync", "accountcreator", "cloud", "bootstrap", "updates", "rpc"]
 hiddenimports += collect_submodules("omnidroid")
 # Selenium drives the "add account" browser login (omnidroid/accounts.py). It
 # is imported LAZILY inside the login functions, so PyInstaller's static
 # analysis does not see it and the frozen engine reported "selenium is not
 # installed" on a machine where it was.
 hiddenimports += collect_submodules("selenium")
+# selenium-stealth masks the page-visible automation signals for the
+# account-creation browser (stealth._apply_stealth). Same lazy-import
+# problem as selenium itself, and it ships its patch scripts as package
+# DATA (selenium_stealth/js/*.js) which the module list alone leaves out
+# -- a frozen build without them silently drops to the reduced fallback.
+hiddenimports += collect_submodules("selenium_stealth")
 # The built-in VNC viewer (omnidroid/vncview.py, spawned as the hidden
 # `_vncview` subcommand by the View button). It imports tkinter and PIL
 # INSIDE its run function, so static analysis never sees them and the frozen
@@ -51,7 +62,7 @@ hiddenimports += ["tkinter", "PIL.Image", "PIL.ImageTk"]
 
 # ---------------------------------------------------------------- dev mode
 # DEV MODE IS NOT SHIPPED. `devserver` (omni-executor) and `omnidroid.devserver`
-# redirect every call bound for http://72.62.59.232 to a local omni-backend, so
+# redirect every call bound for http://179.198.197.7 to a local omni-backend, so
 # an update can be exercised end to end before it is published. Every call site
 # imports them in a try/except and falls back to the production server, which
 # means keeping them OUT of the bundle is the whole enforcement: a customer's
@@ -76,7 +87,9 @@ else:
     dev_excludes = list(DEV_MODULES)
 
 datas = [
-    (os.path.join(PROJECT_DIR, "frontend", "dist"), "frontend/dist"),
+    # The frontend is NOT bundled here any more: the Tauri shell embeds
+    # frontend/dist itself (tauri.conf.json's frontendDist), and shipping a
+    # second copy inside the backend would only be a stale one.
 ]
 datas += collect_data_files("omnidroid")
 # Selenium Manager is a NATIVE BINARY shipped as package data
@@ -84,6 +97,10 @@ datas += collect_data_files("omnidroid")
 # _resolve_chromedriver() cannot download a chromedriver matching the
 # installed Chrome, so collecting the Python modules alone is not enough.
 datas += collect_data_files("selenium", include_py_files=False)
+# selenium_stealth/js/*.js -- read off disk at runtime by each patch
+# (Path(__file__).parent.joinpath("js/...").read_text()), so without
+# these the import succeeds and every patch then raises.
+datas += collect_data_files("selenium_stealth")
 
 a = Analysis(
     ["main.py"],
@@ -112,7 +129,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="omni-exec",
+    name="omni-exec-py",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -137,5 +154,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="omni-exec",
+    name="omni-exec-py",
 )

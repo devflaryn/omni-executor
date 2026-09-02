@@ -69,11 +69,11 @@ function FarmingLocked({ subscription, onGo }) {
       </span>
 
       <div>
-        <p className="flex items-center justify-center gap-2.5 text-[15px] font-semibold text-ink">
+        <p className="flex items-center justify-center gap-2.5 text-[16px] font-semibold text-ink">
           Farming
-          <span className="chip border-premium/45 bg-premium/8 text-premium">Premium</span>
+          <span className="chip chip-premium">Premium</span>
         </p>
-        <p className="mx-auto mt-2 max-w-[46ch] text-[12.5px] leading-relaxed text-ink-3">
+        <p className="mx-auto mt-2 max-w-[46ch] text-[13.5px] leading-relaxed text-ink-3">
           {lapsed
             ? "Your plan has expired, so Farming is closed. Redeem a key to pick it back up — your accounts and scripts are untouched."
             : "Run your accounts unattended. Included with a premium plan."}
@@ -89,8 +89,8 @@ function FarmingLocked({ subscription, onGo }) {
           <li key={title} className="rule-b flex items-start gap-3 px-1 py-2.5 last:after:hidden">
             <span className="mt-[5px] h-[6px] w-[6px] shrink-0 rounded-full bg-premium" />
             <span className="min-w-0">
-              <span className="block text-[12.5px] font-medium text-ink">{title}</span>
-              <span className="block text-[11.5px] leading-relaxed text-ink-3">{detail}</span>
+              <span className="block text-[13.5px] font-medium text-ink">{title}</span>
+              <span className="block text-[12.5px] leading-relaxed text-ink-3">{detail}</span>
             </span>
           </li>
         ))}
@@ -174,11 +174,11 @@ function FarmConsole({ launch, showToast }) {
     <>
       <div className="flex items-end justify-between gap-4 px-1">
         <div>
-          <h2 className="flex flex-wrap items-center gap-2.5 text-[22px] font-semibold tracking-[-0.01em] text-ink">
+          <h2 className="flex flex-wrap items-center gap-2.5 text-[30px] font-semibold tracking-[-0.01em] text-ink">
             Farming
-            <span className="chip border-premium/45 bg-premium/8 text-premium">Premium</span>
+            <span className="chip chip-premium">Premium</span>
           </h2>
-          <p className="mt-1 text-[12.5px] text-ink-3">
+          <p className="mt-1 text-[13.5px] text-ink-3">
             {stats.members === 0
               ? "Pick the accounts this machine should farm."
               : `${stats.members} ${stats.members === 1 ? "account" : "accounts"} in the farm · ${stats.running} running here.`}
@@ -244,14 +244,14 @@ function FarmConsole({ launch, showToast }) {
                     />
                     <Lamp tone={tone} pulse={tone === "busy"} size={6} />
                     <span
-                      className={`min-w-0 flex-1 truncate text-[12.5px] font-medium ${
+                      className={`min-w-0 flex-1 truncate text-[13.5px] font-medium ${
                         picked ? "text-ink" : "text-ink-3"
                       }`}
                     >
                       {a.name}
                     </span>
-                    {a.running && a.mode && <span className="chip border-live/40 text-live">{a.mode}</span>}
-                    <span className="shrink-0 font-mono text-[10.5px] text-ink-3">{status}</span>
+                    {a.running && a.mode && <span className="chip chip-live capitalize">{a.mode}</span>}
+                    <span className="shrink-0 font-mono text-[11.5px] text-ink-3">{status}</span>
                   </label>
                 </li>
               );
@@ -259,8 +259,8 @@ function FarmConsole({ launch, showToast }) {
           </ul>
         ) : (
           <div className="px-3.5 py-8 text-center">
-            <p className="text-[12.5px] text-ink-2">No accounts yet.</p>
-            <p className="mt-1 text-[11.5px] text-ink-3">A farm needs accounts to run.</p>
+            <p className="text-[13.5px] text-ink-2">No accounts yet.</p>
+            <p className="mt-1 text-[12.5px] text-ink-3">A farm needs accounts to run.</p>
           </div>
         )}
       </section>
@@ -288,12 +288,12 @@ function Schedule() {
           <legend className="sr-only">Farming schedule</legend>
 
           <div className="flex flex-wrap items-center gap-4">
-            <span className="w-[74px] shrink-0 text-[12px] font-medium text-ink-2">Days</span>
+            <span className="w-[74px] shrink-0 text-[13px] font-medium text-ink-2">Days</span>
             <div className="flex flex-wrap gap-1">
               {DAYS.map((d) => (
                 <span
                   key={d}
-                  className="silk rounded-md border border-line px-2 py-[5px] text-ink-3"
+                  className="chip"
                 >
                   {d}
                 </span>
@@ -302,14 +302,14 @@ function Schedule() {
           </div>
 
           <div className="flex flex-wrap items-center gap-4">
-            <span className="w-[74px] shrink-0 text-[12px] font-medium text-ink-2">Open</span>
+            <span className="w-[74px] shrink-0 text-[13px] font-medium text-ink-2">Open</span>
             <input type="time" defaultValue="09:00" className="input w-[130px] cursor-not-allowed font-mono" />
-            <span className="w-[46px] shrink-0 text-[12px] font-medium text-ink-2">Close</span>
+            <span className="w-[46px] shrink-0 text-[13px] font-medium text-ink-2">Close</span>
             <input type="time" defaultValue="23:00" className="input w-[130px] cursor-not-allowed font-mono" />
           </div>
         </fieldset>
 
-        <p className="rule-t pt-4 text-[11.5px] leading-relaxed text-ink-3">
+        <p className="rule-t pt-4 text-[12.5px] leading-relaxed text-ink-3">
           These controls do nothing yet, on purpose — setting a time that never
           fires would be worse than one you can see is switched off. When the
           supervisor ships it will reconcile the fleet toward this window and
@@ -328,7 +328,7 @@ function Stat({ label, value, tone, icon: Icon }) {
         <span className="silk text-ink-3">{label}</span>
       </span>
       <span
-        className={`font-mono text-[26px] leading-none font-semibold ${
+        className={`text-[32px] leading-none font-bold tracking-[-0.03em] ${
           tone === "live" && value ? "text-live" : "text-ink"
         }`}
       >

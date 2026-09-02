@@ -106,7 +106,7 @@ def dist_base() -> str:
     against a backend you can edit -- which is the only way to test an update
     before it is published. See devserver.py.
     """
-    base = os.environ.get("OMNI_EXEC_BASE", "http://72.62.59.232").rstrip("/")
+    base = os.environ.get("OMNI_EXEC_BASE", "http://179.198.197.7").rstrip("/")
     return _devserver.redirect(base) if _devserver else base
 
 

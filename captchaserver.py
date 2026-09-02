@@ -57,6 +57,18 @@ MODEL_RETRIES = 4
 # from an HTTP failure, and worth its own budget.
 CONTENT_RETRIES = 3
 RETRY_BACKOFF_S = 2.0
+# A /v1/step must ANSWER inside the client's patience.
+# visioncaptcha.SolverClient waits 200s, while the retry budget above can
+# reach CONTENT_RETRIES * MODEL_RETRIES * REQUEST_TIMEOUT across the
+# fallback models too -- over half an hour. So the client hung up while
+# this server was still retrying, and the puzzle died with it. That was
+# watched happening three rounds into a challenge that was going fine,
+# which costs the whole account: solved rounds cannot be replayed.
+# Retries are therefore bounded by WALL CLOCK rather than by a count, and
+# the deadline sits below the client timeout so an answer -- even an
+# "unsure" one, which merely hands the puzzle to the human -- always beats
+# the hang-up.
+STEP_DEADLINE_S = 150
 TRANSIENT_CODES = (408, 409, 429, 500, 502, 503, 504)
 # A rate limit is not a blip - the upstream is telling us to slow down, and the
 # 2s/4s backoff that clears a 504 just burns the retries. Observed live:
@@ -144,7 +156,8 @@ def _extract_json(text):
         return None
 
 
-def call_model(images, prompt, api_key, model=DEFAULT_MODEL, opener=None):
+def call_model(images, prompt, api_key, model=DEFAULT_MODEL, opener=None,
+               timeout=REQUEST_TIMEOUT):
     """Send prompt + images, return (parsed_json, usage). Raises SolveError."""
     content = [{"type": "text", "text": prompt}] + [_data_url(b) for b in images]
     body = {
@@ -161,7 +174,7 @@ def call_model(images, prompt, api_key, model=DEFAULT_MODEL, opener=None):
                  "X-Title": "omni-captcha"})
     try:
         _open = opener or urllib.request.urlopen
-        with _open(req, timeout=REQUEST_TIMEOUT) as r:
+        with _open(req, timeout=timeout) as r:
             payload = json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         detail = ""
@@ -191,18 +204,29 @@ def call_model(images, prompt, api_key, model=DEFAULT_MODEL, opener=None):
 
 def call_model_with_retries(images, prompt, api_key, model=DEFAULT_MODEL,
                             opener=None, retries=MODEL_RETRIES,
-                            fallbacks=FALLBACK_MODELS):
+                            fallbacks=FALLBACK_MODELS, deadline=None):
     """call_model, but a transient upstream failure does not lose the puzzle.
 
     Rate limits get a much longer wait than other transients, because a 429 is
     the upstream asking for time rather than a blip to paper over. If a model
     stays unavailable through every retry, a sibling is tried: abandoning a
-    puzzle four rounds in costs more than one extra call on another model."""
+    puzzle four rounds in costs more than one extra call on another model.
+
+    `deadline` is an absolute time.monotonic() past which no further attempt is
+    STARTED and no backoff is slept off (see STEP_DEADLINE_S). Failing in time
+    to answer beats retrying into a client that has already given up."""
     last = None
     for candidate in (model, *[f for f in (fallbacks or ()) if f != model]):
         for attempt in range(retries):
+            budget = REQUEST_TIMEOUT
+            if deadline is not None:
+                budget = min(budget, deadline - time.monotonic())
+                if budget <= 0:
+                    raise last or SolveError("ran out of time before the model "
+                                             "answered", transient=True)
             try:
-                return call_model(images, prompt, api_key, candidate, opener)
+                return call_model(images, prompt, api_key, candidate, opener,
+                                  timeout=budget)
             except SolveError as e:
                 last = e
                 if not e.transient:
@@ -211,14 +235,19 @@ def call_model_with_retries(images, prompt, api_key, model=DEFAULT_MODEL,
                     break          # this model is out; try the next one
                 rate_limited = "429" in str(e)
                 base = RATE_LIMIT_BACKOFF_S if rate_limited else RETRY_BACKOFF_S
-                time.sleep(base * (attempt + 1))
-    raise last
+                nap = base * (attempt + 1)
+                # No point sleeping off a backoff there is no time to use.
+                if deadline is not None and time.monotonic() + nap >= deadline:
+                    break
+                time.sleep(nap)
+    raise last or SolveError("no model was attempted", transient=True)
 
 
 VALID_ACTIONS = ("submit", "next", "unsure")
 
 
-def decide_step(screenshot_b64, api_key, model=DEFAULT_MODEL, opener=None):
+def decide_step(screenshot_b64, api_key, model=DEFAULT_MODEL, opener=None,
+                deadline=None):
     """Judge the ONE option currently on screen. Returns (action, detail).
 
     One image per call, one decision per call. This replaced a version that
@@ -234,9 +263,16 @@ def decide_step(screenshot_b64, api_key, model=DEFAULT_MODEL, opener=None):
     # killed a 3-round-deep puzzle in testing replayed perfectly a minute later.
     # Ask again before giving up, because "unsure" costs the whole challenge.
     usage = {}
+    # ONE deadline for the whole decision, re-asks included: the caller is a
+    # browser sitting on a live challenge, not a batch job.
+    if deadline is None:
+        deadline = time.monotonic() + STEP_DEADLINE_S
     for attempt in range(CONTENT_RETRIES):
+        if time.monotonic() >= deadline:
+            return "unsure", {"reason": "out of time", "usage": usage}
         parsed, usage = call_model_with_retries([screenshot_b64], STEP_PROMPT,
-                                                api_key, model, opener)
+                                                api_key, model, opener,
+                                                deadline=deadline)
         if not parsed:
             continue
         action = str(parsed.get("action", "")).strip().lower()

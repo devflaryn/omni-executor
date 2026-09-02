@@ -320,3 +320,78 @@ export const ChartIcon = (props) => (
     <path d="m7 15 3.5-4 3 2.5L18 8" />
   </svg>
 );
+
+/* ---------------------------------------------------------------------------
+   Rail set: stroke-only, rounder and a touch heavier than the shared lucide
+   outlines, in two tones of the same ink — the primary strokes take
+   currentColor, the secondary ones sit behind at 45%. Sidebar only. */
+
+const rail = {
+  viewBox: "0 0 24 24",
+  fill: "none",
+  stroke: "currentColor",
+  strokeWidth: 1.9,
+  strokeLinecap: "round",
+  strokeLinejoin: "round",
+};
+const DIM = { opacity: 0.45 };
+
+export const HomeDuoIcon = (props) => (
+  <svg {...rail} {...props}>
+    <path d="M4.6 10.4 12 4.9l7.4 5.5v6.9a2.3 2.3 0 0 1-2.3 2.3H6.9a2.3 2.3 0 0 1-2.3-2.3z" />
+    <path {...DIM} d="M9.9 19.4v-4.3a1.6 1.6 0 0 1 1.6-1.6h1a1.6 1.6 0 0 1 1.6 1.6v4.3" />
+  </svg>
+);
+
+export const CodeDuoIcon = (props) => (
+  <svg {...rail} {...props}>
+    <rect {...DIM} x="3.3" y="3.9" width="17.4" height="16.2" rx="4.4" />
+    <path d="m9.5 9.6-2.5 2.4 2.5 2.4m5-4.8 2.5 2.4-2.5 2.4" />
+  </svg>
+);
+
+export const UsersDuoIcon = (props) => (
+  <svg {...rail} {...props}>
+    <g {...DIM}>
+      <path d="M16.4 6.3a2.9 2.9 0 0 1 0 5.6" />
+      <path d="M15.5 14.5c2.5.4 4.3 1.9 4.9 4.3.15.6-.3 1.2-.95 1.2h-1.7" />
+    </g>
+    <circle cx="9.3" cy="8.6" r="3.1" />
+    <path d="M3.3 18.9c.6-2.9 2.9-4.6 6-4.6s5.4 1.7 6 4.6c.13.6-.35 1.1-.97 1.1H4.27c-.62 0-1.1-.5-.97-1.1z" />
+  </svg>
+);
+
+export const GridDuoIcon = (props) => (
+  <svg {...rail} {...props}>
+    <rect x="3.7" y="3.7" width="7" height="7" rx="2.3" />
+    <rect {...DIM} x="13.3" y="3.7" width="7" height="7" rx="2.3" />
+    <rect {...DIM} x="3.7" y="13.3" width="7" height="7" rx="2.3" />
+    <rect x="13.3" y="13.3" width="7" height="7" rx="2.3" />
+  </svg>
+);
+
+export const ChartDuoIcon = (props) => (
+  <svg {...rail} {...props} strokeWidth="2.6">
+    <path {...DIM} d="M5.6 19.4v-6.6" />
+    <path d="M12 19.4V4.9" />
+    <path {...DIM} d="M18.4 19.4v-9.7" />
+  </svg>
+);
+
+export const SignalDuoIcon = (props) => (
+  <svg {...rail} {...props} strokeWidth="2.1">
+    <path {...DIM} d="M4.2 11.2a11 11 0 0 1 15.6 0" />
+    <path d="M7.7 14.7a6 6 0 0 1 8.6 0" />
+    <path d="M11.99 18.6h.02" strokeWidth="2.8" />
+  </svg>
+);
+
+export const GearDuoIcon = (props) => (
+  <svg {...rail} {...props}>
+    <path
+      {...DIM}
+      d="M12 2.8h-.1a1.9 1.9 0 0 0-1.9 1.9v.17a1.9 1.9 0 0 1-.95 1.64l-.41.24a1.9 1.9 0 0 1-1.9 0l-.14-.08a1.9 1.9 0 0 0-2.6.7l-.05.08a1.9 1.9 0 0 0 .7 2.6l.14.09a1.9 1.9 0 0 1 .95 1.63v.47a1.9 1.9 0 0 1-.95 1.66l-.14.08a1.9 1.9 0 0 0-.7 2.6l.05.08a1.9 1.9 0 0 0 2.6.7l.14-.08a1.9 1.9 0 0 1 1.9 0l.41.24a1.9 1.9 0 0 1 .95 1.64v.17a1.9 1.9 0 0 0 1.9 1.9h.1a1.9 1.9 0 0 0 1.9-1.9v-.17a1.9 1.9 0 0 1 .95-1.64l.41-.24a1.9 1.9 0 0 1 1.9 0l.14.08a1.9 1.9 0 0 0 2.6-.7l.05-.09a1.9 1.9 0 0 0-.7-2.6l-.14-.08a1.9 1.9 0 0 1-.95-1.65v-.47a1.9 1.9 0 0 1 .95-1.64l.14-.09a1.9 1.9 0 0 0 .7-2.6l-.05-.08a1.9 1.9 0 0 0-2.6-.7l-.14.08a1.9 1.9 0 0 1-1.9 0l-.41-.24a1.9 1.9 0 0 1-.95-1.64v-.17A1.9 1.9 0 0 0 12 2.8z"
+    />
+    <circle cx="12" cy="12" r="3" />
+  </svg>
+);

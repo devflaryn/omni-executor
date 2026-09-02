@@ -1,6 +1,6 @@
 """DEV MODE — send calls bound for the production server to a local omni-backend.
 
-The app talks to exactly one server, `http://72.62.59.232`, through three bases
+The app talks to exactly one server, `http://179.198.197.7`, through three bases
 that were each hardcoded separately:
 
     cloud.api_base()      /api/v1/...        auth, the cloud account store, presence
@@ -46,7 +46,7 @@ import urllib.parse
 from pathlib import Path
 
 # The one production origin. Everything the app fetches from us hangs off it.
-PROD_HOST = "72.62.59.232"
+PROD_HOST = "179.198.197.7"
 
 # omni-backend's dev port (.env.development.local: PORT=5500).
 DEFAULT_DEV_SERVER = "http://127.0.0.1:5500"

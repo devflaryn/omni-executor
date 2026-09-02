@@ -1,59 +1,47 @@
 /* Left rail: identity and navigation.
 
-   The rail has no background of its own — it sits on the same sheet as the
-   rest of the app, separated only by a floating spine that fades out before
-   it reaches the top or bottom edge. It collapses to icons only. Engine
-   health is not repeated here: the context bar already carries it on every
-   screen that can act on it, and a second permanent readout was one more
-   thing to read on a rail whose job is "where am I".  */
+   The rail is always compact — a fixed strip of icon tiles, never a list of
+   labels. It carries its own ground (--color-rail) rather than sharing the
+   canvas: a step up in value is what separates it, with the hairline spine
+   only sharpening that edge. Each
+   section is a rounded tile; the active one is a flat raised plate with a
+   visible edge. Labels live in the tooltip (with the Ctrl+N hint) and in the
+   context bar, which already names the section on every screen. Engine health
+   is not repeated here: the context bar carries it on every screen that can
+   act on it. */
 
 import { useWindowDrag } from "./TitleBar.jsx";
-import { ChevronLeftIcon, ChevronRightIcon } from "./icons.jsx";
 
-export default function Sidebar({ nav, tab, onTab, collapsed, onCollapse, chrome, premium = false }) {
+export default function Sidebar({ nav, tab, onTab, chrome, premium = false }) {
   const mac = Boolean(chrome?.mac);
   // The identity block and the empty rail move the window, like a titlebar.
   const drag = useWindowDrag(chrome);
 
   return (
     <aside
-      className={`spine-r flex shrink-0 flex-col transition-[width] duration-200
-                  ${collapsed ? (mac ? "w-[76px]" : "w-[62px]") : "w-[204px]"}`}
+      className={`spine-r flex shrink-0 flex-col bg-rail ${mac ? "w-[96px]" : "w-[90px]"}`}
     >
       {/* macOS: the native traffic lights float over this corner, so clear
-          a strip for them (it doubles as extra drag surface). The collapsed
-          rail is also a touch wider there so the lights never cross its edge. */}
+          a strip for them (it doubles as extra drag surface). The rail is
+          also a touch wider there so the lights never cross its edge. */}
       {mac && <div className="h-9 shrink-0" {...drag} />}
 
       {/* Identity — doubles as the window drag handle on this side. */}
-      <div
-        className={`flex h-12 shrink-0 items-center gap-2.5 ${
-          collapsed ? "justify-center px-0" : "px-4"
-        }`}
-        {...drag}
-      >
+      <div className="flex h-16 shrink-0 items-center justify-center" {...drag}>
+        {/* The mark is the bare glyph on the rail — no tile behind it. The
+            box keeps the same footprint so the drag surface and the nav
+            column's rhythm don't move. */}
         <span
-          className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[7px] bg-accent
-                     font-mono text-[14px] leading-none font-bold text-accent-ink"
+          className="flex h-11 w-11 shrink-0 items-center justify-center
+                     font-mono text-[26px] leading-none font-bold text-ink"
           aria-hidden="true"
         >
           Ω
         </span>
-        {!collapsed && (
-          <span className="min-w-0 leading-none">
-            <span className="silk block text-[11px] tracking-[0.2em] text-ink">Omni</span>
-            <span className="silk mt-[3px] block text-[8.5px] tracking-[0.3em] text-ink-3">
-              Executor
-            </span>
-          </span>
-        )}
       </div>
 
-      <nav
-        aria-label="Sections"
-        className={`flex flex-col gap-1 py-2 ${collapsed ? "items-center px-2" : "pr-2.5 pl-3.5"}`}
-      >
-        {nav.map(({ id, label, Icon, hint, premium: needsPremium }, i) => {
+      <nav aria-label="Sections" className="flex flex-col items-center gap-2 px-2 py-2">
+        {nav.map(({ id, label, Icon, premium: needsPremium }, i) => {
           const active = tab === id;
           // A locked section stays clickable — it explains itself when opened.
           // The pip is the only thing the rail says about it.
@@ -63,70 +51,30 @@ export default function Sidebar({ nav, tab, onTab, collapsed, onCollapse, chrome
               key={id}
               onClick={() => onTab(id)}
               aria-current={active ? "page" : undefined}
-              title={
-                locked
-                  ? `${label} — Premium${collapsed ? `  (Ctrl+${i + 1})` : ""}`
-                  : collapsed
-                    ? `${label}  (Ctrl+${i + 1})`
-                    : undefined
-              }
-              className={`ring-focus group relative flex h-9 items-center rounded-lg text-[12.5px]
-                          font-medium transition-colors duration-150
-                          ${collapsed ? "w-9 justify-center" : "gap-2.5 px-2.5"}
+              aria-label={label}
+              title={`${label}${locked ? " — Premium" : ""}  (Ctrl+${i + 1})`}
+              className={`ring-focus relative flex h-[54px] w-[54px] items-center justify-center rounded-[16px]
+                          border transition-colors duration-150
                           ${
                             active
-                              ? "bg-accent/12 text-ink"
-                              : "text-ink-2 hover:bg-raised hover:text-ink"
+                              ? "border-line bg-raised text-ink"
+                              : "border-transparent text-ink-3 hover:bg-raised/55 hover:text-ink"
                           }`}
             >
-              {active && !collapsed && (
-                <span className="absolute top-1/2 -left-[11px] h-[18px] w-[3px] -translate-y-1/2 rounded-full bg-accent" />
-              )}
               <span className="relative shrink-0">
-                <Icon className={`h-4 w-4 ${active ? "text-accent" : ""}`} />
-                {/* Collapsed, the label is gone and the pip is the whole
-                    signal, so it rides the icon rather than the row. */}
-                {locked && collapsed && (
-                  <span className="absolute -top-[3px] -right-[3px] h-[6px] w-[6px] rounded-full bg-premium" />
+                <Icon className="h-[26px] w-[26px]" />
+                {/* The label is in the tooltip, so the pip is the whole
+                    signal — it rides the icon rather than the row. */}
+                {locked && (
+                  <span className="absolute -top-[2px] -right-[2px] h-[7px] w-[7px] rounded-full bg-premium" />
                 )}
               </span>
-              {!collapsed && (
-                <>
-                  <span className="truncate">{label}</span>
-                  {locked && <span className="h-[6px] w-[6px] shrink-0 rounded-full bg-premium" />}
-                  {hint && (
-                    <span className="silk ml-auto text-[9px] text-ink-3 opacity-0 transition-opacity group-hover:opacity-100">
-                      {hint}
-                    </span>
-                  )}
-                </>
-              )}
             </button>
           );
         })}
       </nav>
 
       <div className="flex-1" {...drag} />
-
-      <div className={`rule-t ${collapsed ? "px-2 py-2" : "px-2.5 py-2"}`}>
-        <button
-          onClick={() => onCollapse(!collapsed)}
-          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          className={`ring-focus flex h-8 items-center rounded-lg text-ink-3 transition-colors
-                      duration-150 hover:bg-raised hover:text-ink
-                      ${collapsed ? "w-full justify-center" : "w-full gap-2.5 px-2.5"}`}
-        >
-          {collapsed ? (
-            <ChevronRightIcon className="h-4 w-4" />
-          ) : (
-            <>
-              <ChevronLeftIcon className="h-4 w-4" />
-              <span className="text-[12px]">Collapse</span>
-            </>
-          )}
-        </button>
-      </div>
     </aside>
   );
 }

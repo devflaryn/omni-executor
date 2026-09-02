@@ -522,3 +522,58 @@ def test_batch_client_posts_target_and_candidates():
     assert c.solve(PNG, [PNG, PNG], 3)["choice"] == 2
     assert seen["url"].endswith("/v1/solve")
     assert len(seen["body"]["candidates"]) == 2 and seen["body"]["round"] == 3
+
+
+# ------------------------------------------------------- the retry deadline
+#
+# The client is a browser sitting on a LIVE Arkose challenge, not a batch job.
+# A retry budget that outlasts SolverClient's patience does not buy a better
+# answer, it loses the whole puzzle: the client hangs up, the rounds already
+# solved cannot be replayed, and the account is gone. Watched happening three
+# rounds in, so the relationship between the two timeouts is pinned here.
+
+
+def test_the_server_answers_before_the_client_gives_up():
+    """The arithmetic, not just the constant: whatever the retry knobs are set
+    to, one /v1/step must still fit inside SolverClient's default timeout."""
+    assert cs.STEP_DEADLINE_S < vc.SolverClient("http://x").timeout
+
+
+def test_retries_stop_at_the_deadline_instead_of_running_the_budget_out():
+    import time
+
+    calls = []
+
+    def always_transient(req, timeout=None):
+        calls.append(timeout)
+        raise urllib_error().HTTPError(req.full_url, 503, "busy", {}, None)
+
+    def urllib_error():
+        import urllib.error
+        return urllib.error
+
+    started = time.monotonic()
+    with pytest.raises(cs.SolveError):
+        cs.call_model_with_retries([PNG], "p", "k", opener=always_transient,
+                                   deadline=time.monotonic() + 0.2)
+    # MODEL_RETRIES * REQUEST_TIMEOUT across two models is over half an hour;
+    # the deadline has to end it in a fraction of a second instead.
+    assert time.monotonic() - started < 5.0
+    # Every socket timeout handed down was the REMAINING time, never the full
+    # per-call budget -- a 180s read on a 0.2s deadline is the same bug again.
+    assert calls and all(c <= cs.REQUEST_TIMEOUT for c in calls)
+    assert all(c <= 0.2 for c in calls)
+
+
+def test_a_decision_that_runs_out_of_time_is_unsure_not_an_exception():
+    """Out of time must degrade to the human in the window, which is what
+    'unsure' means to the client -- never to a 502 that reads as a bug."""
+    import time
+
+    def slow(req, timeout=None):
+        raise OSError("timed out")
+
+    action, detail = cs.decide_step(PNG, "k", opener=slow,
+                                    deadline=time.monotonic() - 1)
+    assert action == "unsure"
+    assert "time" in (detail.get("reason") or "")

@@ -6,6 +6,7 @@ Proxy-Authorization header actually reaches the upstream and that CONNECT
 tunnels byte-for-byte."""
 
 import socket
+import sys
 import threading
 
 import pytest
@@ -210,3 +211,115 @@ def test_relay_forwards_plain_http_with_auth():
 ])
 def test_parse_layouts(layout, expected):
     assert stealth._parse_proxy(layout) == expected
+
+
+# ------------------------------------------------- the selenium-stealth layer
+#
+# What is worth pinning here is not that selenium-stealth works -- that is its
+# own package's problem -- but the ARGUMENTS it is handed. Every one of them
+# was chosen to stay consistent with something else (the en-US header
+# force_english sends, the real machine's GPU and platform), and a default
+# quietly creeping back in is a fingerprint mismatch that no test would
+# otherwise catch: the browser still starts, still solves, and still gets 403.
+
+
+class _FakeChrome:
+    """Enough driver for the masking layer: answers the two fingerprint reads
+    and records every CDP command."""
+
+    def __init__(self, platform="Win32", webgl=("NVIDIA Corporation",
+                                                "NVIDIA GeForce RTX 3060"),
+                 script_error=None):
+        self._platform, self._webgl = platform, webgl
+        self._script_error = script_error
+        self.cdp = []
+
+    def execute_script(self, js):
+        if self._script_error is not None:
+            raise self._script_error
+        if "navigator.platform" in js:
+            return self._platform
+        if "UNMASKED_VENDOR_WEBGL" in js:
+            return list(self._webgl) if self._webgl else None
+        raise AssertionError(f"unexpected script: {js[:60]!r}")
+
+    def execute_cdp_cmd(self, cmd, params):
+        self.cdp.append((cmd, params))
+        return {}
+
+
+@pytest.fixture
+def recorded_stealth(monkeypatch):
+    """selenium_stealth.stealth, replaced by a recorder. The real one type
+    checks for a live selenium.webdriver.Chrome, which no unit test has."""
+    calls = []
+    monkeypatch.setattr("selenium_stealth.stealth",
+                        lambda drv, **kw: calls.append((drv, kw)))
+    return calls
+
+
+def test_stealth_is_applied_with_consistent_values(recorded_stealth):
+    drv = _FakeChrome(platform="MacIntel", webgl=("Apple", "Apple M2"))
+    assert stealth._apply_stealth(drv, lambda m: None) is True
+
+    (called_on, kw), = recorded_stealth
+    assert called_on is drv
+    # en-US here, en-US in accountcreator.force_english's Accept-Language.
+    assert kw["languages"] == ["en-US", "en"]
+    assert kw["vendor"] == "Google Inc."
+    # NOT selenium-stealth's "Win32" default -- this browser says MacIntel,
+    # and its user-agent string will say Macintosh right beside it.
+    assert kw["platform"] == "MacIntel"
+    # The real GPU, echoed back: the override becomes a no-op instead of
+    # putting "Intel Iris OpenGL Engine" next to an Apple canvas hash.
+    assert kw["webgl_vendor"] == "Apple"
+    assert kw["renderer"] == "Apple M2"
+    # Passing a user_agent pins the library's 2020-era Chrome/83 string;
+    # omitting it makes selenium-stealth read the REAL one over CDP.
+    assert "user_agent" not in kw
+
+
+def test_unreadable_webgl_leaves_the_library_defaults(recorded_stealth):
+    """No GL on the box (a bare VM, a server): there is no real value to be
+    consistent with, so the library's common default is the better lie."""
+    drv = _FakeChrome(webgl=None)
+    stealth._apply_stealth(drv, lambda m: None)
+
+    (_, kw), = recorded_stealth
+    assert "webgl_vendor" not in kw and "renderer" not in kw
+    assert kw["platform"] == "Win32"
+
+
+def test_platform_is_never_none(recorded_stealth):
+    """CDP's Network.setUserAgentOverride rejects a null platform, so a
+    browser that will not answer the read still has to yield a string."""
+    drv = _FakeChrome(script_error=RuntimeError("no such session"))
+    stealth._apply_stealth(drv, lambda m: None)
+
+    (_, kw), = recorded_stealth
+    assert isinstance(kw["platform"], str) and kw["platform"]
+
+
+def test_missing_package_falls_back_to_the_builtin_script(monkeypatch):
+    """A machine without selenium-stealth must lose masking QUALITY, not
+    masking: the built-in subset still goes in."""
+    monkeypatch.setitem(sys.modules, "selenium_stealth", None)
+    drv, notes = _FakeChrome(), []
+    assert stealth._apply_stealth(drv, notes.append) is False
+
+    assert drv.cdp == [("Page.addScriptToEvaluateOnNewDocument",
+                        {"source": stealth._FALLBACK_JS})]
+    assert "'webdriver'" in stealth._FALLBACK_JS
+    assert any("selenium-stealth is not installed" in n for n in notes)
+
+
+def test_a_failed_stealth_call_does_not_kill_the_browser(monkeypatch):
+    """The driver is already up and the account is already half made; a
+    masking failure is reported and the flow goes on."""
+    def boom(drv, **kw):
+        raise RuntimeError("no chrome devtools")
+    monkeypatch.setattr("selenium_stealth.stealth", boom)
+
+    notes = []
+    assert stealth._apply_stealth(_FakeChrome(), notes.append) is False
+    assert any("could not be applied" in n for n in notes)

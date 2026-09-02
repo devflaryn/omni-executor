@@ -1,12 +1,12 @@
 /* Lua tokenizer + HTML highlighter (spans use the .tok-* component classes). */
 
-const LUA_KEYWORDS = new Set([
+export const LUA_KEYWORDS = new Set([
   "and", "break", "do", "else", "elseif", "end", "false", "for", "function",
   "goto", "if", "in", "local", "nil", "not", "or", "repeat", "return",
   "then", "true", "until", "while",
 ]);
 
-const LUA_BUILTINS = new Set([
+export const LUA_BUILTINS = new Set([
   "print", "pairs", "ipairs", "next", "type", "tostring", "tonumber",
   "require", "pcall", "xpcall", "error", "assert", "select", "unpack",
   "rawget", "rawset", "rawequal", "rawlen", "setmetatable", "getmetatable",
@@ -17,6 +17,31 @@ const LUA_BUILTINS = new Set([
   "Instance", "Vector3", "Vector2", "CFrame", "Color3", "UDim2", "Enum",
   "typeof", "warn", "getgenv", "getrenv", "loadstring",
 ]);
+
+/* Members the completion menu offers after `lib.` / `obj:` — the standard
+   libraries plus the Roblox/Luau constructors these scripts lean on. Not a
+   full API surface: just the names someone actually reaches for mid-line.
+   (Buffer-scanned members are merged in on top, so anything used once in the
+   script completes everywhere.) */
+export const LUA_MEMBERS = {
+  string: ["byte", "char", "find", "format", "gmatch", "gsub", "len", "lower", "match", "rep", "reverse", "split", "sub", "upper"],
+  table: ["concat", "insert", "remove", "sort", "unpack", "pack", "find", "clear", "clone", "create", "freeze"],
+  math: ["abs", "ceil", "clamp", "cos", "deg", "exp", "floor", "fmod", "huge", "log", "max", "min", "pi", "pow", "rad", "random", "randomseed", "round", "sign", "sin", "sqrt", "tan"],
+  os: ["clock", "date", "difftime", "time"],
+  io: ["read", "write"],
+  coroutine: ["create", "resume", "running", "status", "wrap", "yield", "isyieldable", "close"],
+  task: ["cancel", "defer", "delay", "spawn", "wait"],
+  game: ["GetService", "FindFirstChild", "WaitForChild", "GetChildren", "GetDescendants", "HttpGet", "Players", "Workspace", "ReplicatedStorage", "Lighting", "PlaceId", "JobId", "IsLoaded"],
+  workspace: ["FindFirstChild", "WaitForChild", "GetChildren", "GetDescendants", "CurrentCamera", "Gravity"],
+  Instance: ["new"],
+  Vector3: ["new", "zero", "one", "xAxis", "yAxis", "zAxis"],
+  Vector2: ["new", "zero", "one"],
+  CFrame: ["new", "Angles", "fromEulerAnglesXYZ", "lookAt", "identity"],
+  Color3: ["new", "fromRGB", "fromHSV", "fromHex"],
+  UDim2: ["new", "fromScale", "fromOffset"],
+  debug: ["traceback", "info", "getinfo"],
+  utf8: ["char", "codepoint", "len", "offset"],
+};
 
 const TOKEN_RE = new RegExp(
   [

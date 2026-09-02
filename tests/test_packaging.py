@@ -29,7 +29,8 @@ SPECS = [WIN_SPEC, MAC_SPEC, LINUX_SPEC]
 # Imported conditionally and carrying native binaries or package data, so
 # PyInstaller cannot pull them in unaided. Every one of these is a bug that
 # already happened.
-RUNTIME_ONLY = ("selenium", "tkinter", "PIL", "omnidroid")
+RUNTIME_ONLY = ("selenium", "selenium_stealth", "tkinter", "PIL",
+                "omnidroid")
 
 
 def _declared(spec_path):

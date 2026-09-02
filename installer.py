@@ -40,7 +40,8 @@ import bootstrap
 
 APP_NAME = "Omni Executor"
 APP_KEY = "OmniExecutor"              # registry key + folder name
-EXE_NAME = "omni-exec.exe"
+EXE_NAME = "omni-exec.exe"            # the Tauri shell: what a shortcut points at
+BACKEND_NAME = "omni-exec-py.exe"     # the Python backend it spawns
 ARTIFACT = "app-win"
 # The uninstall entry Windows reads for "Apps & features".
 _UNINSTALL_KEY = rf"Software\Microsoft\Windows\CurrentVersion\Uninstall\{APP_KEY}"
@@ -251,12 +252,24 @@ def install(progress=None) -> Path:
 def _stop_running(target: Path):
     """Close a running copy before replacing it, or the copy fails on a locked
     exe. Only the one we are about to overwrite — never every omni-exec on the
-    machine."""
-    exe = str((target / EXE_NAME).resolve()).lower()
+    machine.
+
+    BOTH executables, and the backend is the one that actually matters. The
+    shell holds only itself open; the backend holds python3xx.dll and every
+    other DLL in `_internal`, so stopping just `omni-exec` leaves the whole
+    tree locked and the install fails on a file the user has never heard of.
+    (`Get-Process omni-exec` does not match `omni-exec-py` — the name is exact,
+    not a prefix — which is precisely how that would have been missed.)
+
+    The backend does exit on its own when its stdin closes, i.e. shortly after
+    the shell dies. Shortly is not a guarantee, and a race here costs a failed
+    installation, so both are named explicitly."""
+    wanted = {str((target / name).resolve()).lower()
+              for name in (EXE_NAME, BACKEND_NAME)}
     try:
         out = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command",
-             "Get-Process omni-exec -ErrorAction SilentlyContinue | "
+             "Get-Process omni-exec,omni-exec-py -ErrorAction SilentlyContinue | "
              "Select-Object Id,Path | ConvertTo-Json -Compress"],
             capture_output=True, text=True, timeout=60,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
@@ -265,12 +278,17 @@ def _stop_running(target: Path):
         return
     if isinstance(procs, dict):
         procs = [procs]
+    killed = False
     for p in procs:
-        if (p.get("Path") or "").lower() == exe:
+        if (p.get("Path") or "").lower() in wanted:
             subprocess.run(["taskkill", "/PID", str(p["Id"]), "/F"],
                            capture_output=True, timeout=60,
                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            time.sleep(1.0)
+            killed = True
+    if killed:
+        # One wait for the set, not one per process: Windows can hold a file
+        # briefly after the handle owner is gone.
+        time.sleep(1.0)
 
 
 # -------------------------------------------------------------- uninstalling

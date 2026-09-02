@@ -3,7 +3,8 @@ import { api, bootstrapStatus, hasBackend, loadSettings, saveSettings } from "./
 import { EngineProvider, useEngine } from "./engine.jsx";
 import { EditorStoreProvider } from "./editorStore.jsx";
 import Sidebar from "./components/Sidebar.jsx";
-import TitleBar, { ResizeEdges } from "./components/TitleBar.jsx";
+import TitleBar, { ResizeEdges, WindowShell } from "./components/TitleBar.jsx";
+import { signalReady } from "./window.js";
 import HomeView from "./components/HomeView.jsx";
 import EditorView from "./components/EditorView.jsx";
 import AccountsView from "./components/AccountsView.jsx";
@@ -16,32 +17,32 @@ import AuthView from "./components/AuthView.jsx";
 import { UpdateBanner, UpdateModal, useUpdates } from "./components/UpdateBanner.jsx";
 import Toast from "./components/Toast.jsx";
 import {
-  ChartIcon,
-  CodeIcon,
-  GearIcon,
-  GridIcon,
-  HomeIcon,
-  SignalIcon,
-  UsersIcon,
+  ChartDuoIcon,
+  CodeDuoIcon,
+  GearDuoIcon,
+  GridDuoIcon,
+  HomeDuoIcon,
+  SignalDuoIcon,
+  UsersDuoIcon,
 } from "./components/icons.jsx";
 
 // `premium: true` marks a section the free tier cannot use. The rail renders a
 // gold pip on it and the section itself shows its own locked state — it is NOT
 // hidden, because a tab nobody can see cannot explain what a plan buys.
 const NAV = [
-  { id: "home", label: "Home", Icon: HomeIcon, hint: "1" },
-  { id: "editor", label: "Editor", Icon: CodeIcon, hint: "2" },
-  { id: "accounts", label: "Accounts", Icon: UsersIcon, hint: "3" },
-  { id: "farming", label: "Farming", Icon: GridIcon, hint: "4", premium: true },
+  { id: "home", label: "Home", Icon: HomeDuoIcon, hint: "1" },
+  { id: "editor", label: "Editor", Icon: CodeDuoIcon, hint: "2" },
+  { id: "accounts", label: "Accounts", Icon: UsersDuoIcon, hint: "3" },
+  { id: "farming", label: "Farming", Icon: GridDuoIcon, hint: "4", premium: true },
   // Stat Track sits next to Farming because it answers Farming's question —
   // "is the fleet actually earning anything" — and the two are read together.
-  { id: "stattrack", label: "Stat Track", Icon: ChartIcon, hint: "5", premium: true },
+  { id: "stattrack", label: "Stat Track", Icon: ChartDuoIcon, hint: "5", premium: true },
   // Network sits before Settings, not inside it: what it reports is a live
   // condition of the machine — the same kind of thing as "3 running" — and
   // the proxy it owns is a knob you set while watching that reading, not a
   // preference you file away next to the theme.
-  { id: "network", label: "Network", Icon: SignalIcon, hint: "6" },
-  { id: "settings", label: "Settings", Icon: GearIcon, hint: "7" },
+  { id: "network", label: "Network", Icon: SignalDuoIcon, hint: "6" },
+  { id: "settings", label: "Settings", Icon: GearDuoIcon, hint: "7" },
 ];
 
 const DEFAULT_LAUNCH = { mode: "gaming", gpu: "auto", place: "" };
@@ -53,7 +54,6 @@ export default function App() {
   // press opens it again even if the last one was dismissed.
   const [addRequest, setAddRequest] = useState(0);
   const [theme, setTheme] = useState("dark");
-  const [compact, setCompact] = useState(false);
   const [profile, setProfile] = useState(DEFAULT_PROFILE);
   const [launch, setLaunch] = useState(DEFAULT_LAUNCH);
   const [toast, setToast] = useState(null);
@@ -83,6 +83,16 @@ export default function App() {
     const status = await api("auth_status");
     setAuth(status?.ok ? status : { ok: true, signedIn: false });
     return status;
+  }, []);
+
+  // The shell creates the window HIDDEN, so the first frame anyone sees is a
+  // painted sheet rather than an empty transparent rectangle. Reveal it as
+  // soon as React has committed — before the backend has answered anything,
+  // because the gate screens draw fine without it and a window that waits on
+  // the network to appear reads as a launch that failed. (Rust shows it
+  // anyway after 2.5s, in case this never runs.)
+  useEffect(() => {
+    signalReady();
   }, []);
 
   useEffect(() => {
@@ -122,7 +132,6 @@ export default function App() {
       // launches: Home is the overview (accounts, running, autoexec, recent
       // scripts), which is what a fresh launch should land on rather than
       // wherever the last session happened to leave off.
-      setCompact(settings.sidebar === "compact");
       if (settings.profile) setProfile({ ...DEFAULT_PROFILE, ...settings.profile });
       if (settings.launch) setLaunch({ ...DEFAULT_LAUNCH, ...settings.launch });
     });
@@ -137,11 +146,6 @@ export default function App() {
     setTheme(next);
     document.documentElement.classList.toggle("light", next === "light");
     saveSettings({ theme: next });
-  }, []);
-
-  const applyCompact = useCallback((next) => {
-    setCompact(next);
-    saveSettings({ sidebar: next ? "compact" : "expanded" });
   }, []);
 
   const updateProfile = useCallback((next) => {
@@ -181,23 +185,26 @@ export default function App() {
   ) : null;
   if (gate) {
     return (
-      <div className="flex h-screen flex-col overflow-hidden bg-canvas font-sans text-ink antialiased select-none">
-        <ResizeEdges chrome={chrome} />
-        <TitleBar
-          title="Omni Executor"
-          subtitle={!auth.signedIn ? "Sign in" : "Setup"}
-          chrome={chrome}
-          leading={chrome.mac ? <span className="w-[64px]" aria-hidden="true" /> : null}
-        />
-        <div className="flex min-h-0 flex-1 flex-col">{gate}</div>
-      </div>
+      <WindowShell chrome={chrome}>
+        <div className="flex h-full flex-1 flex-col overflow-hidden bg-canvas font-sans text-ink antialiased select-none">
+          <ResizeEdges chrome={chrome} />
+          <TitleBar
+            title="Omni Executor"
+            subtitle={!auth.signedIn ? "Sign in" : "Setup"}
+            chrome={chrome}
+            leading={chrome.mac ? <span className="w-[64px]" aria-hidden="true" /> : null}
+          />
+          <div className="flex min-h-0 flex-1 flex-col">{gate}</div>
+        </div>
+      </WindowShell>
     );
   }
 
   return (
-    <EngineProvider activeTab={tab} showToast={showToast}>
-      <EditorStoreProvider>
-        <div className="flex h-screen overflow-hidden bg-canvas font-sans text-ink antialiased select-none">
+    <WindowShell chrome={chrome}>
+      <EngineProvider activeTab={tab} showToast={showToast}>
+        <EditorStoreProvider>
+        <div className="flex h-full flex-1 overflow-hidden bg-canvas font-sans text-ink antialiased select-none">
           <ResizeEdges chrome={chrome} />
           {(updates.applying ||
             (updates.status?.staged && updates.status.staged.version !== updateDismissed)) && (
@@ -210,8 +217,6 @@ export default function App() {
             nav={NAV}
             tab={tab}
             onTab={switchTab}
-            collapsed={compact}
-            onCollapse={applyCompact}
             chrome={chrome}
             premium={auth?.subscription?.tier === "premium"}
           />
@@ -261,8 +266,6 @@ export default function App() {
                 active={tab === "settings"}
                 theme={theme}
                 onTheme={applyTheme}
-                compact={compact}
-                onCompact={applyCompact}
                 profile={profile}
                 onProfile={updateProfile}
                 showToast={showToast}
@@ -275,8 +278,9 @@ export default function App() {
 
           <Toast toast={toast} />
         </div>
-      </EditorStoreProvider>
-    </EngineProvider>
+        </EditorStoreProvider>
+      </EngineProvider>
+    </WindowShell>
   );
 }
 

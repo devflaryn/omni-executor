@@ -39,8 +39,12 @@ a = Analysis(
     # stub is the file on the download page, it is the ONE artifact a stranger
     # runs, and it has no dev use -- there is nothing to test locally about
     # "download the published build". See devserver.py.
-    excludes=["webview", "selenium", "PIL", "omnidroid", "clr", "pythonnet",
-              "clr_loader", "numpy", "cryptography", "requests", "devserver"],
+    # `webview`, `clr`, `pythonnet` and `clr_loader` used to be named here too.
+    # They are gone because they are gone from the project: the window is a
+    # Tauri binary now and nothing Python imports a GUI toolkit, so excluding
+    # them would only be excluding names that no longer exist.
+    excludes=["selenium", "PIL", "omnidroid", "numpy", "cryptography",
+              "requests", "devserver"],
     noarchive=False,
     cipher=block_cipher,
 )

@@ -6,12 +6,31 @@
     <meta name="color-scheme" content="dark light" />
     <title>Omni Executor</title>
     <style>
-      /* Paint the sheet before React mounts so there is no white flash. */
+      /* Paint the sheet before React mounts, so the first frame is a sheet
+         and not an empty transparent rectangle -- but only INSIDE the
+         window's 33px radius. The Tauri window is transparent, and an
+         unpainted pixel is how the rounded corners get cut, so <html> itself
+         must stay transparent and the colour goes on a rounded ::before.
+         This is also what the window shows during the moment before the
+         backend has answered anything. Keep the radius in step with
+         --window-radius in
+         styles.css and CORNER_RADIUS in src-tauri/src/chrome.rs. */
       html {
-        background: #17181b;
+        background: transparent;
       }
-      html.light {
-        background: #f7f7f7;
+      /* A ::before and not `html { background }`: an html background is
+         propagated to the CANVAS, which is painted over the whole viewport and
+         ignores border-radius. z-index -1 keeps it behind every element. */
+      html::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        border-radius: 33px;
+        background: #181a25;
+      }
+      html.light::before {
+        background: #f7f7f8;
       }
     </style>
   </head>

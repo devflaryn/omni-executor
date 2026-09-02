@@ -55,7 +55,7 @@ PROJECT_DIR = Path(__file__).resolve().parent
 
 # OMNI-EXEC remote-execute bridge base (serves the in-game UI + the exec queue).
 # Override with the OMNI_EXEC_BASE env var or a settings.json "execBase" value.
-OMNI_EXEC_BASE = os.environ.get("OMNI_EXEC_BASE", "http://72.62.59.232")
+OMNI_EXEC_BASE = os.environ.get("OMNI_EXEC_BASE", "http://179.198.197.7")
 
 # DEV MODE, ABSENT FROM RELEASE BUILDS. Both PyInstaller specs exclude
 # `devserver`, so a shipped app has no such module and _exec_base() resolves the

@@ -108,8 +108,8 @@ def test_unreadable_dev_json_is_off_not_a_crash(dev_off):
 # ------------------------------------------------------------- the rewrite
 
 def test_rewrites_our_origin_and_keeps_the_path(dev_on):
-    assert devserver.redirect("http://72.62.59.232") == "http://127.0.0.1:5500"
-    assert devserver.redirect("http://72.62.59.232/omni/dist/manifest?os=win") \
+    assert devserver.redirect("http://179.198.197.7") == "http://127.0.0.1:5500"
+    assert devserver.redirect("http://179.198.197.7/omni/dist/manifest?os=win") \
         == "http://127.0.0.1:5500/omni/dist/manifest?os=win"
 
 
@@ -125,14 +125,14 @@ def test_leaves_every_other_host_alone(dev_on, url):
 def test_matches_on_host_not_on_a_string_prefix(dev_on):
     """https and a port are the same server. A `startswith` check would miss
     both and leave those calls pointed at production."""
-    assert devserver.redirect("https://72.62.59.232/omni/exec/claim") \
+    assert devserver.redirect("https://179.198.197.7/omni/exec/claim") \
         == "http://127.0.0.1:5500/omni/exec/claim"
-    assert devserver.redirect("http://72.62.59.232:80/gist") \
+    assert devserver.redirect("http://179.198.197.7:80/gist") \
         == "http://127.0.0.1:5500/gist"
 
 
 def test_off_is_a_passthrough(dev_off):
-    assert devserver.redirect("http://72.62.59.232") == "http://72.62.59.232"
+    assert devserver.redirect("http://179.198.197.7") == "http://179.198.197.7"
 
 
 # --------------------------------------------------- every base follows it
@@ -158,7 +158,7 @@ def test_an_explicit_production_override_is_still_redirected(dev_on, monkeypatch
     """OMNI_API_BASE naming the production server is a request for THAT server,
     which in dev mode is the local one. The alternative — an env var that
     silently defeats dev mode — is a debugging trap."""
-    monkeypatch.setenv("OMNI_API_BASE", "http://72.62.59.232")
+    monkeypatch.setenv("OMNI_API_BASE", "http://179.198.197.7")
     assert cloud.api_base() == "http://127.0.0.1:5500"
 
 
@@ -170,8 +170,8 @@ def test_a_third_party_override_is_not_redirected(dev_on, monkeypatch):
 def test_production_bases_are_unchanged_when_dev_is_off(dev_off, monkeypatch):
     monkeypatch.delenv("OMNI_API_BASE", raising=False)
     monkeypatch.delenv("OMNI_EXEC_BASE", raising=False)
-    assert cloud.api_base() == "http://72.62.59.232"
-    assert bootstrap.dist_base() == "http://72.62.59.232"
+    assert cloud.api_base() == "http://179.198.197.7"
+    assert bootstrap.dist_base() == "http://179.198.197.7"
 
 
 # ------------------------------------------------- and the engine follows
@@ -260,8 +260,8 @@ def test_call_sites_survive_the_module_being_absent(monkeypatch):
     monkeypatch.setattr(cloud, "devserver", None)
     monkeypatch.setattr(bootstrap, "_devserver", None)
     monkeypatch.setattr(main, "_devserver", None)
-    assert cloud.api_base() == "http://72.62.59.232"
-    assert bootstrap.dist_base() == "http://72.62.59.232"
+    assert cloud.api_base() == "http://179.198.197.7"
+    assert bootstrap.dist_base() == "http://179.198.197.7"
     api = main.Api.__new__(main.Api)
     monkeypatch.setattr(main.Api, "get_settings", lambda self: {})
-    assert api._exec_base() == "http://72.62.59.232"
+    assert api._exec_base() == "http://179.198.197.7"
