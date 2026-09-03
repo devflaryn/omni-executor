@@ -56,9 +56,14 @@ export async function api(method, ...args) {
     if (typeof handler !== "function") return noBackend;
     return handler(...args);
   }
-  const bridge = await shell();
-  if (!bridge) return noBackend;
   try {
+    // `shell()` dynamically imports @tauri-apps/api. That import was outside
+    // this try, so a failure there REJECTED api() instead of returning the
+    // {ok:false} shape every call site expects — and callers that chain off
+    // api() without a .catch (the startup effect in App.jsx) would silently
+    // stop. Everything that can throw now answers in the documented shape.
+    const bridge = await shell();
+    if (!bridge) return noBackend;
     const reply = await bridge.invoke("call", { method, args });
     // rpc.py answers every call with {ok, result} or {ok, error, message}.
     // A failure is handed back in the same shape the engine calls use, so a

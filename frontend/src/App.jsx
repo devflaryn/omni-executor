@@ -104,6 +104,8 @@ export default function App() {
         setReady(true);
         return;
       }
+      // Chrome first and on its own: it is a local, instant call, and the
+      // titlebar it decides is drawn by the "Starting…" screen below.
       const platform = await api("get_platform");
       setChrome({
         desktop: true,
@@ -113,6 +115,14 @@ export default function App() {
       await refreshAuth();
       const s = await bootstrapStatus();
       setReady(Boolean(s?.ready));
+    }).catch((err) => {
+      // NOTHING above may leave the gate unresolved. `ready`/`auth` staying
+      // null renders the "Starting…" screen forever, so a rejection anywhere
+      // in the chain would look like a hung app. Fail into a usable state and
+      // let the gate screens report the real problem instead.
+      console.error("[omni] startup chain failed", err);
+      setAuth((prev) => prev ?? { ok: true, signedIn: false });
+      setReady((prev) => (prev === null ? false : prev));
     });
   }, [refreshAuth]);
 
@@ -172,7 +182,32 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [switchTab]);
 
-  if (ready === null || auth === null) return null;
+  // Draw the window CHROME and a status line while the first answers are still
+  // in flight. This used to `return null`, which paints a completely empty
+  // window — and `auth_status` reaches the API server, so on a bad route that
+  // empty window is what the user stares at for as long as the request takes
+  // to time out. Measured on the Mac mini 2026-09-03: 7 s ping RTT to the VPS
+  // and HTTP timing out at 20 s, i.e. a blank app that looked crashed but was
+  // only waiting. A launch that is working must never be indistinguishable
+  // from one that died.
+  if (ready === null || auth === null) {
+    return (
+      <WindowShell chrome={chrome}>
+        <div className="flex h-full flex-1 flex-col overflow-hidden bg-canvas font-sans text-ink antialiased select-none">
+          <ResizeEdges chrome={chrome} />
+          <TitleBar
+            title="Omni Executor"
+            subtitle="Starting…"
+            chrome={chrome}
+            leading={chrome.mac ? <span className="w-[64px]" aria-hidden="true" /> : null}
+          />
+          <div className="flex min-h-0 flex-1 items-center justify-center">
+            <p className="text-[13px] text-ink-3">Starting…</p>
+          </div>
+        </div>
+      </WindowShell>
+    );
+  }
   // Sign-in comes BEFORE the runtime download: the multi-gigabyte base images
   // are worth fetching only for someone who can actually use them, and the
   // license check is the cheap question to ask first. Both gates sit under
