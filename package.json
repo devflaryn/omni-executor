@@ -1,7 +1,7 @@
 {
   "name": "omni-executor",
   "private": true,
-  "version": "1.0.38",
+  "version": "1.0.39",
   "description": "Omni Executor — the Tauri shell. The React app lives in frontend/, the Python backend at the repo root.",
   "scripts": {
     "tauri": "tauri",
