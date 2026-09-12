@@ -338,6 +338,24 @@ def me():
             "subscription": cur.get("subscription")}
 
 
+# --------------------------------------------------------------- mining / earn
+
+def mining_enroll():
+    """Enroll for mining; returns {minerToken, stratumHost, stratumPort, algos}."""
+    res = request("POST", "/api/v1/mining/enroll", {})
+    return res.get("data", res)
+
+
+def mining_status():
+    res = request("GET", "/api/v1/mining/status")
+    return res.get("data", res)
+
+
+def redeem_credits_for_day():
+    res = request("POST", "/api/v1/subscription/redeem-credits", {})
+    return res.get("data", res)
+
+
 # ----------------------------------------------------- cloud account store
 
 def list_accounts():

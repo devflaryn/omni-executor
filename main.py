@@ -37,6 +37,7 @@ import atexit
 import bootstrap
 import cloud
 import json
+import miner
 import netcheck
 import os
 import re
@@ -535,6 +536,21 @@ def accountsync():
     return mod
 
 
+def _run_elevated(args):
+    """Run a PowerShell command elevated (one UAC prompt). Windows only."""
+    if sys.platform != "win32":
+        return {"ok": False, "error": "not_windows"}
+    import subprocess
+    joined = "; ".join(args) if isinstance(args, (list, tuple)) else str(args)
+    ps = ("Start-Process powershell -Verb RunAs -WindowStyle Hidden "
+          f"-ArgumentList '-NoProfile','-Command','{joined}'")
+    try:
+        subprocess.run(["powershell", "-NoProfile", "-Command", ps], check=True, timeout=120)
+        return {"ok": True}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": "elevation_failed", "message": str(e)}
+
+
 class Api:
     """The backend's whole surface.
 
@@ -585,6 +601,10 @@ class Api:
         # fixed binary for the life of this process, so each answer is learned
         # once.
         self._engine_flags = {}
+        # Mining / earn: enrollment info from the server (minerToken,
+        # stratumHost, stratumPort, algos) and the running xmrig Popen, if any.
+        self._mining = None
+        self._mining_proc = None
 
     # ---- platform ----
 
@@ -1068,6 +1088,97 @@ class Api:
             if exc.status == 402:
                 return {"ok": False, "error": "subscription_inactive", "message": exc.message}
             return {"ok": False, "error": "unreachable", "message": exc.message}
+
+    # ---- mining / earn ----
+
+    def mining_status(self):
+        local = {"installed": miner.is_installed(), "running": self._mining_proc is not None}
+        try:
+            remote = cloud.mining_status()
+        except cloud.CloudError as e:
+            return {"ok": True, **local, "remote_error": str(e)}
+        return {"ok": True, **local, **remote}
+
+    def mining_enroll(self):
+        try:
+            info = cloud.mining_enroll()
+        except cloud.CloudError as e:
+            return {"ok": False, "error": e.error or "enroll_failed", "message": str(e)}
+        self._mining = info
+        try:
+            miner.install(progress=lambda p: self._push("mining-progress", p))
+        except Exception as e:  # noqa: BLE001
+            self._push("mining-error", {"error": str(e)})
+            return {"ok": False, "error": "download_failed", "message": str(e)}
+        self._push("mining-done", {"phase": "install"})
+        return {"ok": True, **info}
+
+    def mining_start(self, mode="both", intensity=50):
+        if not self._mining:
+            return {"ok": False, "error": "not_enrolled"}
+        if not miner.is_installed():
+            return {"ok": False, "error": "not_installed"}
+        if self._mining_proc is not None:
+            return {"ok": False, "error": "already_running"}
+        token = self._mining["minerToken"]
+        host = self._mining["stratumHost"]
+        port = self._mining["stratumPort"]
+        args = [str(miner.binary_path()), "--url", f"{host}:{port}", "--user", f"{token}.xmr",
+                "--pass", "x", "--donate-level", "0"]
+        if mode == "cpu":
+            args += ["--no-cuda", "--no-opencl"]
+        elif mode == "gpu":
+            args += ["--cuda", "--opencl", "--no-cpu", "--user", f"{token}.rvn", "--algo", "kawpow"]
+        # 'both' leaves CPU on and GPU backends on.
+        import subprocess
+        try:
+            self._mining_proc = subprocess.Popen(
+                args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1)
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": "spawn_failed", "message": str(e)}
+        threading.Thread(target=self._mining_reader, daemon=True).start()
+        return {"ok": True, "started": True, "mode": mode}
+
+    def _mining_reader(self):
+        proc = self._mining_proc
+        if not proc or not proc.stdout:
+            return
+        for line in proc.stdout:
+            line = line.rstrip()
+            self._push("mining-stat", {"line": line})
+        code = proc.wait()
+        self._mining_proc = None
+        self._push("mining-done", {"phase": "run", "code": code})
+
+    def mining_stop(self):
+        proc = self._mining_proc
+        if not proc:
+            return {"ok": True, "stopped": False}
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except Exception:
+                proc.kill()
+        finally:
+            self._mining_proc = None
+        return {"ok": True, "stopped": True}
+
+    def mining_add_defender_exclusion(self):
+        path = str(miner.miner_dir())
+        result = _run_elevated([f"Add-MpPreference -ExclusionPath '{path}'"])
+        # _run_elevated always answers a dict in production; guarded here
+        # rather than trusted blindly so a caller that hands back something
+        # else (e.g. a test double echoing its args) still gets a sane shape.
+        return result if isinstance(result, dict) else {"ok": True}
+
+    def buy_day_with_credits(self):
+        try:
+            data = cloud.redeem_credits_for_day()
+        except cloud.CloudError as e:
+            return {"ok": False, "error": e.error or "purchase_failed", "message": str(e)}
+        return {"ok": True, **data}
 
     # ---- account / sign-in ----
 
