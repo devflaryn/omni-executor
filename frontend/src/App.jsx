@@ -11,6 +11,7 @@ import AccountsView from "./components/AccountsView.jsx";
 import SettingsView from "./components/SettingsView.jsx";
 import FarmingView from "./components/FarmingView.jsx";
 import StatTrackView from "./components/StatTrackView.jsx";
+import EarnView from "./components/EarnView.jsx";
 import NetworkView from "./components/NetworkView.jsx";
 import BootstrapView from "./components/BootstrapView.jsx";
 import AuthView from "./components/AuthView.jsx";
@@ -19,6 +20,7 @@ import Toast from "./components/Toast.jsx";
 import {
   ChartDuoIcon,
   CodeDuoIcon,
+  EarnDuoIcon,
   GearDuoIcon,
   GridDuoIcon,
   HomeDuoIcon,
@@ -42,7 +44,10 @@ const NAV = [
   // the proxy it owns is a knob you set while watching that reading, not a
   // preference you file away next to the theme.
   { id: "network", label: "Network", Icon: SignalDuoIcon, hint: "6" },
-  { id: "settings", label: "Settings", Icon: GearDuoIcon, hint: "7" },
+  // Earn sits after Network and before Settings — it's a thing you DO
+  // (enroll, mine, spend) rather than a preference you file away.
+  { id: "earn", label: "Earn", Icon: EarnDuoIcon, hint: "7" },
+  { id: "settings", label: "Settings", Icon: GearDuoIcon, hint: "8" },
 ];
 
 const DEFAULT_LAUNCH = { mode: "gaming", gpu: "auto", place: "" };
@@ -297,6 +302,7 @@ export default function App() {
                 showToast={showToast}
               />
               <NetworkView active={tab === "network"} onSummary={setNetSummary} />
+              <EarnView active={tab === "earn"} auth={auth} showToast={showToast} />
               <SettingsView
                 active={tab === "settings"}
                 theme={theme}
@@ -344,6 +350,8 @@ function ContextBar({ tab, profile, chrome, netSummary }) {
               : "Nothing running here"
             : tab === "network"
             ? netSummary || "Checking the link…"
+            : tab === "earn"
+            ? "Earn credits by mining"
             : tab === "home"
               ? running.length
                 ? `${running.length} running`

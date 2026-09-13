@@ -58,8 +58,15 @@ export function installDevMock() {
       apiBase: "mock",
       device: { name: "dev" },
       subscription: new URLSearchParams(location.search).get("mock") === "free"
-        ? { plan: null, tier: "free", active: false }
-        : { plan: "lifetime", planLabel: "Lifetime", tier: "premium", active: true, daysRemaining: null },
+        ? { plan: null, tier: "free", active: false, credits: { credits: 0 } }
+        : {
+            plan: "lifetime",
+            planLabel: "Lifetime",
+            tier: "premium",
+            active: true,
+            daysRemaining: null,
+            credits: { credits: 240 },
+          },
     }),
     bootstrap_status: async () => ({ ready: true }),
     engine_version: async () => ({ ok: true, contract: "1.0", arch_aware: true, pool_supported: false, missing_commands: [] }),
@@ -268,5 +275,34 @@ export function installDevMock() {
       ok: true,
       account: { username, password: "mock-Passw0rd!", birthday: [1995, 4, 12] },
     }),
+    // ---- earn / mining. Mirrors mining_enroll's real shape (installed flips
+    // after "downloading", start/stop flip `running`) so the Earn tab has
+    // something to react to in the browser preview.
+    mining_status: async () => ({
+      ok: true,
+      installed: Boolean(settings.miningInstalled),
+      running: Boolean(settings.miningRunning),
+      hashrate: settings.miningRunning ? 1200 + Math.round(Math.random() * 300) : 0,
+      creditedMicros: 0,
+    }),
+    mining_enroll: () =>
+      later(1200, () => {
+        settings.miningInstalled = true;
+        localStorage.setItem("omni-settings", JSON.stringify(settings));
+        return { ok: true, minerToken: "mock", stratumHost: "localhost", stratumPort: 3333 };
+      }),
+    mining_start: (mode) => {
+      settings.miningRunning = true;
+      localStorage.setItem("omni-settings", JSON.stringify(settings));
+      push("mining-stat", { line: `[mock] starting ${mode || "both"} miner…` });
+      return Promise.resolve({ ok: true, started: true });
+    },
+    mining_stop: async () => {
+      settings.miningRunning = false;
+      localStorage.setItem("omni-settings", JSON.stringify(settings));
+      return { ok: true, stopped: true };
+    },
+    mining_add_defender_exclusion: async () => ({ ok: true }),
+    buy_day_with_credits: async () => ({ ok: true, subscription: { active: true }, credits: { credits: 0 } }),
   };
 }
