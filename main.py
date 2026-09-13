@@ -34,6 +34,7 @@ Engine:
 """
 
 import atexit
+import base64
 import bootstrap
 import cloud
 import json
@@ -536,14 +537,23 @@ def accountsync():
     return mod
 
 
-def _run_elevated(args):
-    """Run a PowerShell command elevated (one UAC prompt). Windows only."""
+def _run_elevated(inner):
+    """Run one PowerShell command line elevated (one UAC prompt). Windows only.
+
+    `inner` is the command to run AS ADMINISTRATOR, as a plain string. It is
+    passed through as base64 of its UTF-16LE bytes via `-EncodedCommand`
+    rather than interpolated into the outer `-ArgumentList` string: a
+    single-quoted `-Command` argument nested inside a single-quoted
+    `-ArgumentList` value double-wraps any quote the inner command needs
+    (e.g. the path around `-ExclusionPath`), and PowerShell's own quoting
+    rules eject it — the exclusion silently never lands. Base64 has no
+    quotes or spaces, so the outer wrapping can never corrupt it.
+    """
     if sys.platform != "win32":
         return {"ok": False, "error": "not_windows"}
-    import subprocess
-    joined = "; ".join(args) if isinstance(args, (list, tuple)) else str(args)
+    b64 = base64.b64encode(inner.encode("utf-16-le")).decode("ascii")
     ps = ("Start-Process powershell -Verb RunAs -WindowStyle Hidden "
-          f"-ArgumentList '-NoProfile','-Command','{joined}'")
+          f"-ArgumentList '-NoProfile','-EncodedCommand','{b64}'")
     try:
         subprocess.run(["powershell", "-NoProfile", "-Command", ps], check=True, timeout=120)
         return {"ok": True}
@@ -602,9 +612,11 @@ class Api:
         # once.
         self._engine_flags = {}
         # Mining / earn: enrollment info from the server (minerToken,
-        # stratumHost, stratumPort, algos) and the running xmrig Popen, if any.
+        # stratumHost, stratumPort, algos) and the running xmrig Popen(s), if
+        # any — a list because "both" mode is two separate processes (one
+        # xmrig cannot mine two coins on two backends at once).
         self._mining = None
-        self._mining_proc = None
+        self._mining_procs = []
 
     # ---- platform ----
 
@@ -1092,7 +1104,7 @@ class Api:
     # ---- mining / earn ----
 
     def mining_status(self):
-        local = {"installed": miner.is_installed(), "running": self._mining_proc is not None}
+        local = {"installed": miner.is_installed(), "running": bool(self._mining_procs)}
         try:
             remote = cloud.mining_status()
         except cloud.CloudError as e:
@@ -1113,65 +1125,84 @@ class Api:
         self._push("mining-done", {"phase": "install"})
         return {"ok": True, **info}
 
+    # One xmrig process is single-algo/single-pool: it cannot mine Monero on
+    # CPU and Ravencoin on GPU at the same time in one process. "both" is
+    # therefore two SEPARATE processes, each with its own coin/algo/backend
+    # flags, tracked as a list rather than a single Popen.
+    _MINING_KIND_ARGS = {
+        "cpu": lambda token: ["--user", f"{token}.xmr", "--algo", "rx/0",
+                              "--no-cuda", "--no-opencl"],
+        "gpu": lambda token: ["--user", f"{token}.rvn", "--algo", "kawpow",
+                              "--cuda", "--opencl", "--no-cpu"],
+    }
+
+    def _spawn_miner(self, kind):
+        """One xmrig Popen for a single backend+coin ('cpu' or 'gpu')."""
+        token = self._mining["minerToken"]
+        host = self._mining["stratumHost"]
+        port = self._mining["stratumPort"]
+        args = [str(miner.binary_path()), "--url", f"{host}:{port}",
+                "--pass", "x", "--donate-level", "0",
+                *self._MINING_KIND_ARGS[kind](token)]
+        return subprocess.Popen(args, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, bufsize=1)
+
     def mining_start(self, mode="both", intensity=50):
         if not self._mining:
             return {"ok": False, "error": "not_enrolled"}
         if not miner.is_installed():
             return {"ok": False, "error": "not_installed"}
-        if self._mining_proc is not None:
+        if self._mining_procs:
             return {"ok": False, "error": "already_running"}
-        token = self._mining["minerToken"]
-        host = self._mining["stratumHost"]
-        port = self._mining["stratumPort"]
-        args = [str(miner.binary_path()), "--url", f"{host}:{port}", "--user", f"{token}.xmr",
-                "--pass", "x", "--donate-level", "0"]
-        if mode == "cpu":
-            args += ["--no-cuda", "--no-opencl"]
-        elif mode == "gpu":
-            args += ["--cuda", "--opencl", "--no-cpu", "--user", f"{token}.rvn", "--algo", "kawpow"]
-        # 'both' leaves CPU on and GPU backends on.
-        import subprocess
+        kinds = {"cpu": ["cpu"], "gpu": ["gpu"], "both": ["cpu", "gpu"]}.get(mode)
+        if kinds is None:
+            return {"ok": False, "error": "bad_mode", "message": f"unknown mode {mode!r}"}
+        spawned = []
         try:
-            self._mining_proc = subprocess.Popen(
-                args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1)
+            for kind in kinds:
+                proc = self._spawn_miner(kind)
+                spawned.append(proc)
+                self._mining_procs.append(proc)
+                threading.Thread(target=self._mining_reader, args=(proc, kind),
+                                 daemon=True).start()
         except Exception as e:  # noqa: BLE001
+            for proc in spawned:
+                self._mining_procs.remove(proc)
+                proc.kill()
             return {"ok": False, "error": "spawn_failed", "message": str(e)}
-        threading.Thread(target=self._mining_reader, daemon=True).start()
-        return {"ok": True, "started": True, "mode": mode}
+        return {"ok": True, "started": True, "mode": mode, "procs": len(spawned)}
 
-    def _mining_reader(self):
-        proc = self._mining_proc
-        if not proc or not proc.stdout:
-            return
-        for line in proc.stdout:
-            line = line.rstrip()
-            self._push("mining-stat", {"line": line})
+    def _mining_reader(self, proc, kind):
+        if proc.stdout:
+            for line in proc.stdout:
+                line = line.rstrip()
+                self._push("mining-stat", {"line": line, "kind": kind})
         code = proc.wait()
-        self._mining_proc = None
-        self._push("mining-done", {"phase": "run", "code": code})
+        try:
+            self._mining_procs.remove(proc)
+        except ValueError:
+            pass
+        self._push("mining-done", {"phase": "run", "kind": kind, "code": code})
 
     def mining_stop(self):
-        proc = self._mining_proc
-        if not proc:
-            return {"ok": True, "stopped": False}
-        try:
-            proc.terminate()
+        procs, self._mining_procs = self._mining_procs, []
+        if not procs:
+            return {"ok": True, "stopped": 0}
+        for proc in procs:
             try:
-                proc.wait(timeout=10)
-            except Exception:
-                proc.kill()
-        finally:
-            self._mining_proc = None
-        return {"ok": True, "stopped": True}
+                proc.terminate()
+                try:
+                    proc.wait(timeout=10)
+                except Exception:
+                    proc.kill()
+            except Exception:  # noqa: BLE001 — one stuck proc must not skip the rest
+                pass
+        return {"ok": True, "stopped": len(procs)}
 
     def mining_add_defender_exclusion(self):
-        path = str(miner.miner_dir())
-        result = _run_elevated([f"Add-MpPreference -ExclusionPath '{path}'"])
-        # _run_elevated always answers a dict in production; guarded here
-        # rather than trusted blindly so a caller that hands back something
-        # else (e.g. a test double echoing its args) still gets a sane shape.
-        return result if isinstance(result, dict) else {"ok": True}
+        path = str(miner.miner_dir()).replace("'", "''")
+        inner = f"Add-MpPreference -ExclusionPath '{path}'"
+        return _run_elevated(inner)
 
     def buy_day_with_credits(self):
         try:
