@@ -30,13 +30,14 @@ import { AlertIcon, CpuIcon } from "./icons.jsx";
 // a payout that landed) without hammering the backend.
 const POLL_MS = 5000;
 const DAY_PRICE_CREDITS = 80;
-const MODES = ["cpu", "gpu", "both"];
+// Beta: GPU/Ravencoin only. The CPU (Monero) path exists in the backend but is
+// gated off here and in main.py's mining_start until the beta ends.
+const MODE = "gpu";
 
 export default function EarnView({ active, auth, showToast, onAuthChange }) {
   const [status, setStatus] = useState(null);
   const [progress, setProgress] = useState(null);
   const [lines, setLines] = useState([]);
-  const [mode, setMode] = useState("both");
   const [enrolling, setEnrolling] = useState(false);
   const [busy, setBusy] = useState(false);
   const timer = useRef(null);
@@ -115,7 +116,7 @@ export default function EarnView({ active, auth, showToast, onAuthChange }) {
 
   const start = async () => {
     setBusy(true);
-    const res = await miningStart(mode, 50);
+    const res = await miningStart(MODE, 50);
     setBusy(false);
     if (res?.ok) {
       showToast?.("Mining started", "success");
@@ -162,9 +163,14 @@ export default function EarnView({ active, auth, showToast, onAuthChange }) {
     <div className={`min-h-0 flex-1 overflow-y-auto px-5 py-5 ${active ? "" : "hidden"}`}>
       <div className="animate-rise mx-auto flex w-full max-w-[1080px] flex-col gap-6">
         <div>
-          <h2 className="text-[30px] font-semibold tracking-[-0.01em] text-ink">Earn</h2>
+          <div className="flex items-center gap-2.5">
+            <h2 className="text-[30px] font-semibold tracking-[-0.01em] text-ink">Earn</h2>
+            <span className="rounded-full border border-line bg-raised px-2 py-[3px] text-[10.5px] font-bold uppercase tracking-wider text-warn">
+              Beta
+            </span>
+          </div>
           <p className="mt-1 text-[13.5px] text-ink-3">
-            Mine with spare CPU/GPU cycles — 100 credits = $1, spend them on subscription time.
+            Mine with your GPU — 100 credits = $1, spend them on subscription time.
           </p>
         </div>
 
@@ -206,18 +212,11 @@ export default function EarnView({ active, auth, showToast, onAuthChange }) {
                   </span>
                 </div>
 
-                <div className="flex gap-2">
-                  {MODES.map((m) => (
-                    <Button
-                      key={m}
-                      variant={mode === m ? "solid" : "quiet"}
-                      size="sm"
-                      onClick={() => setMode(m)}
-                      disabled={running}
-                    >
-                      {m.toUpperCase()}
-                    </Button>
-                  ))}
+                <div className="flex items-center gap-2.5">
+                  <span className="rounded-lg border border-line bg-raised px-3 py-1.5 text-[12.5px] font-medium text-ink">
+                    GPU · Ravencoin
+                  </span>
+                  <span className="text-[12px] text-ink-3">CPU mining comes after the beta.</span>
                 </div>
 
                 <div className="flex flex-wrap gap-2">

@@ -1213,13 +1213,18 @@ class Api:
             stdin=subprocess.DEVNULL,
             text=True, bufsize=1, encoding="utf-8", errors="replace")
 
-    def mining_start(self, mode="both", intensity=50):
+    def mining_start(self, mode="gpu", intensity=50):
         if not self._mining:
             return {"ok": False, "error": "not_enrolled"}
         if not miner.is_installed():
             return {"ok": False, "error": "not_installed"}
         if self._mining_procs:
             return {"ok": False, "error": "already_running"}
+        # BETA: GPU (Ravencoin) only. The cpu/both paths are implemented but
+        # gated off here until the beta ends, matching the GPU-only Earn tab.
+        if mode != "gpu":
+            return {"ok": False, "error": "gpu_only_beta",
+                    "message": "Only GPU mining is enabled during the beta."}
         kinds = {"cpu": ["cpu"], "gpu": ["gpu"], "both": ["cpu", "gpu"]}.get(mode)
         if kinds is None:
             return {"ok": False, "error": "bad_mode", "message": f"unknown mode {mode!r}"}

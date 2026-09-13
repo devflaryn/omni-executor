@@ -118,7 +118,7 @@ def _enrolled(api, monkeypatch):
     monkeypatch.setattr(main, "threading", types.SimpleNamespace(Thread=_NoStartThread))
 
 
-def test_start_cpu_spawns_one_process_with_xmr_algo(api, monkeypatch):
+def test_start_gpu_spawns_one_process_with_kawpow(api, monkeypatch):
     _enrolled(api, monkeypatch)
     spawned = []
     kwargs_seen = []
@@ -129,15 +129,15 @@ def test_start_cpu_spawns_one_process_with_xmr_algo(api, monkeypatch):
         return FakeProc()
 
     monkeypatch.setattr(main.subprocess, "Popen", fake_popen)
-    res = api.mining_start("cpu", 77)
+    res = api.mining_start("gpu", 77)
     assert res["ok"] is True
     assert len(spawned) == 1
     args = spawned[0]
     assert args.count("--user") == 1
-    assert f"{args[args.index('--user') + 1]}" == "tok.xmr"
-    assert "rx/0" in args
-    # intensity is wired through, not vestigial
-    assert args[args.index("--cpu-max-threads-hint") + 1] == "77"
+    assert f"{args[args.index('--user') + 1]}" == "tok.rvn"
+    assert "kawpow" in args
+    # --cpu-max-threads-hint is CPU-only; the GPU process must not carry it
+    assert "--cpu-max-threads-hint" not in args
     assert len(api._mining_procs) == 1
     # the miner must never inherit the RPC bridge's stdin
     assert kwargs_seen[0]["stdin"] == main.subprocess.DEVNULL
@@ -145,27 +145,19 @@ def test_start_cpu_spawns_one_process_with_xmr_algo(api, monkeypatch):
     assert kwargs_seen[0]["errors"] == "replace"
 
 
-def test_start_both_spawns_two_processes_xmr_and_rvn(api, monkeypatch):
+def test_cpu_and_both_rejected_during_beta(api, monkeypatch):
+    """Beta is GPU-only: cpu/both are gated off with a clear error and spawn
+    nothing, even for an enrolled+installed account."""
     _enrolled(api, monkeypatch)
     spawned = []
-
-    def fake_popen(args, **kwargs):
-        spawned.append(args)
-        return FakeProc()
-
-    monkeypatch.setattr(main.subprocess, "Popen", fake_popen)
-    res = api.mining_start("both", 50)
-    assert res["ok"] is True
-    assert res["procs"] == 2
-    assert len(spawned) == 2
-    users = {args[args.index("--user") + 1] for args in spawned}
-    algos = {args[args.index("--algo") + 1] for args in spawned}
-    assert users == {"tok.xmr", "tok.rvn"}
-    assert algos == {"rx/0", "kawpow"}
-    assert len(api._mining_procs) == 2
-    # --cpu-max-threads-hint only applies to the cpu process
-    gpu_args = next(a for a in spawned if "tok.rvn" in a)
-    assert "--cpu-max-threads-hint" not in gpu_args
+    monkeypatch.setattr(main.subprocess, "Popen",
+                        lambda *a, **k: spawned.append(a) or FakeProc())
+    for mode in ("cpu", "both"):
+        res = api.mining_start(mode, 50)
+        assert res["ok"] is False
+        assert res["error"] == "gpu_only_beta"
+    assert spawned == []
+    assert api._mining_procs == []
 
 
 def test_stop_terminates_every_process_and_clears_list(api):
