@@ -1187,8 +1187,13 @@ class Api:
     _MINING_KIND_ARGS = {
         "cpu": lambda token: ["--user", f"{token}.xmr", "--algo", "rx/0",
                               "--no-cuda", "--no-opencl"],
+        # BETA is NVIDIA-only: select the NVIDIA OpenCL platform explicitly
+        # (xmrig's --opencl default hunts for an AMD platform and finds no GPU
+        # on NVIDIA boxes). --cuda is intentionally omitted: the shipped xmrig
+        # has no bundled CUDA plugin, so OpenCL is the working backend. AMD
+        # support (a different platform) is a post-beta item.
         "gpu": lambda token: ["--user", f"{token}.rvn", "--algo", "kawpow",
-                              "--cuda", "--opencl", "--no-cpu"],
+                              "--opencl", "--opencl-platform=NVIDIA", "--no-cpu"],
     }
 
     def _spawn_miner(self, kind, intensity=50):

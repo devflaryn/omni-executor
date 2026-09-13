@@ -40,7 +40,7 @@ import bootstrap
 # the swap succeeds every time and nothing ever changes. push-app.mjs now reads
 # this constant and refuses to publish a mismatched version, which is what makes
 # the two move together. Compared against the manifest's `app.version`.
-APP_VERSION = "1.0.40"
+APP_VERSION = "1.0.41"
 
 # Where a downloaded app build is unpacked before it replaces the live one.
 STAGING_DIR = "app-update"
