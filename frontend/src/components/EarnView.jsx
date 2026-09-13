@@ -8,9 +8,16 @@
    `miningEnroll`, and says why Defender will complain before it happens
    rather than after.
 
-   100 credits = $1. Mined value is metered server-side (accepted shares →
-   payout, see cloud.py) and shows up here as `subscription.credits.credits`,
-   the same balance Settings' key-redeem flow feeds into. */
+   Mined value is metered server-side (accepted shares → payout, see
+   cloud.py) and shows up here as `subscription.credits.credits`, the same
+   balance Settings' key-redeem flow feeds into. (100 credits = $1 — that
+   ratio still drives the small USD equivalents shown next to credit
+   amounts, via `formatUsd`; it's just not spelled out as copy anymore.)
+
+   Mode (cpu/gpu/both) is coin-gated, not beta-gated: the backend reports
+   which coins are actually configured server-side (`status.coins`), and
+   only those modes are offered. An older backend that doesn't send `coins`
+   yet degrades to GPU-only, matching the original beta behavior. */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -45,9 +52,18 @@ function formatCredits(credits) {
   const n = Number(credits) || 0;
   return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
 }
-// Beta: GPU/Ravencoin only. The CPU (Monero) path exists in the backend but is
-// gated off here and in main.py's mining_start until the beta ends.
-const MODE = "gpu";
+
+// Grayish USD equivalent next to a credit amount (100 credits = $1). Up to
+// 4 fraction digits so a fraction-of-a-cent mined amount doesn't just read
+// "$0.00".
+function formatUsd(credits) {
+  const usd = (Number(credits) || 0) * 0.01;
+  return `$${usd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;
+}
+
+const MODE_LABEL = { gpu: "GPU", cpu: "CPU", both: "Both" };
+// mode -> the coin it mines, for pulling the right rate/hashrate out of status.
+const MODE_COIN = { gpu: "rvn", cpu: "xmr" };
 
 export default function EarnView({ active, auth, showToast, onAuthChange }) {
   const [status, setStatus] = useState(null);
@@ -55,6 +71,7 @@ export default function EarnView({ active, auth, showToast, onAuthChange }) {
   const [lines, setLines] = useState([]);
   const [enrolling, setEnrolling] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState("gpu");
   const timer = useRef(null);
   // Last-seen creditedMicros, so a poll can tell "a payout just landed" (the
   // value went UP) apart from "nothing changed" — only the former is worth an
@@ -63,6 +80,48 @@ export default function EarnView({ active, auth, showToast, onAuthChange }) {
   const lastCredited = useRef(null);
 
   const credits = auth?.subscription?.credits?.credits ?? 0;
+
+  // Which coins the backend actually has configured. An older backend that
+  // doesn't send `coins` at all degrades to the original GPU-only beta
+  // rather than hiding mining entirely.
+  const coins = status?.coins;
+  const hasRvn = coins ? Boolean(coins.rvn) : true;
+  const hasXmr = coins ? Boolean(coins.xmr) : false;
+  const availableModes = [
+    ...(hasRvn ? ["gpu"] : []),
+    ...(hasXmr ? ["cpu"] : []),
+    ...(hasRvn && hasXmr ? ["both"] : []),
+  ];
+
+  // estHashrate/rates come from the backend's mining_status; both are
+  // optional (older backend) so every lookup here must tolerate `undefined`.
+  const estHashrate = status?.estHashrate;
+  const rates = status?.rates;
+  // Credits/hour a mode would earn AT its last-measured hashrate. null means
+  // "never measured yet" (nothing to estimate from), not "zero".
+  const creditsPerHourFor = (kind) => {
+    const hr = Number(estHashrate?.[kind]) || 0;
+    const rate = Number(rates?.[MODE_COIN[kind]]);
+    if (!hr || !Number.isFinite(rate)) return null;
+    return hr * rate;
+  };
+  const estimateFor = (m) => {
+    if (m === "both") {
+      const g = creditsPerHourFor("gpu");
+      const c = creditsPerHourFor("cpu");
+      if (g == null && c == null) return null;
+      return (g ?? 0) + (c ?? 0);
+    }
+    return creditsPerHourFor(m);
+  };
+
+  // Keep `mode` valid as `coins` arrives/changes (first poll, or a coin
+  // getting disabled server-side) without stomping a still-valid choice.
+  useEffect(() => {
+    if (availableModes.length && !availableModes.includes(mode)) {
+      setMode(availableModes[0]);
+    }
+  }, [availableModes.join(","), mode]);
 
   const refresh = useCallback(async () => {
     const s = await miningStatus();
@@ -131,7 +190,7 @@ export default function EarnView({ active, auth, showToast, onAuthChange }) {
 
   const start = async () => {
     setBusy(true);
-    const res = await miningStart(MODE, 50);
+    const res = await miningStart(mode, 50);
     setBusy(false);
     if (res?.ok) {
       showToast?.("Mining started", "success");
@@ -186,7 +245,7 @@ export default function EarnView({ active, auth, showToast, onAuthChange }) {
             </span>
           </div>
           <p className="mt-1 text-[13.5px] text-ink-3">
-            Mine with your GPU — 100 credits = $1, spend them on subscription time.
+            Mine with your GPU — spend credits on subscription time.
           </p>
         </div>
 
@@ -225,16 +284,51 @@ export default function EarnView({ active, auth, showToast, onAuthChange }) {
                         session has earned (10,000 micros = 1 credit) — not a
                         per-session delta, which the backend doesn't expose. */}
                     <span>
-                      Mined so far: {formatCredits((status?.creditedMicros ?? 0) / 10000)} credits
+                      Mined so far: {formatCredits((status?.creditedMicros ?? 0) / 10000)} credits{" "}
+                      {formatUsd((status?.creditedMicros ?? 0) / 10000)}
                     </span>
                   </span>
                 </div>
 
-                <div className="flex items-center gap-2.5">
-                  <span className="rounded-lg border border-line bg-raised px-3 py-1.5 text-[12.5px] font-medium text-ink">
-                    GPU · Ravencoin
-                  </span>
-                  <span className="text-[12px] text-ink-3">CPU mining comes after the beta.</span>
+                <div className="flex flex-col gap-2">
+                  <div
+                    role="radiogroup"
+                    aria-label="Mining mode"
+                    className="flex w-fit shrink-0 gap-1 rounded-lg border border-line bg-raised p-1"
+                  >
+                    {availableModes.map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        role="radio"
+                        aria-checked={mode === m}
+                        disabled={running}
+                        onClick={() => setMode(m)}
+                        className={`ring-focus flex h-7 items-center gap-1.5 rounded-md px-3 text-[12.5px]
+                                    font-semibold transition-colors duration-150 disabled:cursor-not-allowed
+                                    disabled:opacity-60 ${
+                                      mode === m
+                                        ? "bg-accent text-accent-ink"
+                                        : "text-ink-2 hover:text-ink"
+                                    }`}
+                      >
+                        {MODE_LABEL[m]}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex flex-col gap-0.5 text-[12px] text-ink-3">
+                    {availableModes.map((m) => {
+                      const est = estimateFor(m);
+                      return (
+                        <div key={m}>
+                          {MODE_LABEL[m]} ≈{" "}
+                          {est != null
+                            ? `${formatCredits(est)} credits/hr`
+                            : "— (run to measure)"}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
 
                 <div className="flex flex-wrap gap-2">
@@ -264,10 +358,13 @@ export default function EarnView({ active, auth, showToast, onAuthChange }) {
           <PanelHead title="Your credits" />
           <div className="flex items-center gap-4 p-4">
             <div>
-              <div className="text-[32px] leading-none font-bold tracking-[-0.03em] text-ink">
-                {formatCredits(credits)}
+              <div className="flex items-baseline gap-2">
+                <span className="text-[32px] leading-none font-bold tracking-[-0.03em] text-ink">
+                  {formatCredits(credits)}
+                </span>
+                <span className="text-[13px] font-medium text-ink-3">{formatUsd(credits)}</span>
               </div>
-              <div className="mt-1 text-[12.5px] text-ink-3">credits · 100 = $1</div>
+              <div className="mt-1 text-[12.5px] text-ink-3">credits</div>
             </div>
             <Button
               variant="solid"

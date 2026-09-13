@@ -677,7 +677,10 @@ class Api:
         # short of enrolling again against the server.
         self._mining = _load_mining()
         self._mining_procs = []
-        self._mining_hashrate = 0.0   # H/s, parsed from xmrig's speed lines
+        # H/s, last measured per kind — kept even after a kind stops so an
+        # idle Earn tab can still show an estimate ("estHashrate").
+        self._hashrate = {"cpu": 0.0, "gpu": 0.0}
+        self._running_kinds = set()   # kinds with a live xmrig process right now
 
     # ---- platform ----
 
@@ -1168,8 +1171,15 @@ class Api:
         # Local facts (disk state, this process's own child procs) win over
         # whatever the server reports under the same key — the server cannot
         # know a process this machine spawned better than this machine does.
-        local = {"installed": miner.is_installed(), "running": bool(self._mining_procs),
-                 "hashrate": self._mining_hashrate if self._mining_procs else 0}
+        local = {
+            "installed": miner.is_installed(),
+            "running": bool(self._mining_procs),
+            # Live total across whatever kinds are actually running right now.
+            "hashrate": sum(self._hashrate[k] for k in self._running_kinds),
+            # Last-known per-kind reading, kept after a kind stops, so the UI
+            # can still estimate credits/hour for a kind that isn't running.
+            "estHashrate": dict(self._hashrate),
+        }
         try:
             remote = cloud.mining_status()
         except cloud.CloudError as e:
@@ -1207,8 +1217,11 @@ class Api:
     # therefore two SEPARATE processes, each with its own coin/algo/backend
     # flags, tracked as a list rather than a single Popen.
     _MINING_KIND_ARGS = {
-        "cpu": lambda token: ["--user", f"{token}.xmr", "--algo", "rx/0",
-                              "--no-cuda", "--no-opencl"],
+        # RandomX runs on CPU by default in xmrig — no GPU-disabling flags
+        # needed (and none wanted: the shipped xmrig build REJECTS
+        # --no-cuda with "unknown option", which used to abort the process
+        # before it could ever mine).
+        "cpu": lambda token: ["--user", f"{token}.xmr", "--algo", "rx/0"],
         # BETA is NVIDIA-only: select the NVIDIA OpenCL platform explicitly
         # (xmrig's --opencl default hunts for an AMD platform and finds no GPU
         # on NVIDIA boxes). --cuda is intentionally omitted: the shipped xmrig
@@ -1247,30 +1260,29 @@ class Api:
             return {"ok": False, "error": "not_installed"}
         if self._mining_procs:
             return {"ok": False, "error": "already_running"}
-        # BETA: GPU (Ravencoin) only. The cpu/both paths are implemented but
-        # gated off here until the beta ends, matching the GPU-only Earn tab.
-        if mode != "gpu":
-            return {"ok": False, "error": "gpu_only_beta",
-                    "message": "Only GPU mining is enabled during the beta."}
         kinds = {"cpu": ["cpu"], "gpu": ["gpu"], "both": ["cpu", "gpu"]}.get(mode)
         if kinds is None:
             return {"ok": False, "error": "bad_mode", "message": f"unknown mode {mode!r}"}
         spawned = []
+        spawned_kinds = []
         try:
             for kind in kinds:
                 proc = self._spawn_miner(kind, intensity)
                 spawned.append(proc)
+                spawned_kinds.append(kind)
                 self._mining_procs.append(proc)
+                self._running_kinds.add(kind)
                 threading.Thread(target=self._mining_reader, args=(proc, kind),
                                  daemon=True).start()
         except Exception as e:  # noqa: BLE001
-            for proc in spawned:
+            for proc, kind in zip(spawned, spawned_kinds):
                 try:
                     self._mining_procs.remove(proc)
                 except ValueError:
                     # a fast-exiting proc's own reader may have already
                     # removed it — not an error, just a race with cleanup.
                     pass
+                self._running_kinds.discard(kind)
                 proc.kill()
             return {"ok": False, "error": "spawn_failed", "message": str(e)}
         return {"ok": True, "started": True, "mode": mode, "procs": len(spawned)}
@@ -1281,20 +1293,22 @@ class Api:
                 line = line.rstrip()
                 hr = _parse_hashrate(line)
                 if hr is not None:
-                    self._mining_hashrate = hr
+                    self._hashrate[kind] = hr
                 self._push("mining-stat", {"line": line, "kind": kind})
         code = proc.wait()
         try:
             self._mining_procs.remove(proc)
         except ValueError:
             pass
-        if not self._mining_procs:
-            self._mining_hashrate = 0.0   # nothing left mining
+        # Do NOT zero self._hashrate[kind] here — the last measured value is
+        # kept so an idle Earn tab can still show an estCreditsHr for this
+        # kind. Only the "currently running" marker goes away.
+        self._running_kinds.discard(kind)
         self._push("mining-done", {"phase": "run", "kind": kind, "code": code})
 
     def mining_stop(self):
         procs, self._mining_procs = self._mining_procs, []
-        self._mining_hashrate = 0.0
+        self._running_kinds.clear()   # self._hashrate values are kept
         if not procs:
             return {"ok": True, "stopped": 0}
         for proc in procs:

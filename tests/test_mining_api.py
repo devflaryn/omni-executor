@@ -40,6 +40,8 @@ def api(monkeypatch):
     a._bridge = FakeBridge()
     a._mining = None
     a._mining_procs = []
+    a._hashrate = {"cpu": 0.0, "gpu": 0.0}
+    a._running_kinds = set()
     return a
 
 
@@ -92,11 +94,37 @@ def test_status_reports_live_hashrate_while_running(api, monkeypatch):
     monkeypatch.setattr(main.miner, "is_installed", lambda: True)
     monkeypatch.setattr(main.cloud, "mining_status", lambda: {"enrolled": True, "creditedMicros": 0, "hashrate": 0})
     api._mining = {"minerToken": "t", "stratumHost": "h", "stratumPort": 3333}
-    api._mining_hashrate = 14620000.0
+    api._hashrate = {"cpu": 0.0, "gpu": 14620000.0}
+    api._running_kinds = {"gpu"}
     api._mining_procs = [object()]           # running
     assert api.mining_status()["hashrate"] == 14620000.0
-    api._mining_procs = []                    # not running -> 0 regardless
+    assert api.mining_status()["estHashrate"] == {"cpu": 0.0, "gpu": 14620000.0}
+    api._running_kinds = set()                # nothing running -> total 0
     assert api.mining_status()["hashrate"] == 0
+    # last-known per-kind reading persists for an idle-mode estimate
+    assert api.mining_status()["estHashrate"]["gpu"] == 14620000.0
+
+
+def test_status_reports_combined_hashrate_for_both_kinds_running(api, monkeypatch):
+    monkeypatch.setattr(main.miner, "is_installed", lambda: True)
+    monkeypatch.setattr(main.cloud, "mining_status", lambda: {"enrolled": True, "creditedMicros": 0})
+    api._mining = {"minerToken": "t", "stratumHost": "h", "stratumPort": 3333}
+    api._hashrate = {"cpu": 1000.0, "gpu": 14620000.0}
+    api._running_kinds = {"cpu", "gpu"}
+    api._mining_procs = [object(), object()]
+    assert api.mining_status()["hashrate"] == 1000.0 + 14620000.0
+
+
+def test_status_passes_through_remote_rates_and_coins(api, monkeypatch):
+    monkeypatch.setattr(main.miner, "is_installed", lambda: True)
+    monkeypatch.setattr(main.cloud, "mining_status",
+                        lambda: {"enrolled": True, "creditedMicros": 0,
+                                 "rates": {"rvn": 1.5, "xmr": 3.0},
+                                 "coins": {"rvn": True, "xmr": False}})
+    api._mining = {"minerToken": "t", "stratumHost": "h", "stratumPort": 3333}
+    res = api.mining_status()
+    assert res["rates"] == {"rvn": 1.5, "xmr": 3.0}
+    assert res["coins"] == {"rvn": True, "xmr": False}
 
 
 def test_status_enrolled_reflects_local_token_not_server(api, monkeypatch):
@@ -176,19 +204,45 @@ def test_start_gpu_spawns_one_process_with_kawpow(api, monkeypatch):
     assert kwargs_seen[0]["errors"] == "replace"
 
 
-def test_cpu_and_both_rejected_during_beta(api, monkeypatch):
-    """Beta is GPU-only: cpu/both are gated off with a clear error and spawn
-    nothing, even for an enrolled+installed account."""
+def test_start_cpu_spawns_randomx_with_no_gpu_disable_flags(api, monkeypatch):
+    """The shipped xmrig build REJECTS --no-cuda ('unknown option'), and
+    RandomX runs on CPU by default — the cpu kind must carry neither
+    --no-cuda nor --no-opencl."""
+    _enrolled(api, monkeypatch)
+    spawned = []
+
+    def fake_popen(args, **kwargs):
+        spawned.append(args)
+        return FakeProc()
+
+    monkeypatch.setattr(main.subprocess, "Popen", fake_popen)
+    res = api.mining_start("cpu", 50)
+    assert res["ok"] is True
+    assert len(spawned) == 1
+    args = spawned[0]
+    assert args.count("--user") == 1
+    assert f"{args[args.index('--user') + 1]}" == "tok.xmr"
+    assert "rx/0" in args
+    assert "--no-cuda" not in args
+    assert "--no-opencl" not in args
+    assert "--cpu-max-threads-hint" in args
+    assert len(api._mining_procs) == 1
+    assert api._running_kinds == {"cpu"}
+
+
+def test_start_both_spawns_one_process_per_kind(api, monkeypatch):
     _enrolled(api, monkeypatch)
     spawned = []
     monkeypatch.setattr(main.subprocess, "Popen",
-                        lambda *a, **k: spawned.append(a) or FakeProc())
-    for mode in ("cpu", "both"):
-        res = api.mining_start(mode, 50)
-        assert res["ok"] is False
-        assert res["error"] == "gpu_only_beta"
-    assert spawned == []
-    assert api._mining_procs == []
+                        lambda args, **k: spawned.append(args) or FakeProc())
+    res = api.mining_start("both", 50)
+    assert res["ok"] is True
+    assert res["procs"] == 2
+    assert len(spawned) == 2
+    assert len(api._mining_procs) == 2
+    assert api._running_kinds == {"cpu", "gpu"}
+    users = {args[args.index("--user") + 1] for args in spawned}
+    assert users == {"tok.xmr", "tok.rvn"}
 
 
 def test_stop_terminates_every_process_and_clears_list(api):
