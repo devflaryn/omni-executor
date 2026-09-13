@@ -30,6 +30,21 @@ import { AlertIcon, CpuIcon } from "./icons.jsx";
 // a payout that landed) without hammering the backend.
 const POLL_MS = 5000;
 const DAY_PRICE_CREDITS = 80;
+
+// xmrig reports H/s; show it human-readable.
+function formatHashrate(hps) {
+  const n = Number(hps) || 0;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(2)} MH/s`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(2)} KH/s`;
+  return `${Math.round(n)} H/s`;
+}
+
+// Credits, WITHOUT rounding tiny amounts down to 0 (a few mined shares are
+// worth ~0.01 credits). Up to 4 fraction digits, trailing zeros trimmed.
+function formatCredits(credits) {
+  const n = Number(credits) || 0;
+  return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
+}
 // Beta: GPU/Ravencoin only. The CPU (Monero) path exists in the backend but is
 // gated off here and in main.py's mining_start until the beta ends.
 const MODE = "gpu";
@@ -47,7 +62,7 @@ export default function EarnView({ active, auth, showToast, onAuthChange }) {
   // poll never fires one for an existing balance.
   const lastCredited = useRef(null);
 
-  const credits = Math.round(auth?.subscription?.credits?.credits ?? 0);
+  const credits = auth?.subscription?.credits?.credits ?? 0;
 
   const refresh = useCallback(async () => {
     const s = await miningStatus();
@@ -205,12 +220,12 @@ export default function EarnView({ active, auth, showToast, onAuthChange }) {
                     {running ? "Mining" : "Idle"}
                   </span>
                   <span className="ml-auto flex items-baseline gap-4 font-mono text-[12.5px] text-ink-3">
-                    <span>{status?.hashrate ?? 0} H/s</span>
+                    <span>{formatHashrate(status?.hashrate)}</span>
                     {/* creditedMicros is the lifetime ledger total this miner
                         session has earned (10,000 micros = 1 credit) — not a
                         per-session delta, which the backend doesn't expose. */}
                     <span>
-                      Mined so far: {Math.round((status?.creditedMicros ?? 0) / 10000)} credits
+                      Mined so far: {formatCredits((status?.creditedMicros ?? 0) / 10000)} credits
                     </span>
                   </span>
                 </div>
@@ -250,7 +265,7 @@ export default function EarnView({ active, auth, showToast, onAuthChange }) {
           <div className="flex items-center gap-4 p-4">
             <div>
               <div className="text-[32px] leading-none font-bold tracking-[-0.03em] text-ink">
-                {credits}
+                {formatCredits(credits)}
               </div>
               <div className="mt-1 text-[12.5px] text-ink-3">credits · 100 = $1</div>
             </div>

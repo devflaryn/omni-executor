@@ -178,6 +178,24 @@ def _load_mining():
         return None
 
 
+# xmrig prints e.g. "speed 10s/60s/15m 14.62 12.76 14.17 MH/s max 15.18 MH/s".
+# Parse the 10s figure + unit into H/s so the Earn tab can show a live hashrate
+# (the pool-side accrual has no hashrate field). "n/a" during warmup -> None.
+_XMRIG_SPEED_RE = re.compile(
+    r"speed\s+\S+\s+([\d.]+|n/a)\s+\S+\s+\S+\s+([KMG]?H/s)")
+_HASH_UNIT = {"H/s": 1, "KH/s": 1e3, "MH/s": 1e6, "GH/s": 1e9}
+
+
+def _parse_hashrate(line):
+    m = _XMRIG_SPEED_RE.search(line)
+    if not m or m.group(1) == "n/a":
+        return None
+    try:
+        return float(m.group(1)) * _HASH_UNIT.get(m.group(2), 1)
+    except ValueError:
+        return None
+
+
 # ------------------------------------------------------------- engine bridge
 
 # Engine contract (see omnidroid.md): account names are [A-Za-z0-9_-]+.
@@ -659,6 +677,7 @@ class Api:
         # short of enrolling again against the server.
         self._mining = _load_mining()
         self._mining_procs = []
+        self._mining_hashrate = 0.0   # H/s, parsed from xmrig's speed lines
 
     # ---- platform ----
 
@@ -1149,7 +1168,8 @@ class Api:
         # Local facts (disk state, this process's own child procs) win over
         # whatever the server reports under the same key — the server cannot
         # know a process this machine spawned better than this machine does.
-        local = {"installed": miner.is_installed(), "running": bool(self._mining_procs)}
+        local = {"installed": miner.is_installed(), "running": bool(self._mining_procs),
+                 "hashrate": self._mining_hashrate if self._mining_procs else 0}
         try:
             remote = cloud.mining_status()
         except cloud.CloudError as e:
@@ -1259,16 +1279,22 @@ class Api:
         if proc.stdout:
             for line in proc.stdout:
                 line = line.rstrip()
+                hr = _parse_hashrate(line)
+                if hr is not None:
+                    self._mining_hashrate = hr
                 self._push("mining-stat", {"line": line, "kind": kind})
         code = proc.wait()
         try:
             self._mining_procs.remove(proc)
         except ValueError:
             pass
+        if not self._mining_procs:
+            self._mining_hashrate = 0.0   # nothing left mining
         self._push("mining-done", {"phase": "run", "kind": kind, "code": code})
 
     def mining_stop(self):
         procs, self._mining_procs = self._mining_procs, []
+        self._mining_hashrate = 0.0
         if not procs:
             return {"ok": True, "stopped": 0}
         for proc in procs:

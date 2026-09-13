@@ -81,6 +81,24 @@ def test_load_mining_missing_file_returns_none():
     assert main._load_mining() is None
 
 
+def test_parse_hashrate_from_xmrig_speed_line():
+    assert main._parse_hashrate("[t] miner speed 10s/60s/15m 14.62 12.76 14.17 MH/s max 15 MH/s") == 14620000.0
+    assert main._parse_hashrate("[t] miner speed 10s/60s/15m 850 800 820 KH/s max 900 KH/s") == 850000.0
+    assert main._parse_hashrate("[t] miner speed 10s/60s/15m n/a n/a n/a H/s max n/a H/s") is None
+    assert main._parse_hashrate("[t] net new job from pool diff 1073M") is None
+
+
+def test_status_reports_live_hashrate_while_running(api, monkeypatch):
+    monkeypatch.setattr(main.miner, "is_installed", lambda: True)
+    monkeypatch.setattr(main.cloud, "mining_status", lambda: {"enrolled": True, "creditedMicros": 0, "hashrate": 0})
+    api._mining = {"minerToken": "t", "stratumHost": "h", "stratumPort": 3333}
+    api._mining_hashrate = 14620000.0
+    api._mining_procs = [object()]           # running
+    assert api.mining_status()["hashrate"] == 14620000.0
+    api._mining_procs = []                    # not running -> 0 regardless
+    assert api.mining_status()["hashrate"] == 0
+
+
 def test_status_enrolled_reflects_local_token_not_server(api, monkeypatch):
     """enrolled must be LOCAL-only: a lingering server MinerSession without a
     local token would otherwise flip the UI to Start, which then fails
