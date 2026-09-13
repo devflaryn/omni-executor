@@ -302,7 +302,12 @@ export default function App() {
                 showToast={showToast}
               />
               <NetworkView active={tab === "network"} onSummary={setNetSummary} />
-              <EarnView active={tab === "earn"} auth={auth} showToast={showToast} />
+              <EarnView
+                active={tab === "earn"}
+                auth={auth}
+                showToast={showToast}
+                onAuthChange={refreshAuth}
+              />
               <SettingsView
                 active={tab === "settings"}
                 theme={theme}

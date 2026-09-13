@@ -32,7 +32,7 @@ const POLL_MS = 5000;
 const DAY_PRICE_CREDITS = 80;
 const MODES = ["cpu", "gpu", "both"];
 
-export default function EarnView({ active, auth, showToast }) {
+export default function EarnView({ active, auth, showToast, onAuthChange }) {
   const [status, setStatus] = useState(null);
   const [progress, setProgress] = useState(null);
   const [lines, setLines] = useState([]);
@@ -40,13 +40,29 @@ export default function EarnView({ active, auth, showToast }) {
   const [enrolling, setEnrolling] = useState(false);
   const [busy, setBusy] = useState(false);
   const timer = useRef(null);
+  // Last-seen creditedMicros, so a poll can tell "a payout just landed" (the
+  // value went UP) apart from "nothing changed" — only the former is worth an
+  // auth refresh. null until the first status answers, so the very first
+  // poll never fires one for an existing balance.
+  const lastCredited = useRef(null);
 
   const credits = Math.round(auth?.subscription?.credits?.credits ?? 0);
 
   const refresh = useCallback(async () => {
     const s = await miningStatus();
-    if (s && s.ok !== false) setStatus(s);
-  }, []);
+    if (!s || s.ok === false) return;
+    setStatus(s);
+    const now = s.creditedMicros;
+    if (typeof now === "number") {
+      if (lastCredited.current != null && now > lastCredited.current) {
+        // The mining payout flush (~60s, server-side) just credited the
+        // permanent bucket. `auth` is what the whole app — and this view's
+        // own `credits` gate — reads, so it must refresh too.
+        onAuthChange?.();
+      }
+      lastCredited.current = now;
+    }
+  }, [onAuthChange]);
 
   useEffect(() => {
     if (!active) return undefined;
@@ -63,8 +79,17 @@ export default function EarnView({ active, auth, showToast }) {
         if (line) setLines((l) => [...l.slice(-200), line]);
       }
       if (event === "mining-done") {
-        setProgress(null);
-        setEnrolling(false);
+        // main.py emits two distinct phases on this event: "install" after
+        // the enroll download finishes, and "run" when the miner PROCESS
+        // exits (stopped, crashed, or asked to stop). Conflating them would
+        // leave a crashed miner showing "Mining" forever, or clear the
+        // download progress bar for an unrelated run-exit.
+        if (payload?.phase === "install") {
+          setProgress(null);
+          setEnrolling(false);
+        } else if (payload?.phase === "run") {
+          setBusy(false);
+        }
         refresh();
       }
       if (event === "mining-error") {
@@ -120,8 +145,14 @@ export default function EarnView({ active, auth, showToast }) {
     setBusy(true);
     const res = await buyDayWithCredits();
     setBusy(false);
-    if (res?.ok) showToast?.("Added 1 day of subscription", "success");
-    else showToast?.(res?.message || "Not enough credits", "error");
+    if (res?.ok) {
+      showToast?.("Added 1 day of subscription", "success");
+      // The server already spent the credits; `auth` — and the <80 disabled
+      // gate on the button below — is stale until this refetches it.
+      await onAuthChange?.();
+    } else {
+      showToast?.(res?.message || "Not enough credits", "error");
+    }
   };
 
   const installed = Boolean(status?.installed);
@@ -164,8 +195,14 @@ export default function EarnView({ active, auth, showToast }) {
                   <span className="text-[13.5px] font-medium text-ink">
                     {running ? "Mining" : "Idle"}
                   </span>
-                  <span className="ml-auto font-mono text-[12.5px] text-ink-3">
-                    {status?.hashrate ?? 0} H/s
+                  <span className="ml-auto flex items-baseline gap-4 font-mono text-[12.5px] text-ink-3">
+                    <span>{status?.hashrate ?? 0} H/s</span>
+                    {/* creditedMicros is the lifetime ledger total this miner
+                        session has earned (10,000 micros = 1 credit) — not a
+                        per-session delta, which the backend doesn't expose. */}
+                    <span>
+                      Mined so far: {Math.round((status?.creditedMicros ?? 0) / 10000)} credits
+                    </span>
                   </span>
                 </div>
 
