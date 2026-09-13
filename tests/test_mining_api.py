@@ -81,6 +81,19 @@ def test_load_mining_missing_file_returns_none():
     assert main._load_mining() is None
 
 
+def test_status_enrolled_reflects_local_token_not_server(api, monkeypatch):
+    """enrolled must be LOCAL-only: a lingering server MinerSession without a
+    local token would otherwise flip the UI to Start, which then fails
+    not_enrolled ("Could not start mining"). Guards that regression."""
+    monkeypatch.setattr(main.miner, "is_installed", lambda: True)
+    monkeypatch.setattr(main.cloud, "mining_status",
+                        lambda: {"enrolled": True, "creditedMicros": 0})
+    api._mining = None
+    assert api.mining_status()["enrolled"] is False   # server session must NOT flip it
+    api._mining = {"minerToken": "t", "stratumHost": "h", "stratumPort": 3333}
+    assert api.mining_status()["enrolled"] is True
+
+
 def test_start_requires_enroll(api):
     res = api.mining_start("cpu", 50)
     assert res["ok"] is False

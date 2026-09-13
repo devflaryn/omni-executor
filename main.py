@@ -1155,11 +1155,13 @@ class Api:
         except cloud.CloudError as e:
             return {"ok": True, **local, "enrolled": bool(self._mining), "remote_error": str(e)}
         merged = {"ok": True, **remote, **local}
-        # "enrolled" specifically is an OR, not an override: a restart
-        # restores self._mining from disk (see MINING_FILE) and that alone
-        # must be enough to let Start work again even if this particular
-        # status call cannot reach the server.
-        merged["enrolled"] = bool(self._mining) or bool(remote.get("enrolled"))
+        # "enrolled" is LOCAL-only: Start needs self._mining (the miner token +
+        # stratum host, restored from MINING_FILE on restart). A server-side
+        # MinerSession without a local token is useless — mining_start would
+        # return not_enrolled — so it must NOT flip the UI to the Start panel.
+        # If the local token is missing (e.g. mining.json was cleared) the tab
+        # shows the enroll action again, and re-enrolling mints a fresh one.
+        merged["enrolled"] = bool(self._mining)
         return merged
 
     def mining_enroll(self):
