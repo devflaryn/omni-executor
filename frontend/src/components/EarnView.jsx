@@ -157,6 +157,7 @@ export default function EarnView({ active, auth, showToast, onAuthChange }) {
   };
 
   const installed = Boolean(status?.installed);
+  const enrolled = Boolean(status?.enrolled);
   const running = Boolean(status?.running);
 
   return (
@@ -177,7 +178,7 @@ export default function EarnView({ active, auth, showToast, onAuthChange }) {
         <section className="rounded-xl border border-line">
           <PanelHead icon={CpuIcon} title="Miner" />
           <div className="flex flex-col gap-4 p-4">
-            {!installed ? (
+            {!enrolled ? (
               <>
                 <Notice tone="warn" icon={AlertIcon}>
                   The miner is extra content, downloaded only when you enroll — it is not
@@ -186,7 +187,9 @@ export default function EarnView({ active, auth, showToast, onAuthChange }) {
                   You can add a Defender exclusion for it below once it's installed.
                 </Notice>
                 <Button variant="solid" onClick={enroll} disabled={enrolling}>
-                  {enrolling ? "Downloading…" : "Download miner & enroll"}
+                  {enrolling
+                    ? (installed ? "Enrolling…" : "Downloading…")
+                    : (installed ? "Enroll to start" : "Download miner & enroll")}
                 </Button>
                 {progress && (
                   <div className="text-[12.5px] text-ink-3">
