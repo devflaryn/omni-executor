@@ -40,6 +40,8 @@ def _find_artifact(manifest: dict) -> dict:
 
 def install(progress=None) -> dict:
     """Download + place the miner. Idempotent: a good existing binary is kept."""
+    if is_installed():
+        return {"ok": True, "path": str(binary_path()), "cached": True}
     base = bootstrap.dist_base()
     manifest = bootstrap.read_manifest(base, channel=MINER_CHANNEL)
     art = _find_artifact(manifest)

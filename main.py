@@ -143,6 +143,40 @@ SETTINGS_FILE = config_dir() / "settings.json"
 # Open editor tabs (name, contents, caret) -- its own file, because script
 # bodies are large and churn on every keystroke while settings barely change.
 EDITOR_FILE = config_dir() / "editor.json"
+# Mining enrollment ({minerToken, stratumHost, stratumPort, algos}). PERSISTED
+# on purpose -- it used to live only on the Api instance, so any app restart
+# after a real enroll left `miner.is_installed()` true (nothing on disk
+# changes it) while `self._mining` came back None, and mining_start refused
+# every attempt with "not_enrolled" with no way to recover short of a fresh
+# server enroll. Same directory/atomic-write/0600 pattern as cloud.py's
+# auth.json, because a minerToken is a bearer credential too.
+MINING_FILE = config_dir() / "mining.json"
+
+
+def _mining_file() -> Path:
+    return MINING_FILE
+
+
+def _save_mining(info):
+    f = _mining_file()
+    tmp = f.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(info, fh, indent=2)
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass  # Windows has no POSIX mode bits
+    tmp.replace(f)
+
+
+def _load_mining():
+    try:
+        with open(_mining_file(), encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
 
 # ------------------------------------------------------------- engine bridge
 
@@ -552,7 +586,11 @@ def _run_elevated(inner):
     if sys.platform != "win32":
         return {"ok": False, "error": "not_windows"}
     b64 = base64.b64encode(inner.encode("utf-16-le")).decode("ascii")
-    ps = ("Start-Process powershell -Verb RunAs -WindowStyle Hidden "
+    # -Wait: block until the elevated shell exits, so a caller gets an
+    # answer only after the command actually ran (best-effort -- this only
+    # proves the elevated process exited, not that e.g. Add-MpPreference
+    # itself succeeded; verifying that is out of scope here).
+    ps = ("Start-Process powershell -Verb RunAs -WindowStyle Hidden -Wait "
           f"-ArgumentList '-NoProfile','-EncodedCommand','{b64}'")
     try:
         subprocess.run(["powershell", "-NoProfile", "-Command", ps], check=True, timeout=120)
@@ -614,8 +652,12 @@ class Api:
         # Mining / earn: enrollment info from the server (minerToken,
         # stratumHost, stratumPort, algos) and the running xmrig Popen(s), if
         # any — a list because "both" mode is two separate processes (one
-        # xmrig cannot mine two coins on two backends at once).
-        self._mining = None
+        # xmrig cannot mine two coins on two backends at once). Restored from
+        # disk (see MINING_FILE) rather than hardcoded None: is_installed()
+        # is a disk fact that survives a restart, and without this the app
+        # would show "installed" with an enrollment nothing can recover
+        # short of enrolling again against the server.
+        self._mining = _load_mining()
         self._mining_procs = []
 
     # ---- platform ----
@@ -1104,12 +1146,21 @@ class Api:
     # ---- mining / earn ----
 
     def mining_status(self):
+        # Local facts (disk state, this process's own child procs) win over
+        # whatever the server reports under the same key — the server cannot
+        # know a process this machine spawned better than this machine does.
         local = {"installed": miner.is_installed(), "running": bool(self._mining_procs)}
         try:
             remote = cloud.mining_status()
         except cloud.CloudError as e:
-            return {"ok": True, **local, "remote_error": str(e)}
-        return {"ok": True, **local, **remote}
+            return {"ok": True, **local, "enrolled": bool(self._mining), "remote_error": str(e)}
+        merged = {"ok": True, **remote, **local}
+        # "enrolled" specifically is an OR, not an override: a restart
+        # restores self._mining from disk (see MINING_FILE) and that alone
+        # must be enough to let Start work again even if this particular
+        # status call cannot reach the server.
+        merged["enrolled"] = bool(self._mining) or bool(remote.get("enrolled"))
+        return merged
 
     def mining_enroll(self):
         try:
@@ -1117,6 +1168,10 @@ class Api:
         except cloud.CloudError as e:
             return {"ok": False, "error": e.error or "enroll_failed", "message": str(e)}
         self._mining = info
+        try:
+            _save_mining(info)
+        except OSError:
+            pass  # a restart before the next enroll would just re-enroll
         try:
             miner.install(progress=lambda p: self._push("mining-progress", p))
         except Exception as e:  # noqa: BLE001
@@ -1136,7 +1191,7 @@ class Api:
                               "--cuda", "--opencl", "--no-cpu"],
     }
 
-    def _spawn_miner(self, kind):
+    def _spawn_miner(self, kind, intensity=50):
         """One xmrig Popen for a single backend+coin ('cpu' or 'gpu')."""
         token = self._mining["minerToken"]
         host = self._mining["stratumHost"]
@@ -1144,8 +1199,19 @@ class Api:
         args = [str(miner.binary_path()), "--url", f"{host}:{port}",
                 "--pass", "x", "--donate-level", "0",
                 *self._MINING_KIND_ARGS[kind](token)]
-        return subprocess.Popen(args, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True, bufsize=1)
+        if kind == "cpu":
+            try:
+                pct = max(1, min(100, int(intensity)))
+            except (TypeError, ValueError):
+                pct = 50
+            args += ["--cpu-max-threads-hint", str(pct)]
+        return subprocess.Popen(
+            args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            # DEVNULL, not inherited: this process's stdin is the JSON-RPC
+            # bridge's request stream (rpc.py), and a child that can read it
+            # would be reading commands meant for us.
+            stdin=subprocess.DEVNULL,
+            text=True, bufsize=1, encoding="utf-8", errors="replace")
 
     def mining_start(self, mode="both", intensity=50):
         if not self._mining:
@@ -1160,14 +1226,19 @@ class Api:
         spawned = []
         try:
             for kind in kinds:
-                proc = self._spawn_miner(kind)
+                proc = self._spawn_miner(kind, intensity)
                 spawned.append(proc)
                 self._mining_procs.append(proc)
                 threading.Thread(target=self._mining_reader, args=(proc, kind),
                                  daemon=True).start()
         except Exception as e:  # noqa: BLE001
             for proc in spawned:
-                self._mining_procs.remove(proc)
+                try:
+                    self._mining_procs.remove(proc)
+                except ValueError:
+                    # a fast-exiting proc's own reader may have already
+                    # removed it — not an error, just a race with cleanup.
+                    pass
                 proc.kill()
             return {"ok": False, "error": "spawn_failed", "message": str(e)}
         return {"ok": True, "started": True, "mode": mode, "procs": len(spawned)}
@@ -2777,6 +2848,15 @@ class Api:
         # interpreter open past the window closing.
         self._update_stop.set()
         self._stop_autowarmed_pool()
+        # Unlike the engine's own instances, a mining process is not something
+        # the user asked to keep running unattended -- it is this process's
+        # own child, spawned straight into this machine's CPU/GPU, and
+        # leaving it up after the window closes is an orphaned xmrig nobody
+        # can see or stop from the app any more.
+        try:
+            self.mining_stop()
+        except Exception:      # noqa: BLE001 - we are on the way out
+            pass
 
     def _stop_autowarmed_pool(self):
         """Power off a pool THIS APP warmed, on the way out.

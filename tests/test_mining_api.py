@@ -27,6 +27,13 @@ class FakeProc:
         self.calls.append("kill")
 
 
+@pytest.fixture(autouse=True)
+def mining_file(tmp_path, monkeypatch):
+    """Every test in this file that persists an enrollment must write under
+    tmp_path, never into the real user config dir."""
+    monkeypatch.setattr(main, "MINING_FILE", tmp_path / "mining.json")
+
+
 @pytest.fixture
 def api(monkeypatch):
     a = main.Api.__new__(main.Api)   # bypass heavy __init__
@@ -47,6 +54,31 @@ def test_enroll_downloads_and_stores(api, monkeypatch):
     assert called.get("install") is True
     # token cached on the instance for mining_start
     assert api._mining and api._mining.get("minerToken") == "T"
+
+
+def test_enroll_persists_so_a_restart_recovers(api, monkeypatch):
+    """CRITICAL fix: is_installed() survives a restart on disk, so the
+    enrollment must too, or a restarted app can never Start again."""
+    monkeypatch.setattr(main.cloud, "mining_enroll",
+                        lambda: {"minerToken": "T2", "stratumHost": "h", "stratumPort": 3333,
+                                 "algos": {}})
+    monkeypatch.setattr(main.miner, "install", lambda progress=None: {"ok": True})
+    res = api.mining_enroll()
+    assert res["ok"] is True
+    # Simulate a fresh process: nothing but the file on disk.
+    restored = main._load_mining()
+    assert restored is not None
+    assert restored["minerToken"] == "T2"
+
+
+def test_save_and_load_mining_round_trip():
+    info = {"minerToken": "abc", "stratumHost": "pool", "stratumPort": 1234, "algos": {"cpu": "rx/0"}}
+    main._save_mining(info)
+    assert main._load_mining() == info
+
+
+def test_load_mining_missing_file_returns_none():
+    assert main._load_mining() is None
 
 
 def test_start_requires_enroll(api):
@@ -89,20 +121,28 @@ def _enrolled(api, monkeypatch):
 def test_start_cpu_spawns_one_process_with_xmr_algo(api, monkeypatch):
     _enrolled(api, monkeypatch)
     spawned = []
+    kwargs_seen = []
 
     def fake_popen(args, **kwargs):
         spawned.append(args)
+        kwargs_seen.append(kwargs)
         return FakeProc()
 
     monkeypatch.setattr(main.subprocess, "Popen", fake_popen)
-    res = api.mining_start("cpu", 50)
+    res = api.mining_start("cpu", 77)
     assert res["ok"] is True
     assert len(spawned) == 1
     args = spawned[0]
     assert args.count("--user") == 1
     assert f"{args[args.index('--user') + 1]}" == "tok.xmr"
     assert "rx/0" in args
+    # intensity is wired through, not vestigial
+    assert args[args.index("--cpu-max-threads-hint") + 1] == "77"
     assert len(api._mining_procs) == 1
+    # the miner must never inherit the RPC bridge's stdin
+    assert kwargs_seen[0]["stdin"] == main.subprocess.DEVNULL
+    assert kwargs_seen[0]["encoding"] == "utf-8"
+    assert kwargs_seen[0]["errors"] == "replace"
 
 
 def test_start_both_spawns_two_processes_xmr_and_rvn(api, monkeypatch):
@@ -123,6 +163,9 @@ def test_start_both_spawns_two_processes_xmr_and_rvn(api, monkeypatch):
     assert users == {"tok.xmr", "tok.rvn"}
     assert algos == {"rx/0", "kawpow"}
     assert len(api._mining_procs) == 2
+    # --cpu-max-threads-hint only applies to the cpu process
+    gpu_args = next(a for a in spawned if "tok.rvn" in a)
+    assert "--cpu-max-threads-hint" not in gpu_args
 
 
 def test_stop_terminates_every_process_and_clears_list(api):
@@ -134,3 +177,30 @@ def test_stop_terminates_every_process_and_clears_list(api):
     assert api._mining_procs == []
     assert "terminate" in p1.calls
     assert "terminate" in p2.calls
+
+
+def test_status_local_facts_beat_remote_and_enrolled_is_ored(api, monkeypatch):
+    api._mining = {"minerToken": "tok"}
+    monkeypatch.setattr(main.miner, "is_installed", lambda: True)
+    # Server reports stale/contradicting values under the same keys.
+    monkeypatch.setattr(main.cloud, "mining_status",
+                        lambda: {"installed": False, "running": True, "enrolled": False,
+                                 "credits": 5})
+    res = api.mining_status()
+    assert res["ok"] is True
+    assert res["installed"] is True     # local wins
+    assert res["running"] is False      # local wins (no procs on this instance)
+    assert res["enrolled"] is True      # OR'd: local enrollment still counts
+    assert res["credits"] == 5          # remote-only fields pass through
+
+
+def test_status_offline_still_reports_enrolled_from_disk(api, monkeypatch):
+    api._mining = {"minerToken": "tok"}
+    monkeypatch.setattr(main.miner, "is_installed", lambda: False)
+
+    def boom():
+        raise main.cloud.CloudError("offline")
+    monkeypatch.setattr(main.cloud, "mining_status", boom)
+    res = api.mining_status()
+    assert res["ok"] is True
+    assert res["enrolled"] is True
