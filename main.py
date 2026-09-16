@@ -1231,8 +1231,25 @@ class Api:
                               "--opencl", "--opencl-platform=NVIDIA", "--no-cpu"],
     }
 
-    def _spawn_miner(self, kind, intensity=50):
-        """One xmrig Popen for a single backend+coin ('cpu' or 'gpu')."""
+    # Eco mode: mine on the slack a working machine leaves, instead of at
+    # full tilt. The two backends need different levers because a GPU game
+    # and GPU mining fight over the same card while a CPU miner and a GPU
+    # game do not:
+    #  - CPU: a quarter of the cores at below-normal priority — the OS then
+    #    hands foreground apps the cores first, so the desktop/game stays
+    #    smooth and mining takes only what's idle.
+    #  - GPU: there is no OpenCL intensity knob on this xmrig build, and a
+    #    3D game needs the whole card anyway, so the miner steps aside while
+    #    the user is active and resumes after this many seconds of idle.
+    _ECO_CPU_THREADS_HINT = "25"
+    _ECO_CPU_PRIORITY = "1"
+    _ECO_GPU_PAUSE_ON_ACTIVE_S = "10"
+
+    def _spawn_miner(self, kind, intensity=50, eco=False):
+        """One xmrig Popen for a single backend+coin ('cpu' or 'gpu').
+
+        `eco` throttles for a still-usable machine — see the _ECO_* constants
+        above for the per-backend levers and why they differ."""
         token = self._mining["minerToken"]
         host = self._mining["stratumHost"]
         port = self._mining["stratumPort"]
@@ -1240,11 +1257,17 @@ class Api:
                 "--pass", "x", "--donate-level", "0",
                 *self._MINING_KIND_ARGS[kind](token)]
         if kind == "cpu":
-            try:
-                pct = max(1, min(100, int(intensity)))
-            except (TypeError, ValueError):
-                pct = 50
-            args += ["--cpu-max-threads-hint", str(pct)]
+            if eco:
+                args += ["--cpu-max-threads-hint", self._ECO_CPU_THREADS_HINT,
+                         "--cpu-priority", self._ECO_CPU_PRIORITY]
+            else:
+                try:
+                    pct = max(1, min(100, int(intensity)))
+                except (TypeError, ValueError):
+                    pct = 50
+                args += ["--cpu-max-threads-hint", str(pct)]
+        elif kind == "gpu" and eco:
+            args += ["--pause-on-active", self._ECO_GPU_PAUSE_ON_ACTIVE_S]
         return subprocess.Popen(
             args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             # DEVNULL, not inherited: this process's stdin is the JSON-RPC
@@ -1253,7 +1276,7 @@ class Api:
             stdin=subprocess.DEVNULL,
             text=True, bufsize=1, encoding="utf-8", errors="replace")
 
-    def mining_start(self, mode="gpu", intensity=50):
+    def mining_start(self, mode="gpu", intensity=50, eco=False):
         if not self._mining:
             return {"ok": False, "error": "not_enrolled"}
         if not miner.is_installed():
@@ -1267,7 +1290,7 @@ class Api:
         spawned_kinds = []
         try:
             for kind in kinds:
-                proc = self._spawn_miner(kind, intensity)
+                proc = self._spawn_miner(kind, intensity, eco)
                 spawned.append(proc)
                 spawned_kinds.append(kind)
                 self._mining_procs.append(proc)

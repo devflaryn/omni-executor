@@ -245,6 +245,68 @@ def test_start_both_spawns_one_process_per_kind(api, monkeypatch):
     assert users == {"tok.xmr", "tok.rvn"}
 
 
+def test_start_cpu_eco_lowers_threads_and_priority(api, monkeypatch):
+    """Eco caps the CPU miner at a quarter of the cores AND drops it below
+    normal priority, so a game/desktop always wins the scheduler while it
+    trickle-mines on the slack."""
+    _enrolled(api, monkeypatch)
+    spawned = []
+    monkeypatch.setattr(main.subprocess, "Popen",
+                        lambda args, **k: spawned.append(args) or FakeProc())
+    res = api.mining_start("cpu", 50, eco=True)
+    assert res["ok"] is True
+    args = spawned[0]
+    assert args[args.index("--cpu-max-threads-hint") + 1] == "25"
+    assert args.count("--cpu-priority") == 1
+    assert args[args.index("--cpu-priority") + 1] == "1"
+    # pause-on-active is a GPU-eco lever; the CPU keeps mining while the user
+    # works, so it must NOT carry it.
+    assert "--pause-on-active" not in args
+
+
+def test_start_gpu_eco_pauses_on_activity(api, monkeypatch):
+    """A 3D game needs the whole card, so the eco GPU miner yields it while
+    the user is active (there is no OpenCL intensity knob to throttle with)."""
+    _enrolled(api, monkeypatch)
+    spawned = []
+    monkeypatch.setattr(main.subprocess, "Popen",
+                        lambda args, **k: spawned.append(args) or FakeProc())
+    res = api.mining_start("gpu", 50, eco=True)
+    assert res["ok"] is True
+    args = spawned[0]
+    assert args.count("--pause-on-active") == 1
+    assert int(args[args.index("--pause-on-active") + 1]) > 0
+    # GPU has no cpu-priority/threads knobs to set.
+    assert "--cpu-priority" not in args
+
+
+def test_start_non_eco_carries_no_eco_flags(api, monkeypatch):
+    """Default (eco off) stays the pre-eco behavior: no --cpu-priority and no
+    --pause-on-active on either kind."""
+    _enrolled(api, monkeypatch)
+    spawned = []
+    monkeypatch.setattr(main.subprocess, "Popen",
+                        lambda args, **k: spawned.append(args) or FakeProc())
+    assert api.mining_start("both", 50)["ok"] is True
+    for args in spawned:
+        assert "--cpu-priority" not in args
+        assert "--pause-on-active" not in args
+
+
+def test_start_both_eco_applies_each_kinds_lever(api, monkeypatch):
+    """In 'both' eco, each process gets only its own lever: CPU gets priority
+    (not pause-on-active), GPU gets pause-on-active (not priority)."""
+    _enrolled(api, monkeypatch)
+    spawned = []
+    monkeypatch.setattr(main.subprocess, "Popen",
+                        lambda args, **k: spawned.append(args) or FakeProc())
+    assert api.mining_start("both", 50, eco=True)["ok"] is True
+    by_user = {args[args.index("--user") + 1]: args for args in spawned}
+    cpu_args, gpu_args = by_user["tok.xmr"], by_user["tok.rvn"]
+    assert "--cpu-priority" in cpu_args and "--pause-on-active" not in cpu_args
+    assert "--pause-on-active" in gpu_args and "--cpu-priority" not in gpu_args
+
+
 def test_stop_terminates_every_process_and_clears_list(api):
     p1, p2 = FakeProc(), FakeProc()
     api._mining_procs = [p1, p2]

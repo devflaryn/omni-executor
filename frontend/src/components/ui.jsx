@@ -108,11 +108,13 @@ export function Field({ label, hint, htmlFor, children }) {
   );
 }
 
-export function Toggle({ checked, onChange, label, hint, id }) {
+export function Toggle({ checked, onChange, label, hint, id, disabled = false }) {
   return (
     <label
       htmlFor={id}
-      className="flex cursor-pointer items-center justify-between gap-4 py-0.5"
+      className={`flex items-center justify-between gap-4 py-0.5 ${
+        disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer"
+      }`}
     >
       <span className="min-w-0">
         <span className="block text-[13.5px] font-medium text-ink">{label}</span>
@@ -123,6 +125,7 @@ export function Toggle({ checked, onChange, label, hint, id }) {
           id={id}
           type="checkbox"
           checked={checked}
+          disabled={disabled}
           onChange={(e) => onChange(e.target.checked)}
           className="peer sr-only"
         />

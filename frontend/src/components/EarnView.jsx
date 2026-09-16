@@ -29,7 +29,7 @@ import {
   buyDayWithCredits,
   onEngineEvent,
 } from "../api.js";
-import { Button, Lamp, Notice, PanelHead } from "./ui.jsx";
+import { Button, Lamp, Notice, PanelHead, Toggle } from "./ui.jsx";
 import { AlertIcon, CpuIcon } from "./icons.jsx";
 
 // The engine reports hashrate/earnings on its own cadence; this just catches
@@ -72,6 +72,16 @@ export default function EarnView({ active, auth, showToast, onAuthChange }) {
   const [enrolling, setEnrolling] = useState(false);
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState("gpu");
+  // Eco mode: mine on spare cycles so the machine stays usable (see start()).
+  // Remembered across launches; localStorage can throw in odd webview states,
+  // so every access is guarded and falls back to "off".
+  const [eco, setEco] = useState(() => {
+    try {
+      return localStorage.getItem("earn.eco") === "1";
+    } catch {
+      return false;
+    }
+  });
   const timer = useRef(null);
   // Last-seen creditedMicros, so a poll can tell "a payout just landed" (the
   // value went UP) apart from "nothing changed" — only the former is worth an
@@ -188,9 +198,18 @@ export default function EarnView({ active, auth, showToast, onAuthChange }) {
     refresh();
   };
 
+  const setEcoPersisted = (on) => {
+    setEco(on);
+    try {
+      localStorage.setItem("earn.eco", on ? "1" : "0");
+    } catch {
+      /* a webview with storage disabled just won't remember the choice */
+    }
+  };
+
   const start = async () => {
     setBusy(true);
-    const res = await miningStart(mode, 50);
+    const res = await miningStart(mode, 50, eco);
     setBusy(false);
     if (res?.ok) {
       showToast?.("Mining started", "success");
@@ -329,6 +348,17 @@ export default function EarnView({ active, auth, showToast, onAuthChange }) {
                       );
                     })}
                   </div>
+                </div>
+
+                <div className="rounded-lg border border-line bg-raised px-3 py-2">
+                  <Toggle
+                    id="earn-eco"
+                    checked={eco}
+                    onChange={setEcoPersisted}
+                    disabled={running}
+                    label="Eco mode — mine while you use your PC"
+                    hint="Keeps games and apps smooth by mining on spare power (CPU runs low-priority; GPU pauses while you're active). Slower, but the machine stays responsive. Set before starting."
+                  />
                 </div>
 
                 <div className="flex flex-wrap gap-2">

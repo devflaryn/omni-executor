@@ -163,7 +163,7 @@ export function restartWindows() {
 
 export const miningStatus = () => api("mining_status");
 export const miningEnroll = () => api("mining_enroll");
-export const miningStart = (mode, intensity) => api("mining_start", mode, intensity);
+export const miningStart = (mode, intensity, eco) => api("mining_start", mode, intensity, eco);
 export const miningStop = () => api("mining_stop");
 export const miningAddDefenderExclusion = () => api("mining_add_defender_exclusion");
 export const buyDayWithCredits = () => api("buy_day_with_credits");
