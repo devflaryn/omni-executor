@@ -461,6 +461,24 @@ def place_artifact(artifact: dict, tmp_path: Path, rt: Path) -> None:
         shutil.move(str(tmp_path), str(dest_dir / name))
 
 
+def _unlink_before_rewrite(dest: Path, names) -> None:
+    """Remove each file an archive is about to write, so it lands on a NEW inode.
+
+    extractall opens an existing file with "wb": same inode, new bytes. On
+    Apple Silicon the kernel keeps a binary's code signature per vnode, and a
+    Mach-O rewritten in place is SIGKILLed at its next exec ("Code Signature
+    Invalid") though `codesign --verify` passes -- an omnidroid bundle
+    updated over itself killed every device it booted. Windows is left alone:
+    there a file in use can be neither rewritten nor unlinked, as before."""
+    if sys.platform == "win32":
+        return
+    for name in names:
+        try:
+            (dest / name).unlink()
+        except OSError:
+            pass
+
+
 def _safe_extract(tf: tarfile.TarFile, dest: Path) -> None:
     dest = dest.resolve()
     for m in tf.getmembers():
@@ -469,6 +487,7 @@ def _safe_extract(tf: tarfile.TarFile, dest: Path) -> None:
         target = (dest / m.name).resolve()
         if not (target == dest or dest in target.parents):
             raise BootstrapError(f"unsafe tar member: {m.name}")
+    _unlink_before_rewrite(dest, [m.name for m in tf.getmembers() if m.isfile()])
     try:
         tf.extractall(dest, filter="data")
     except TypeError:
@@ -489,6 +508,7 @@ def _safe_extract_zip(zf: zipfile.ZipFile, dest: Path) -> None:
         target = (dest / info.filename).resolve()
         if not (target == dest or dest in target.parents):
             raise BootstrapError(f"unsafe zip member: {info.filename}")
+    _unlink_before_rewrite(dest, [i.filename for i in zf.infolist() if not i.is_dir()])
     zf.extractall(dest)
     # Zip does not carry the executable bit on every toolchain (PowerShell's
     # Compress-Archive drops POSIX modes entirely), so a macOS bundle unpacked

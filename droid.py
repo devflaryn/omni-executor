@@ -225,6 +225,11 @@ class Pool:
         plugins = bootstrap.runtime_dir() / "plugins"
         plugins.mkdir(parents=True, exist_ok=True)
         env["OMNI_PLUGINS"] = str(plugins)
+        # OMNI_DATA_DIR is the executor's account store (bootstrap.
+        # configure_engine), but to omnidroid it means "keep the guest's
+        # storage here between runs" -- one storage for every instance. The
+        # sign-in travels as --cookie <file>, so the pool needs none of it.
+        env.pop("OMNI_DATA_DIR", None)
         # Dev mode, absent from release builds (see devserver.py): a dev.json
         # redirect reaches this process but not the environment, and a pool
         # started without it would leave the guests calling production while

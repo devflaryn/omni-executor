@@ -249,6 +249,27 @@ def test_the_pool_never_sees_this_users_own_plugins(monkeypatch, tmp_path):
     assert (bootstrap.runtime_dir() / "plugins").is_dir()
 
 
+def test_the_pool_does_not_inherit_the_account_stores_data_dir(monkeypatch, tmp_path):
+    """To omnidroid OMNI_DATA_DIR keeps ONE guest /data between runs; a
+    `stop` left there by the first device ended every later one at boot."""
+    seen = {}
+
+    class FakeProc:
+        def __init__(self, argv, **kw):
+            seen.update(kw)
+            self.stdin = io.StringIO()
+
+    monkeypatch.setenv("OMNIEXEC_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setenv("OMNI_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(droid, "bundle_dir", lambda: tmp_path)
+    monkeypatch.setattr(droid.subprocess, "Popen", FakeProc)
+    monkeypatch.setattr(droid.Pool, "log_path", staticmethod(lambda: tmp_path / "serve.log"))
+    droid.Pool(port=7457)._spawn()
+    assert "OMNI_DATA_DIR" not in seen["env"]
+    import os
+    assert os.environ["OMNI_DATA_DIR"] == str(tmp_path)   # the app's own is untouched
+
+
 def test_progress_that_prints_does_not_recurse():
     """The autoexec push prints into a sink that forwards lines as progress;
     a progress handler that prints itself must not loop back into it."""

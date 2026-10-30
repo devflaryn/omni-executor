@@ -68,3 +68,24 @@ def test_the_runtime_comes_from_its_own_channel():
     import inspect
     default = inspect.signature(main.bootstrap.read_manifest).parameters["channel"].default
     assert default == main.bootstrap.NATIVE_CHANNEL == "native"
+
+
+def test_an_unpacked_bundle_puts_each_file_on_a_new_inode(tmp_path, monkeypatch):
+    """A Mach-O rewritten in place keeps its vnode, and Apple Silicon SIGKILLs
+    it at exec ("Code Signature Invalid"): an update must unlink first."""
+    import os
+    import zipfile
+    import bootstrap
+    monkeypatch.setattr(bootstrap.sys, "platform", "darwin")
+    dest = tmp_path / "omnidroid"
+    dest.mkdir()
+    (dest / "omni-linux-run").write_bytes(b"old build")
+    os.link(dest / "omni-linux-run", tmp_path / "same-inode")
+    z = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("omni-linux-run", b"new build")
+    with zipfile.ZipFile(z) as zf:
+        bootstrap._safe_extract_zip(zf, dest)
+    assert (dest / "omni-linux-run").read_bytes() == b"new build"
+    # The old inode was left alone, so the new bytes are a new file.
+    assert (tmp_path / "same-inode").read_bytes() == b"old build"
