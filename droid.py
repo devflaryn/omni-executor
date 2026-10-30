@@ -216,6 +216,15 @@ class Pool:
         # outright costs nothing and survives a bundle moved under a symlink.
         if (home / "sysroot").is_dir():
             env.setdefault("OMNI_HOME", str(home))
+        # The bundle's own plugins (<bundle>/plugins) only count where this
+        # user has none of the same name, and the user-wide folder
+        # (<app-data>/../plugins) is shared with any omnidroid on the machine.
+        # A dev install's `roblox.link` there runs `cargo run`: from Finder
+        # there is no cargo, and every warm device died at boot, once a
+        # second, forever. An executor-owned folder leaves the bundle's.
+        plugins = bootstrap.runtime_dir() / "plugins"
+        plugins.mkdir(parents=True, exist_ok=True)
+        env["OMNI_PLUGINS"] = str(plugins)
         # Dev mode, absent from release builds (see devserver.py): a dev.json
         # redirect reaches this process but not the environment, and a pool
         # started without it would leave the guests calling production while

@@ -229,6 +229,26 @@ def test_the_serve_process_holds_a_pipe_for_stdin(monkeypatch, tmp_path):
     assert seen["argv"][1:] == ["serve", "--port", "7457"]
 
 
+def test_the_pool_never_sees_this_users_own_plugins(monkeypatch, tmp_path):
+    """A dev install's user-wide `roblox.link` (a `cargo run`) would shadow the
+    bundle's prebuilt plugin; the pool gets a plugin folder of its own."""
+    seen = {}
+
+    class FakeProc:
+        def __init__(self, argv, **kw):
+            seen.update(kw)
+            self.stdin = io.StringIO()
+
+    monkeypatch.setenv("OMNIEXEC_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setenv("OMNI_PLUGINS", "/somewhere/else")
+    monkeypatch.setattr(droid, "bundle_dir", lambda: tmp_path)
+    monkeypatch.setattr(droid.subprocess, "Popen", FakeProc)
+    monkeypatch.setattr(droid.Pool, "log_path", staticmethod(lambda: tmp_path / "serve.log"))
+    droid.Pool(port=7457)._spawn()
+    assert seen["env"]["OMNI_PLUGINS"] == str(bootstrap.runtime_dir() / "plugins")
+    assert (bootstrap.runtime_dir() / "plugins").is_dir()
+
+
 def test_progress_that_prints_does_not_recurse():
     """The autoexec push prints into a sink that forwards lines as progress;
     a progress handler that prints itself must not loop back into it."""
