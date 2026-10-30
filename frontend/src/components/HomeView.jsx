@@ -141,7 +141,7 @@ export default function HomeView({ active, auth, profile, launch, onGo, onAddAcc
             variant="solid"
             onClick={launchAll}
             disabled={!usable || !stopped.length}
-            title={stopped.length ? `Start ${stopped.length} stopped ${stopped.length === 1 ? "instance" : "instances"} in ${launch.mode} mode` : "Nothing to launch"}
+            title={stopped.length ? `Start ${stopped.length} stopped ${stopped.length === 1 ? "instance" : "instances"}` : "Nothing to launch"}
           >
             <PlayIcon className="h-3.5 w-3.5" />
             Launch all{stopped.length ? ` (${stopped.length})` : ""}
@@ -227,7 +227,7 @@ export default function HomeView({ active, auth, profile, launch, onGo, onAddAcc
                       >
                         <Lamp tone={tone} pulse={tone === "busy"} size={6} />
                         <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium text-ink">{a.name}</span>
-                        {a.running && a.mode && <span className="chip chip-live capitalize">{a.mode}</span>}
+
                         <span className="shrink-0 font-mono text-[11.5px] text-ink-3">{status}</span>
                       </button>
                     </li>

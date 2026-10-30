@@ -6,9 +6,8 @@
 //! This process owns exactly two things: the window and the pipe to the Python
 //! backend. Every feature of the app — the engine, accounts, bootstrap, cloud
 //! sync, updates — is still Python, unchanged, and reached through
-//! `backend::Backend::call`. The frozen backend beside this binary is also the
-//! omnidroid engine (`--omnidroid` in-binary dispatch), which is why the two
-//! ship in the same folder.
+//! `backend::Backend::call`. The two ship in the same folder because the
+//! file-by-file updater replaces the backend's own directory (updates.py).
 //!
 //! The window is frameless and transparent on every platform so the page can
 //! draw its own 33 px sheet:

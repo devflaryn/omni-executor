@@ -1,149 +1,244 @@
-import os, sys, json, types
-from pathlib import Path
+"""The executor's half of native omnidroid: what it asks the pool for, and what
+it keeps on this machine while an instance runs.
+
+The pool itself is replaced by a double that records every tool call, so
+these run anywhere, with no omnidroid and no Android."""
+import io
+import json
+
 import pytest
-import main, bootstrap
+
+import bootstrap
+import droid
+import main
 
 
-def test_engine_prefix_frozen_dispatch(monkeypatch):
-    monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "executable", "/Applications/Omni Executor.app/Contents/MacOS/OmniExecutor", raising=False)
-    monkeypatch.delenv("OMNIDROID_ENGINE", raising=False)
-    assert main.engine_prefix() == [sys.executable, "--omnidroid"]
+class FakePool:
+    """droid.Pool's surface, recording calls."""
+
+    def __init__(self, instances=None, fail=None):
+        self.calls = []
+        self.port = 7457
+        self._instances = instances or {}
+        self._fail = fail or {}
+
+    def _alive(self):
+        return True
+
+    def owned(self):
+        return False
+
+    def shutdown(self):
+        pass
+
+    def instances(self):
+        return dict(self._instances)
+
+    def call(self, tool, args=None, timeout=60):
+        self.calls.append((tool, dict(args or {})))
+        if tool in self._fail:
+            raise droid.DroidError(self._fail[tool])
+        if tool == "start_instance":
+            return {"instances": [7], "note": "on D1"}
+        return {}
 
 
-def test_engine_prefix_source_fallback_is_module(monkeypatch, tmp_path):
-    # no env, not frozen, no adjacent binary, sibling omnidroid checkout present
-    monkeypatch.setattr(sys, "frozen", False, raising=False)
-    monkeypatch.delenv("OMNIDROID_ENGINE", raising=False)
-    sib = tmp_path / "omnidroid" / "omnidroid"
-    sib.mkdir(parents=True); (sib / "__main__.py").write_text("")
-    monkeypatch.setattr(main, "PROJECT_DIR", tmp_path / "omni-executor")
-    (tmp_path / "omni-executor").mkdir()
-    prefix = main.engine_prefix()
-    assert prefix[0] == sys.executable and "omnidroid" in prefix  # -m omnidroid form
-
-
-def test_configure_engine_on_launch_sets_env_on_every_launch(tmp_path, monkeypatch):
-    """Fix round 1: _configure_engine_on_launch() must set the same env
-    configure_engine() sets, called unconditionally from main() on EVERY
-    launch -- not just first-boot (see the gap this closes: bootstrap_start
-    is only invoked once, on first install; a relaunch of an already
-    -installed app never re-runs it, so without this helper being called
-    from main() on every launch, later engine subprocesses would inherit no
-    OMNIDROID_CONFIG_PATH/OMNI_DATA_DIR/OMNI_IMAGES_DIR at all)."""
+@pytest.fixture
+def api(tmp_path, monkeypatch):
     monkeypatch.setenv("OMNIEXEC_RUNTIME_DIR", str(tmp_path))
-    for var in ("OMNIDROID_CONFIG_PATH", "OMNI_DATA_DIR", "OMNI_IMAGES_DIR"):
-        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("OMNI_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(main, "SETTINGS_FILE", tmp_path / "settings.json")
+    apk = tmp_path / "OmniExecutor.apk"
+    apk.write_bytes(b"apk")
+    monkeypatch.setattr(droid, "apk_path", lambda: apk)
+    import robloxaccounts
+    robloxaccounts.save_account(tmp_path, "Alice_1", "_|WARNING:-cookie-value", user_id=1)
+    a = main.Api()
+    a._pool = FakePool()
+    a._push = lambda *_a, **_k: None
+    a._beat_now = lambda *_a, **_k: None
+    monkeypatch.setattr(main.Api, "_exec_base", lambda self: "http://127.0.0.1:9")
+    # The autoexec push is a network call; it must never be what a test waits on.
+    import autoexec
+    monkeypatch.setattr(autoexec, "push_autoexec", lambda *a, **k: 0)
+    return a
 
+
+def test_a_launch_runs_the_executor_apk_with_the_account_signed_in(api, tmp_path):
+    res = api.engine_start("Alice_1", "8737899170")
+    assert res["ok"] and res["instance_id"] == 7
+    tool, args = api._pool.calls[-1]
+    assert tool == "start_instance"
+    assert args["apk"] == str(tmp_path / "OmniExecutor.apk")
+    assert args["count"] == 1
+    cookie = tmp_path / "launch-cookies" / "Alice_1.txt"
+    assert f'--cookie "{cookie}"' in args["options"]
+    assert "--place 8737899170" in args["options"]
+    # The value goes in a FILE, never on the command line.
+    assert "cookie-value" not in args["options"]
+    assert cookie.read_text(encoding="utf-8") == "_|WARNING:-cookie-value"
+    assert api._instances["Alice_1"] == 7
+
+
+def test_there_is_no_mode_to_pick(api):
+    """Launch takes a place and nothing else: no Gaming/Farming, no GPU."""
+    import inspect
+    params = list(inspect.signature(main.Api.engine_start).parameters)
+    assert params == ["self", "name", "place"]
+
+
+def test_no_place_lands_on_home(api):
+    api.engine_start("Alice_1")
+    assert "--place" not in api._pool.calls[-1][1]["options"]
+
+
+def test_a_place_that_is_not_a_number_is_refused_before_omnidroid(api):
+    res = api.engine_start("Alice_1", "../etc")
+    assert not res["ok"] and res["error"] == "bad_place"
+    assert api._pool.calls == []
+
+
+def test_an_account_with_no_sign_in_is_refused(api):
+    res = api.engine_start("Nobody")
+    assert not res["ok"] and res["error"] == "no_account"
+
+
+def test_a_refused_start_leaves_no_cookie_behind(api, tmp_path):
+    api._pool = FakePool(fail={"start_instance": "max_devices reached"})
+    res = api.engine_start("Alice_1")
+    assert not res["ok"] and "max_devices" in res["message"]
+    assert not (tmp_path / "launch-cookies" / "Alice_1.txt").exists()
+
+
+def test_stop_closes_the_instance_and_forgets_the_cookie(api, tmp_path):
+    api.engine_start("Alice_1")
+    res = api.engine_stop("Alice_1")
+    assert res["ok"]
+    assert api._pool.calls[-1] == ("stop_instance", {"instance_id": 7})
+    assert not (tmp_path / "launch-cookies" / "Alice_1.txt").exists()
+    assert "Alice_1" not in api._instances
+
+
+def test_stopping_an_instance_that_already_ended_is_a_stop(api):
+    api.engine_start("Alice_1")
+    api._pool._fail = {"stop_instance": "#7 ended already"}
+    assert api.engine_stop("Alice_1")["ok"]
+
+
+def test_the_list_says_what_each_instance_is_doing(api):
+    api.engine_start("Alice_1")
+    api._pool._instances = {7: {"instance_id": 7, "state": "installing", "up_s": 3}}
+    row = api.engine_list()["accounts"][0]
+    assert row["name"] == "Alice_1" and row["running"] is True
+    assert row["state"] == "installing" and row["instance_id"] == 7
+    api._pool._instances = {7: {"instance_id": 7, "state": "ended: native crash: SIGSEGV"}}
+    row = api.engine_list()["accounts"][0]
+    assert row["running"] is False
+
+
+def test_the_list_never_carries_a_cookie(api):
+    assert "cookie" not in json.dumps(api.engine_list()).lower()
+
+
+def test_remove_forgets_the_account(api):
+    assert api.engine_remove("Alice_1")["existed"] is True
+    assert api.engine_list()["accounts"] == []
+
+
+def test_settings_from_the_qemu_engine_are_dropped_once(api):
+    main.SETTINGS_FILE.write_text(json.dumps({
+        "launch": {"mode": "farming", "gpu": "auto", "place": "1"},
+        "autoWarm": True, "pool": {"warmedFor": {}}, "farming": {"members": []}}))
+    s = api.get_settings()
+    assert s["launch"] == {"place": "1"}
+    assert not {"autoWarm", "pool", "farming"} & set(s)
+    on_disk = json.loads(main.SETTINGS_FILE.read_text())
+    assert "mode" not in on_disk["launch"] and "autoWarm" not in on_disk
+
+
+def test_configure_engine_points_the_store_at_the_runtime(tmp_path, monkeypatch):
+    monkeypatch.delenv("OMNI_DATA_DIR", raising=False)
+    rep = bootstrap.configure_engine(tmp_path)
+    import os
+    assert os.environ["OMNI_DATA_DIR"] == str(tmp_path)
+    assert rep["tools_ok"] is False
+
+
+def test_engine_ready_needs_the_bundle_and_the_apk(tmp_path):
+    exe = "omnidroid.exe" if main.sys.platform == "win32" else "omnidroid"
+    (tmp_path / "omnidroid" / "sysroot").mkdir(parents=True)
+    (tmp_path / "omnidroid" / exe).write_bytes(b"")
+    assert bootstrap.engine_ready(tmp_path)["omnidroid_ok"] is True
+    assert bootstrap.engine_ready(tmp_path)["tools_ok"] is False
+    (tmp_path / "apk").mkdir()
+    (tmp_path / "apk" / "OmniExecutor.apk").write_bytes(b"")
+    assert bootstrap.engine_ready(tmp_path)["tools_ok"] is True
+
+
+def test_configure_engine_on_launch_never_raises(monkeypatch):
+    def boom(rt):
+        raise OSError("disk gone")
+    monkeypatch.setattr(main.bootstrap, "configure_engine", boom)
     main._configure_engine_on_launch()
 
-    assert os.environ["OMNIDROID_CONFIG_PATH"] == str(tmp_path / "paths.json")
-    assert os.environ["OMNI_DATA_DIR"] == str(tmp_path)
-    assert os.environ["OMNI_IMAGES_DIR"] == str(tmp_path / "images")
-    assert (tmp_path / "paths.json").exists()
+
+# ------------------------------------------------------------ the transport
+
+def _pool_answering(monkeypatch, answer):
+    pool = droid.Pool(port=1)
+    pool._initialized = True
+    monkeypatch.setattr(droid.Pool, "ensure", lambda self: True)
+    monkeypatch.setattr(droid.Pool, "_post", lambda self, msg, timeout: answer)
+    return pool
 
 
-def test_configure_engine_on_launch_no_images_does_not_raise(tmp_path, monkeypatch):
-    """Genuinely fresh first boot: runtime dir exists but nothing has been
-    downloaded yet (no images/arm at all). configure_engine() must not raise
-    -- it just writes a base-less paths.json; bootstrap_start() corrects it
-    once the download completes."""
-    monkeypatch.setenv("OMNIEXEC_RUNTIME_DIR", str(tmp_path))
-
-    main._configure_engine_on_launch()  # must not raise
-
-    cfg = json.loads((tmp_path / "paths.json").read_text())
-    assert cfg["bases"] == {}
-    assert cfg["current_base"] is None
+def test_a_tool_result_is_the_json_in_its_text(monkeypatch):
+    pool = _pool_answering(monkeypatch, {"jsonrpc": "2.0", "id": 1, "result": {
+        "content": [{"type": "text", "text": '{"instances": [3]}'}], "isError": False}})
+    assert pool.call("start_instance", {"apk": "x"}) == {"instances": [3]}
 
 
-def test_configure_engine_sets_env_and_writes_paths(tmp_path, monkeypatch):
-    monkeypatch.setenv("OMNIEXEC_RUNTIME_DIR", str(tmp_path))
-    (tmp_path / "images/arm").mkdir(parents=True)
-    (tmp_path / "images/arm/base_arm_system_rooted.qcow2").write_bytes(b"x")
-    (tmp_path / "images/arm/base_arm_data_offset_arceusremote.qcow2").write_bytes(b"x")
-    info = bootstrap.configure_engine(tmp_path)
-    assert os.environ["OMNI_DATA_DIR"] == str(tmp_path)
-    assert os.environ["OMNI_IMAGES_DIR"] == str(tmp_path / "images")
-    assert os.environ["OMNIDROID_CONFIG_PATH"] == str(tmp_path / "paths.json")
-    cfg = json.loads((tmp_path / "paths.json").read_text())
-    assert "qemu" in cfg and "images_dir" in cfg
-    assert isinstance(info["qemu_ok"], bool)
+def test_a_tool_refusal_is_an_error_with_its_message(monkeypatch):
+    pool = _pool_answering(monkeypatch, {"jsonrpc": "2.0", "id": 1,
+                                         "error": {"code": -32000, "message": "#3 ended already"}})
+    with pytest.raises(droid.DroidError, match="ended already"):
+        pool.call("stop_instance", {"instance_id": 3})
 
 
-# ------------------------------------------------------------------------
-# Integration: does the paths.json configure_engine writes actually pass the
-# REAL omnidroid loader's validation (bases.py base_missing_files, engine.py
-# load_config/effective_base_tag)? Guarded — mirrors tests/test_engine_
-# capabilities.py's skip pattern — because it needs the sibling omnidroid
-# checkout importable.
-#
-# The fixture from test_configure_engine_sets_env_and_writes_paths above is
-# deliberately partial (a system file + an offset file, no pristine /data),
-# which is not something the real loader can ever validate as a bootable
-# base (base_missing_files requires "data" to exist) — that gap is inherent
-# to the fixture, not a bug in configure_engine, so it is not exercised
-# against the real loader here. This test uses its own COMPLETE fixture
-# (system + data + one offset, mirroring what ensure_runtime's manifest
-# actually places under images/arm/ per tests/test_bootstrap.py) instead of
-# invoking `python -m omnidroid bases --json` as a real subprocess: the
-# loader's CONFIG_PATH is a fixed REPO/configs/paths.json with no env-var
-# override (confirmed by reading omnidroid/config.py), so a real subprocess
-# using the sibling checkout would read/write the DEVELOPER'S OWN real,
-# daily-used configs/paths.json (its live arm base + offset registrations)
-# instead of our fake rt/paths.json. Monkeypatching CONFIG_PATH in-process
-# (in all three modules that bind it) exercises the identical validation
-# logic without any risk to that file.
-def test_configure_engine_config_matches_real_loader(tmp_path, monkeypatch):
-    try:
-        from omnidroid import config as omni_config
-        from omnidroid import engine as omni_engine
-        from omnidroid import bases as omni_bases
-    except Exception:
-        pytest.skip("omnidroid not importable in this environment")
+def test_states_before_the_end_are_live():
+    assert all(droid.is_live(s) for s in ("waiting", "installing", "starting", "running", "restarting"))
+    assert not droid.is_live("ended: closed")
+    assert not droid.is_live(None)
 
-    rt = tmp_path
-    # The fixture has to be built for THIS HOST'S architecture. omnidroid's
-    # effective_base_tag() selects the base by host arch (arm64 -> the arm
-    # base, x86 -> the current one), so an arm-only tree on a Windows/x86 box
-    # makes load_config() exit with "no base image is registered" — a fixture
-    # mismatch that says nothing about configure_engine. Windows downloads and
-    # registers the x86 base; macOS the arm one (see bootstrap.current_os).
-    images = rt / "images"
-    if bootstrap.current_os() == "win":
-        x86_dir = images / "x86"
-        x86_dir.mkdir(parents=True)
-        (x86_dir / "base_x86.qcow2").write_bytes(b"sys")
-        (x86_dir / "base_x86.kernel").write_bytes(b"kern")
-        (x86_dir / "base_x86.initrd.img").write_bytes(b"initrd")
-        (x86_dir / "data-template-8g.qcow2").write_bytes(b"tmpl")
-        (x86_dir / "base_x86_data_offset_arceusremote.qcow2").write_bytes(b"off")
-        expect_base = "x86"
-    else:
-        arm_dir = images / "arm"
-        arm_dir.mkdir(parents=True)
-        (arm_dir / "base_arm_system_rooted.qcow2").write_bytes(b"sys")
-        (arm_dir / "base_arm_data_rooted.qcow2").write_bytes(b"data")
-        (arm_dir / "base_arm_data_offset_arceusremote.qcow2").write_bytes(b"off")
-        expect_base = "arm"
 
-    info = bootstrap.configure_engine(rt)
-    assert info["images_dir"] == str(rt / "images")
-    assert os.environ["OMNIDROID_CONFIG_PATH"] == str(rt / "paths.json")
+def test_the_serve_process_holds_a_pipe_for_stdin(monkeypatch, tmp_path):
+    """`omnidroid serve` lives until its stdin closes: the pool ending with the
+    app depends on this process holding that pipe."""
+    seen = {}
 
-    fake_config_path = rt / "paths.json"
-    # Redirect the loader's fixed config location at the file
-    # configure_engine just wrote — never the real sibling checkout's own
-    # configs/paths.json (see note above).
-    monkeypatch.setattr(omni_config, "CONFIG_PATH", fake_config_path, raising=False)
-    monkeypatch.setattr(omni_engine, "CONFIG_PATH", fake_config_path, raising=False)
-    monkeypatch.setattr(omni_bases, "CONFIG_PATH", fake_config_path, raising=False)
-    monkeypatch.setenv("OMNI_DATA_DIR", str(rt))
-    monkeypatch.setenv("OMNI_IMAGES_DIR", str(rt / "images"))
+    class FakeProc:
+        def __init__(self, argv, **kw):
+            seen.update(kw, argv=argv)
+            self.stdin = io.StringIO()
 
-    cfg = omni_engine.load_config()
-    assert expect_base in cfg["bases"]
-    assert cfg["_effective_base"] == expect_base
-    images_out = Path(cfg["images_dir"])
-    assert omni_bases.base_missing_files(images_out, cfg["bases"][expect_base]) == []
-    assert "arceusremote" in (cfg["bases"][expect_base].get("offsets") or {})
+    monkeypatch.setattr(droid, "bundle_dir", lambda: tmp_path)
+    monkeypatch.setattr(droid.subprocess, "Popen", FakeProc)
+    monkeypatch.setattr(droid.Pool, "log_path", staticmethod(lambda: tmp_path / "serve.log"))
+    droid.Pool(port=7457)._spawn()
+    assert seen["stdin"] == droid.subprocess.PIPE
+    assert seen["argv"][1:] == ["serve", "--port", "7457"]
+
+
+def test_progress_that_prints_does_not_recurse():
+    """The autoexec push prints into a sink that forwards lines as progress;
+    a progress handler that prints itself must not loop back into it."""
+    import contextlib
+    seen = []
+
+    def say(line):
+        seen.append(line)
+        print("echo:", line)          # lands in the sink while it is busy
+
+    with contextlib.redirect_stdout(main._LineSink(say)):
+        print("autoexec: pushed 2 scripts")
+    assert seen == ["autoexec: pushed 2 scripts"]

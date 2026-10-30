@@ -40,7 +40,12 @@ import bootstrap
 # the swap succeeds every time and nothing ever changes. push-app.mjs now reads
 # this constant and refuses to publish a mismatched version, which is what makes
 # the two move together. Compared against the manifest's `app.version`.
-APP_VERSION = "1.0.44"
+#
+# 1.0.0 is a RESTART, not a typo after 1.0.44. The native-omnidroid app was
+# numbered afresh, and it is published on its own dist channel
+# (bootstrap.NATIVE_CHANNEL) -- so it never competes with the 1.0.x QEMU line
+# in `stable`, where is_newer() would have it lose to 1.0.44 forever.
+APP_VERSION = "1.0.0"
 
 # Where a downloaded app build is unpacked before it replaces the live one.
 STAGING_DIR = "app-update"

@@ -145,7 +145,7 @@ def test_dist_base_follows(dev_on):
     assert bootstrap.dist_base() == "http://127.0.0.1:5500"
     # The blob URLs are built from it, so they come along for free — asserted
     # because that is the update path the whole feature exists to exercise.
-    assert bootstrap.qemu_win_url().startswith("http://127.0.0.1:5500/")
+    assert bootstrap.dist_base() + bootstrap.MANIFEST_PATH == "http://127.0.0.1:5500/omni/dist/manifest"
 
 
 def test_exec_base_follows(dev_on, monkeypatch, tmp_path):
@@ -177,35 +177,30 @@ def test_production_bases_are_unchanged_when_dev_is_off(dev_off, monkeypatch):
 # ------------------------------------------------- and the engine follows
 
 def _engine_env(monkeypatch, dev_dir):
-    """Run one engine call and hand back the env its subprocess was given."""
+    """Start the omnidroid pool and hand back the env its process was given."""
+    import droid
     seen = {}
 
     class FakeProc:
         def __init__(self, *a, **kw):
             seen["env"] = kw.get("env")
-            self.stdout, self.stderr = io.StringIO('{"ok": true}'), io.StringIO("")
-
-        def wait(self, timeout=None):
-            return 0
+            self.stdin = io.StringIO()
 
         def poll(self):
-            return 0
+            return None
 
-        def kill(self):
-            pass
-
-        returncode = 0
-
-    monkeypatch.setattr(main, "engine_prefix", lambda: ["omnidroid.exe"])
-    monkeypatch.setattr(main.subprocess, "Popen", FakeProc)
-    main.run_engine(["list"])
+    monkeypatch.setattr(droid, "bundle_dir", lambda: dev_dir)
+    monkeypatch.setattr(droid.subprocess, "Popen", FakeProc)
+    monkeypatch.setattr(droid.Pool, "log_path", staticmethod(lambda: dev_dir / "serve.log"))
+    droid.Pool()._spawn()
     return seen["env"]
 
 
 def test_dev_json_is_exported_to_the_engine(dev_off, monkeypatch):
-    """The guest's redirect is omnidroid's job and omnidroid reads the ENV. A
-    file-only dev mode would otherwise leave the app on localhost while its VMs
-    kept calling production — the one half-applied state to rule out."""
+    """The guests' calls are omnidroid's to move, and omnidroid reads the ENV.
+    A file-only dev mode would otherwise leave the app on localhost while its
+    instances kept calling production — the one half-applied state to rule
+    out."""
     (dev_off / devserver.DEV_FILE).write_text(
         '{"devServer": "http://127.0.0.1:5500"}', encoding="utf-8")
     env = _engine_env(monkeypatch, dev_off)
@@ -213,9 +208,9 @@ def test_dev_json_is_exported_to_the_engine(dev_off, monkeypatch):
 
 
 def test_nothing_is_exported_when_dev_is_off(dev_off, monkeypatch):
-    """Production must not gain an env var, and must keep inheriting os.environ
-    rather than being handed a copy."""
-    assert _engine_env(monkeypatch, dev_off) is None
+    """Production must not gain the variable."""
+    monkeypatch.delenv(devserver.DEV_ENV, raising=False)
+    assert devserver.DEV_ENV not in _engine_env(monkeypatch, dev_off)
 
 
 # ------------------------------------------- and it never reaches a customer
@@ -226,30 +221,24 @@ def test_specs_exclude_dev_mode_by_default(spec):
     only place this can be enforced — and a spec that quietly stopped excluding
     it would ship a customer an app that a dropped-in dev.json can redirect."""
     text = spec.read_text(encoding="utf-8")
-    assert 'DEV_MODULES = ["devserver", "omnidroid.devserver"]' in text, (
+    assert 'DEV_MODULES = ["devserver"]' in text, (
         f"{spec.name} no longer declares the dev modules")
     assert "excludes=dev_excludes" in text, (
         f"{spec.name} does not pass the dev-mode exclusion to Analysis()")
     assert re.search(r'OMNI_DEV_BUILD', text), (
         f"{spec.name} lost the opt-in that builds a dev bundle")
-    # The filter matters as much as the exclude: collect_submodules("omnidroid")
-    # names omnidroid.devserver as a hiddenimport, and a name that is both
+    # The filter matters as much as the exclude: a name that is both
     # hidden-imported and excluded is PyInstaller's to arbitrate.
     assert "h not in DEV_MODULES" in text, (
         f"{spec.name} excludes the dev modules but still hidden-imports them")
 
 
-def test_the_setup_stub_excludes_dev_mode_unconditionally():
-    """The stub is the file on the download page. It has no dev use and gets no
-    OMNI_DEV_BUILD escape."""
-    text = (PROJECT / "OmniExecutorSetup.spec").read_text(encoding="utf-8")
-    excludes = re.search(r"excludes=\[(.*?)\]", text, re.S).group(1)
-    assert '"devserver"' in excludes
-    # A literal list, not a computed one: no env var can empty it. (The name
-    # appears in the surrounding comment explaining why — that is prose, so the
-    # assertion is on the mechanism.)
-    assert 'os.environ.get("OMNI_DEV_BUILD"' not in text
-    assert "dev_excludes" not in text
+def test_the_installer_carries_no_python():
+    """The setup file is Inno Setup, not a PyInstaller stub (see
+    packaging/OmniExecutor.iss): there is no Python in it for dev mode to be
+    left in, and no spec for it to drift in."""
+    assert not (PROJECT / "OmniExecutorSetup.spec").exists()
+    assert (PROJECT / "packaging" / "OmniExecutor.iss").exists()
 
 
 def test_call_sites_survive_the_module_being_absent(monkeypatch):

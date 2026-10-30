@@ -22,21 +22,18 @@ Windows/Linux get our buttons on the right. What used to be windowchrome.py's
 Win32 surgery is now src-tauri/src/chrome.rs.
 
 Engine:
-    The Accounts tab drives the omnidroid engine (omnidroid.exe on Windows,
-    ./omnidroid on Linux) sitting next to this file. Every account is an
-    isolated headless Android instance; all interaction goes through the
-    engine CLI with --json (one JSON line on stdout, progress on stderr).
-    Viewing an instance opens the omnidroid engine's own viewer window
-    (`omnidroid view <name> --start`); the executor neither embeds a VNC
-    client nor hands the screen to the OS one (macOS Screen Sharing).
-    Disconnecting a viewer never stops the instance — only an explicit
-    `stop` powers it off.
+    Native omnidroid (droid.py): the executor APK runs on omnidroid's warm
+    Androids, one window per instance, driven over omnidroid's MCP server.
+    Every saved Roblox account launches the same way -- there are no modes,
+    no bases and no architectures to pick any more.
 """
 
 import atexit
 import base64
 import bootstrap
 import cloud
+import contextlib
+import droid
 import json
 import miner
 import netcheck
@@ -71,7 +68,7 @@ DEFAULT_SETTINGS = {
     "theme": "dark",
     "activeTab": "home",
     "sidebar": "expanded",
-    "launch": {"mode": "gaming", "minimizeOnLaunch": False},
+    "launch": {"place": "", "minimizeOnLaunch": False},
     "profile": {"name": "Guest", "tag": ""},
     # Keep the app current without being asked. ON by default: a stale client
     # is how a machine keeps a bug that was fixed weeks ago, and the two
@@ -91,14 +88,6 @@ DEFAULT_SETTINGS = {
     # want to have to fix by deleting files. Off pushes an EMPTY bundle rather
     # than skipping the push; see omnidroid/autoexec.py's NO_AUTOEXEC_ENV.
     "autoexecEnabled": True,
-    # Keep one instance pre-booted so the NEXT launch skips the boot entirely
-    # (33-39 s -> 0.08 s). OFF by default, and that default was learned the
-    # hard way: it shipped ON in 1.0.33 and the first thing it did was put
-    # `_pool0`, `_pool1`, `_pool2` in the user's Accounts list and leave a
-    # multi-gigabyte VM running after the window was closed. A speed
-    # optimisation that spawns machines nobody asked for is not a default, it
-    # is a surprise. It stays available, one switch away, in Settings.
-    "autoWarm": False,
     # `proxy` is the outbound proxy the SIGNUP BROWSER uses. It has nothing to
     # do with captchas: Roblox rate-limits signup per IP (roughly ten attempts
     # before it answers "an unknown error occurred" with no captcha at all), so
@@ -113,17 +102,15 @@ DEFAULT_SETTINGS = {
                 "solverToken": ""},
 }
 
-# COMPATIBILITY SHIM, NOT A FEATURE. The engine offers two presets, `gaming`
-# and `farming`; `playable`/`hard`/`brutal` were retired (they were `gaming`
-# with different numbers). But settings.json OUTLIVES the update, and installed
-# 1.0.14 clients persisted `"mode": "playable"` — so after updating, the app
-# hands the engine a name argparse has never heard of and the user gets a
-# subprocess error they can neither read nor act on. Map the dead names onto
-# the live one instead. Nothing may OFFER these names: get_settings() rewrites
-# a stale setting the first time it reads one, so each install stops needing
-# this after one run, and the whole map can be deleted once no client that
-# predates the two-preset release is still in the field.
-RETIRED_MODES = {"playable": "gaming", "hard": "gaming", "brutal": "gaming"}
+# Settings an older build wrote that mean nothing now. settings.json outlives
+# the update, and a launch block still carrying a mode or a GPU policy would
+# only confuse the next reader of the file, so get_settings() drops them once.
+#   launch.mode / launch.gpu   the QEMU engine's Gaming/Farming presets and its
+#                              display policy
+#   autoWarm / pool            its warm pool of pre-booted VMs
+#   farming                    the Farming tab's member list
+RETIRED_LAUNCH_KEYS = ("mode", "gpu")
+RETIRED_SETTINGS = ("autoWarm", "pool", "farming")
 
 
 def config_dir() -> Path:
@@ -196,387 +183,28 @@ def _parse_hashrate(line):
         return None
 
 
-# ------------------------------------------------------------- engine bridge
+# ------------------------------------------------------------- engine
 
-# Engine contract (see omnidroid.md): account names are [A-Za-z0-9_-]+.
+# Account names are Roblox usernames: [A-Za-z0-9_-]+ (Roblox allows `_` only,
+# but `-` costs nothing and older stores may hold one).
 ACCOUNT_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
-# Hide console windows spawned on Windows (engine).
+# Hide console windows spawned on Windows.
 CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
-
-def engine_prefix():
-    """Command prefix used to invoke the omnidroid engine.
-
-    Priority:
-      1. OMNIDROID_ENGINE env var — a path to omnidroid(.exe), OR a `.py`
-         (e.g. the engine's manager/omni.py) which is run with the current
-         Python. Lets a build point at a specific engine, and lets dev drive
-         the source checkout without building an exe.
-      2. Frozen build: the app re-invokes ITSELF with `--omnidroid` — the
-         engine is dispatched in-process (see the top of main()), so no
-         separate binary needs to be found or shipped next to the app.
-      3. The platform-appropriate NATIVE binary sitting next to main.py (the
-         product, installed by the CDN installer): omnidroid.exe on Windows,
-         extensionless omnidroid on macOS/Linux. Never cross platforms —
-         an omnidroid.exe next to main.py on macOS/Linux is not executable
-         and must never be returned there, and vice versa.
-      4. Python-source fallback (dev/test, e.g. this Mac where no native
-         binary is bundled): a sibling omnidroid source checkout, run as
-         `python -m omnidroid` with the current Python (the checkout's own
-         console-script shim, `omnidroid.cli:main`).
-    Returns a subprocess argv prefix (list), or None if nothing is found.
-    """
-    override = os.environ.get("OMNIDROID_ENGINE")
-    if override:
-        p = Path(override)
-        if p.is_file():
-            return [sys.executable, str(p)] if p.suffix == ".py" else [str(p)]
-
-    if getattr(sys, "frozen", False):
-        return [sys.executable, "--omnidroid"]  # in-binary engine dispatch
-
-    native_name = "omnidroid.exe" if sys.platform == "win32" else "omnidroid"
-    candidate = PROJECT_DIR / native_name
-    if candidate.is_file():
-        return [str(candidate)]
-
-    sibling = PROJECT_DIR.parent / "omnidroid"  # sibling checkout root
-    if (sibling / "omnidroid" / "__main__.py").is_file():
-        return [sys.executable, "-m", "omnidroid"]  # was: manager.py (stale)
-
-    return None
-
-
-def find_engine():
-    """Back-compat truthiness probe: is an engine resolvable? Returns the
-    prefix's first element (a path) or None."""
-    prefix = engine_prefix()
-    return prefix[-1] if prefix else None
+# What engine_version() reports as its contract. The frontend still compares
+# it; native omnidroid ships inside this app, so it is a constant.
+ENGINE_CONTRACT = "1.0"
 
 
 def _configure_engine_on_launch():
-    """Set the engine env vars (OMNIDROID_CONFIG_PATH / OMNI_DATA_DIR /
-    OMNI_IMAGES_DIR) + write rt/paths.json for THIS GUI process, on every
-    launch -- not just first-boot.
-
-    bootstrap.bootstrap_start() (the first-boot install flow) already calls
-    bootstrap.configure_engine() once the runtime download completes. But on
-    a SUBSEQUENT launch of an already-installed app, bootstrap_status()
-    returns ready=true, the frontend skips BootstrapView entirely, and
-    bootstrap_start() is never called again -- so without this, engine
-    subprocesses spawned later (engine_start/engine_view/etc., via
-    run_engine()'s env=None inherit) would carry NONE of those vars, and the
-    frozen --omnidroid engine would fall back to the read-only app bundle's
-    own configs/paths.json and never find the installed arm base.
-
-    Calling configure_engine() here, unconditionally, in the GUI parent
-    process before any window/engine subprocess exists, makes every launch
-    (first-boot or relaunch) set the same env for every engine subprocess
-    this session spawns. Safe on a genuinely fresh runtime dir (nothing
-    downloaded yet): configure_engine() just writes a base-less paths.json
-    and sets the env vars anyway (no arm/ dir to scan yet is not an error);
-    bootstrap_start() overwrites it correctly once the download finishes.
-
-    Must run only in the GUI parent process, never inside the --omnidroid
-    child dispatch branch (that subprocess IS the engine; it doesn't spawn
-    further engine subprocesses of its own).
-    """
+    """Point this process at its runtime (OMNI_DATA_DIR: the account store and
+    the autoexec folder) on every launch, not only after a first-boot
+    download. Never fails the launch."""
     try:
-        import bootstrap
         bootstrap.configure_engine(bootstrap.runtime_dir())
     except Exception as e:  # noqa: BLE001 — engine config must never crash the app launch
         print(f"[omni-exec] engine pre-config skipped: {e}", file=sys.stderr)
-    _refresh_tools_in_background()
-
-
-def _refresh_tools_in_background():
-    """Pick up a newer published QEMU on an ordinary launch.
-
-    ensure_tools() otherwise runs ONLY from bootstrap_start(), and
-    bootstrap_start() runs only while `ready` is false — so an
-    already-installed machine, which is every existing user, would never
-    revisit its tools no matter how many builds were published. That is the
-    same "installed once, stale forever" hole the receipt system was added to
-    close, one level up.
-
-    Two deliberate limits:
-
-      * BACKGROUND THREAD. It makes a network call and may unpack 80 MB; the
-        UI must not wait on either.
-      * NEVER ELEVATES. It runs only when a QEMU already exists, so the plan
-        can only ever be the portable route (needs_admin=False by
-        construction). A launch that silently raised a UAC prompt would be
-        a worse bug than a stale tool.
-    """
-    def work():
-        try:
-            import bootstrap
-            rt = bootstrap.runtime_dir()
-            if bootstrap.find_qemu(rt) is None:
-                return          # a real install — that is bootstrap_start's job
-            plan = bootstrap.qemu_install_plan(rt, bootstrap.tools_manifest())
-            if not plan["needed"] or plan["needs_admin"]:
-                return
-            bootstrap.install_qemu_windows(rt, bootstrap.tools_manifest())
-            bootstrap.record_tool(rt, "qemu", plan["portable"])
-            print(f"[omni-exec] QEMU updated to "
-                  f"{plan['portable'].get('version')}", file=sys.stderr)
-        except Exception as e:  # noqa: BLE001 — a stale tool beats a dead launch
-            print(f"[omni-exec] tool refresh skipped: {e}", file=sys.stderr)
-
-    import threading
-    threading.Thread(target=work, name="tool-refresh", daemon=True).start()
-
-
-def _parse_engine_stdout(stdout, code):
-    """Engine contract: exactly one JSON value on stdout. Be tolerant anyway —
-    scan for the last parseable line if the whole output isn't clean JSON."""
-    text = (stdout or "").strip()
-    try:
-        return json.loads(text)
-    except ValueError:
-        pass
-    for line in reversed(text.splitlines()):
-        line = line.strip()
-        if line.startswith(("{", "[")):
-            try:
-                return json.loads(line)
-            except ValueError:
-                continue
-    return None
-
-
-# How long the ENGINE may spend booting an instance, passed to it explicitly
-# as `start --timeout` so both sides agree on one number instead of racing.
-#
-# They used to disagree, and the executor always lost: its watchdog fired at
-# 300 s while the engine's own budget was 360 s. Any boot slower than five
-# minutes was therefore killed by this process BEFORE the engine could report
-# anything — and because the engine spawns QEMU detached, killing it orphans a
-# live instance: the UI says the start failed while the VM is running happily.
-# (Observed: a boot that took just over five minutes.)
-#
-# WATCHDOG_GRACE keeps this process's own kill strictly LAST, so the engine
-# always gets to finish and emit its JSON verdict. The subprocess watchdog is
-# a backstop against a wedged engine, not the normal path.
-BOOT_TIMEOUT = 600
-
-# ...and then they agreed on a number that was still wrong, because BOTH sides
-# were measuring duration. 660 s is generous on the machine it was measured on
-# and nowhere near generous on a weak CPU, a thermally-throttled laptop, a box
-# already running twenty instances, or a PC with no hardware virtualization at
-# all, where the guest is EMULATED and a boot legitimately takes several times
-# as long (the engine falls back to software emulation now rather than refusing
-# to boot -- see omnidroid/accelprobe.py).
-#
-# So the app stopped measuring duration. The engine prints a progress line at
-# least every 15 s for the whole of a boot, which makes SILENCE a signal and
-# length not one. `IdleWatchdog` below is rearmed on every line the engine
-# writes and fires only when the engine has genuinely stopped talking: a wedged
-# engine is caught in about the time it always was, and a slow one is left to
-# finish. `engine_start` no longer sends `--timeout` at all -- the engine waits
-# on the guest's own progress signals and is in a far better position to judge.
-#
-# This is the budget for SILENCE, not for a boot. It has to clear the engine's
-# 15 s cadence by a wide margin, because a host thrashing hard enough to boot
-# slowly is also a host where a progress line can be late.
-ENGINE_IDLE_TIMEOUT = 180
-# Graceful in-guest power-off budget, passed to `stop --timeout`. The engine
-# escalates on its own (adb shutdown -> QMP quit -> kill), so this bounds only
-# the polite first step; the same "engine decides, we only backstop" rule
-# applies.
-STOP_TIMEOUT = 120
-WATCHDOG_GRACE = 60
-
-# Engine-side budget for `view`: it waits for QEMU's VNC port to accept
-# connections (with --start, after spawning the instance). QEMU binds VNC at
-# process start, so this is normally seconds; the same "engine decides, we only
-# backstop" rule as start/stop applies.
-VIEW_TIMEOUT = 90
-
-# The warm pool's own budgets. Both commands this app runs are short by
-# construction: `pool start` writes the pool config and spawns a DETACHED
-# manager, and `pool status` reads JSON off disk. Neither waits for a boot —
-# that is `pool fill`, which blocks for the full 35-60 s per slot and is
-# therefore never called from here (see Api.pool_start).
-POOL_TIMEOUT = 90
-# `pool stop` powers off every live slot the polite way first (adb shutdown,
-# 60 s each, the same escalation as `stop`), so it needs room for all of them.
-POOL_STOP_TIMEOUT = 300
-
-
-class IdleWatchdog:
-    """Kill the engine when it stops TALKING, not when it takes too long.
-
-    `threading.Timer(timeout, proc.kill)` was an absolute deadline, and an
-    absolute deadline is the wrong instrument here for two reasons:
-
-      1. A boot's length is a property of the user's PC, which we do not know.
-         Every host slower than the one the number was measured on had healthy
-         launches killed.
-      2. The engine spawns QEMU **detached**, so killing the engine does not
-         stop the VM. A wrong kill does not fail cleanly -- it orphans a live
-         instance holding gigabytes, reports failure to the UI, and leaves the
-         user with nothing to click that would stop it.
-
-    Rearmed by `poke()` on every line the engine writes. The engine emits a
-    progress line at least every 15 s throughout a boot, so a window measured in
-    minutes catches a genuinely wedged engine while never catching a slow one.
-    `timeout=None` disarms it entirely and starts no thread.
-    """
-
-    def __init__(self, timeout, on_idle):
-        self._timeout = timeout
-        self._on_idle = on_idle
-        self._last = time.monotonic()
-        self._stop = threading.Event()
-        self._thread = None
-        self.fired = False
-
-    def start(self):
-        if not self._timeout:
-            return self
-        self._last = time.monotonic()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-        return self
-
-    def poke(self):
-        self._last = time.monotonic()
-
-    def cancel(self):
-        self._stop.set()
-
-    def _run(self):
-        # Poll rather than reschedule a Timer per line: a chatty engine would
-        # otherwise create and cancel a thread for every line it prints.
-        step = min(1.0, self._timeout / 4.0)
-        while not self._stop.wait(step):
-            if time.monotonic() - self._last >= self._timeout:
-                self.fired = True
-                try:
-                    self._on_idle()
-                except Exception:
-                    pass
-                return
-
-
-def run_engine(args, progress=None, timeout=None):
-    """Run an engine subcommand; return its stdout JSON normalized to a dict.
-
-    stderr progress lines are forwarded to `progress`. List results are
-    wrapped as {"ok": ..., "accounts": [...]}.
-
-    `timeout` is a SILENCE budget, not a duration: see IdleWatchdog.
-    """
-    prefix = engine_prefix()
-    if prefix is None:
-        return {
-            "ok": False,
-            "error": "engine_missing",
-            "message": "Engine not found — omnidroid.exe must sit next to main.py.",
-        }
-
-    env = None
-    if len(prefix) == 3 and prefix[1:] == ["-m", "omnidroid"]:
-        # Source-fallback `-m omnidroid` form: the sibling checkout root must
-        # be importable as a package search path for `python -m omnidroid`
-        # to resolve, since it isn't installed/on sys.path otherwise.
-        sibling = PROJECT_DIR.parent / "omnidroid"
-        env = {**os.environ, "PYTHONPATH": str(sibling)}
-    # Dev mode, absent from release builds (see devserver.py). Engine
-    # subprocesses inherit os.environ, so an OMNI_DEV_SERVER set in the shell
-    # already reaches them -- but dev.json does not, and a redirected app
-    # driving a guest that still calls the production server is the one
-    # half-applied state this feature must not produce. Export it explicitly.
-    if _devserver:
-        dev = _devserver.dev_server()
-        if dev and not os.environ.get(_devserver.DEV_ENV):
-            env = {**(env or os.environ), _devserver.DEV_ENV: dev}
-
-    try:
-        proc = subprocess.Popen(
-            [*prefix, *args],
-            cwd=str(PROJECT_DIR),
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            creationflags=CREATE_NO_WINDOW,
-        )
-    except OSError as err:
-        return {"ok": False, "error": "engine_spawn_failed", "message": str(err)}
-
-    stderr_tail = []
-    watchdog = IdleWatchdog(timeout, proc.kill)
-
-    def pump_stderr():
-        for line in proc.stderr:
-            # EVERY line, before the filtering: the engine talking at all is
-            # what the watchdog is measuring, and a blank line is still the
-            # engine being alive.
-            watchdog.poke()
-            line = line.rstrip()
-            if not line:
-                continue
-            stderr_tail.append(line)
-            del stderr_tail[:-15]
-            if progress:
-                try:
-                    progress(line)
-                except Exception:
-                    pass
-
-    threading.Thread(target=pump_stderr, daemon=True).start()
-
-    watchdog.start()
-    try:
-        stdout = proc.stdout.read()
-        code = proc.wait()
-    finally:
-        watchdog.cancel()
-
-    data = _parse_engine_stdout(stdout, code)
-
-    if watchdog.fired and data is None:
-        # SAY WHAT ACTUALLY HAPPENED. The engine spawns QEMU detached, so a
-        # killed engine can leave a fully-running instance behind; reporting a
-        # bare failure would have the user believe nothing was started while
-        # several gigabytes stayed committed. This is deliberately distinct
-        # from a boot that the engine itself gave up on.
-        #
-        # ...and only when there is nothing usable on stdout. The engine writes
-        # its JSON verdict and THEN exits, so an engine that wedges after
-        # printing it has already done the work — throwing that away would
-        # report a failure for a launch that succeeded, which is the same
-        # "the UI says it failed while the VM runs" defect the idle watchdog
-        # exists to stop.
-        return {
-            "ok": False,
-            "error": "engine_unresponsive",
-            "message": (f"The engine stopped reporting progress for "
-                        f"{int(timeout)}s and was stopped. The instance may "
-                        f"still be running — refresh the list, and use Stop if "
-                        f"it appears there."),
-        }
-    if isinstance(data, list):
-        result = {"ok": code == 0, "accounts": data}
-    elif isinstance(data, dict):
-        result = data
-    else:
-        message = (stdout or "").strip() or "\n".join(stderr_tail[-5:]) or f"engine exited with code {code}"
-        result = {"error": "bad_engine_output", "message": message[:1000]}
-    result.setdefault("ok", code == 0)
-    result["exit_code"] = code
-    if not result.get("ok") and "message" not in result:
-        # surface something readable for the UI; the engine's stderr tail is
-        # the most specific text available on failures
-        result["message"] = result.get("error") or "\n".join(stderr_tail[-5:]) or f"exit code {code}"
-    return result
 
 
 def accountsync():
@@ -642,17 +270,13 @@ class Api:
         # case for the brief window between construction and serve().
         self._bridge = None
         self._bootstrapping = False
-        # Set once WHPX has been turned on but Windows has not restarted yet.
-        # Sticky for the process: DISM already reported the reboot, and the
-        # feature is not live until it happens, so re-probing would say "off"
-        # and offer to enable an already-enabled feature forever.
-        self._reboot_required = False
+        # The omnidroid pool (started on the first launch, not here), and the
+        # instance this app started for each account: name -> instance id.
+        self._pool = droid.Pool()
+        self._instances = {}
         # Accounts this machine last reported as running, so the loop can send
         # exactly one "stopped" on the transition instead of every tick.
         self._known_running = set()
-        # What the last successful launch would like kept warm, or None.
-        # Read and cleared by the heartbeat; see _autowarm_after_launch.
-        self._autowarm_want = None
         self._heartbeat_stop = threading.Event()
         self._heartbeat_thread = None
         self._updating = False
@@ -663,10 +287,6 @@ class Api:
         self._creation_stop = threading.Event()
         # index/total of the account currently being created, for status polls.
         self._creation_at = (0, 0)
-        # (subcommand, flag) -> bool, from _engine_accepts(). The engine is a
-        # fixed binary for the life of this process, so each answer is learned
-        # once.
-        self._engine_flags = {}
         # Mining / earn: enrollment info from the server (minerToken,
         # stratumHost, stratumPort, algos) and the running xmrig Popen(s), if
         # any — a list because "both" mode is two separate processes (one
@@ -703,16 +323,18 @@ class Api:
         if not isinstance(saved, dict):
             saved = {}
         settings = {**DEFAULT_SETTINGS, **saved}
-        # Retire a dead preset name at the one point it enters the app, and
-        # write the fix straight back. Translating it silently on every launch
-        # instead would keep the RETIRED_MODES shim load-bearing forever, when
-        # it is only meant to survive the first run after an update. The write
-        # is best-effort: a settings file that can't be written must not stop
-        # the app reading the settings it already has.
+        # Drop what the QEMU engine's settings left behind, at the one point
+        # they enter the app, and write the fix straight back so this runs
+        # once per install. Best-effort: a settings file that can't be written
+        # must not stop the app reading the settings it already has.
         launch = settings.get("launch")
-        stale = launch.get("mode") if isinstance(launch, dict) else None
-        if isinstance(stale, str) and stale in RETIRED_MODES:
-            settings["launch"] = {**launch, "mode": RETIRED_MODES[stale]}
+        stale = [k for k in RETIRED_LAUNCH_KEYS if isinstance(launch, dict) and k in launch]
+        dead = [k for k in RETIRED_SETTINGS if k in settings]
+        if stale or dead:
+            if stale:
+                settings["launch"] = {k: v for k, v in launch.items() if k not in stale}
+            for k in dead:
+                settings.pop(k, None)
             try:
                 self._write_settings(settings)
             except OSError:
@@ -827,8 +449,8 @@ class Api:
 
     def autoexec_dir(self):
         """The host folder whose scripts every instance auto-runs at session
-        start. Under the engine's runtime dir (beside accounts/), which is the
-        exact path omnidroid reads and pushes at launch, so what the user drops
+        start. Under the runtime dir (beside accounts.json), which is the exact
+        path engine_start reads and pushes at launch, so what the user drops
         here is what runs."""
         import bootstrap
         d = bootstrap.runtime_dir() / "autoexec"
@@ -910,11 +532,10 @@ class Api:
                             "the change lands on the next launch.")}
 
     def _apply_autoexec_env(self):
-        """Carry the master switch into the environment the engine inherits.
+        """Carry the master switch into the environment autoexec.py reads.
 
-        `run_engine` spawns with `env=None`, i.e. this process's environment,
-        which is also how bootstrap hands the engine OMNI_DATA_DIR and friends.
-        Set it on every launch rather than once at startup so a toggle takes
+        The push runs in this process now (engine_start), so the environment
+        is this process's own. Set it on every launch rather than once at startup so a toggle takes
         effect without restarting the app, and DELETE the variable when armed
         rather than setting it to "0" — the engine reads truthiness, and a
         stale "1" left behind would be a folder that silently never runs.
@@ -1755,15 +1376,6 @@ class Api:
 
         threading.Thread(target=_run, daemon=True).start()
 
-    def _running_names(self):
-        """Instances the ENGINE says are up on this machine, right now."""
-        res = run_engine(["list", "--json"], timeout=60)
-        accounts = res.get("accounts") if isinstance(res, dict) else None
-        if not isinstance(accounts, list):
-            return None                      # engine unhappy: report nothing, change nothing
-        return {a.get("name") for a in accounts
-                if isinstance(a, dict) and a.get("running") and a.get("name")}
-
     def _beat_once(self):
         if not cloud.signed_in():
             self._known_running = set()
@@ -1788,13 +1400,6 @@ class Api:
             try:
                 self._beat_once()
             except Exception:  # noqa: BLE001 — a heartbeat must never kill the app
-                pass
-            try:
-                # The one background thread this app has is the one that does
-                # background work. See _autowarm_after_launch for why nothing
-                # spawns a second.
-                self._autowarm_tick()
-            except Exception:  # noqa: BLE001 — same rule
                 pass
 
     def start_heartbeat(self):
@@ -1844,42 +1449,25 @@ class Api:
             manifest = bootstrap.read_manifest(bootstrap.dist_base())
             # Ask plan_downloads, rather than re-deriving readiness by
             # comparing every manifest entry. It is the ONE place that knows
-            # which artifacts are actually installable — pointer entries with
-            # no sha256 (qemu-win) and app builds (kind: "app") are neither
-            # downloaded nor recorded here.
-            #
-            # REGRESSION this fixes: the moment an app build was published,
-            # the old comparison found `app-win` in the manifest and not in
-            # installed.json, decided the runtime was incomplete, and dropped
-            # every already-installed client into the first-boot setup screen
-            # — where it started re-downloading the base images. Seen live the
-            # first time an app artifact went up.
+            # which artifacts are actually installable — app builds
+            # (kind: "app") are neither downloaded nor recorded here, and
+            # counting one made every installed client fall back into setup
+            # the first time an app build was published.
             ready = not bootstrap.plan_downloads(manifest, installed)
         except bootstrap.BootstrapError as e:
             error = str(e)
             ready = bool(installed.get("artifacts"))  # offline-tolerant
-        # The host TOOLS (QEMU, adb) are part of being ready, not a
-        # precondition for becoming ready. Treating them as a precondition is
-        # what deadlocked every fresh machine: bootstrap_start() was gated on
-        # qemu_ok, and nothing in the app ever installed QEMU, so qemu_ok
-        # could never become true and the download never began.
+        # The files on disk are part of being ready: a receipt for a bundle
+        # somebody deleted by hand is not an engine.
         ready = ready and eng.get("tools_ok", False)
-        # WHPX is no longer a PREREQUISITE, and this comment used to say it
-        # was: omnidroid booted with -accel whpx unconditionally and QEMU died
-        # if the feature was off. The engine proves the accelerator now and
-        # falls back to software emulation when the host has none
-        # (omnidroid/accelprobe.py), so an unaccelerated PC runs the product --
-        # slowly, and with a boot wait that tolerates slow (omnidroid/
-        # bootwait.py). What is left for the UI to do is SAY SO, because the
-        # difference is large and the fix is usually one BIOS switch.
-        # whpx_ok stays tri-state (True/False/None-unknown); False is a
-        # warning, never a blocker, and it never applies to a non-Windows host.
-        accel = bootstrap.windows_accel_status()
+        # Running from source there is nothing to download: droid.py finds the
+        # sibling omnidroid checkout's build and the APK beside the repo.
+        if not getattr(sys, "frozen", False) and droid.bundle_dir() and droid.apk_path():
+            ready = True
         return {"ok": True, "ready": ready, "installed": installed.get("artifacts", {}),
-                "qemu_ok": eng.get("qemu_ok", False), "qemu_hint": eng.get("qemu_hint"),
-                "adb_ok": eng.get("adb_ok", False), "tools_ok": eng.get("tools_ok", False),
-                "whpx_ok": accel.get("whpx_ok"), "whpx_hint": accel.get("hint"),
-                "reboot_required": self._reboot_required,
+                "omnidroid_ok": eng.get("omnidroid_ok", False),
+                "apk_ok": eng.get("apk_ok", False),
+                "tools_ok": eng.get("tools_ok", False),
                 "error": error}
 
     def bootstrap_start(self):
@@ -1889,60 +1477,15 @@ class Api:
         def _run():
             try:
                 rt = bootstrap.runtime_dir()
-                # Tools FIRST, images second. The 4 GB of base images are
-                # useless without a QEMU to boot them, and this is the step
-                # that was missing entirely -- the engine's own ensure_qemu()
-                # only fires when an instance is started, which a user cannot
-                # reach from the setup screen.
-                self._push("bootstrap-progress",
-                           {"phase": "tools", "artifact": "qemu",
-                            "received": 0, "total": 0, "percent": 0})
-                tools = bootstrap.ensure_tools(
-                    rt, progress=lambda p: self._push("bootstrap-progress", p))
-                if tools.get("reboot_required"):
-                    self._reboot_required = True
-                    self._push("bootstrap-reboot", tools)
                 res = bootstrap.ensure_runtime(progress=lambda p: self._push("bootstrap-progress", p))
                 bootstrap.configure_engine(rt)
-                self._push("bootstrap-done", {**res, "tools": tools})
+                self._push("bootstrap-done", res)
             except Exception as e:  # noqa: BLE001 — surface any failure to the UI
                 self._push("bootstrap-error", {"error": str(e)})
             finally:
                 self._bootstrapping = False
         threading.Thread(target=_run, daemon=True).start()
         return {"ok": True, "started": True}
-
-    def enable_virtualization(self):
-        """Turn on Windows Hypervisor Platform (one UAC prompt + a restart).
-
-        Exposed separately from the first-boot flow for the case it cannot
-        cover: a machine where QEMU was ALREADY installed, so the setup screen
-        never needed elevation, and the feature turns out to be off only when
-        QEMU is finally there to be asked."""
-        try:
-            res = bootstrap.enable_whpx()
-        except bootstrap.BootstrapError as e:
-            return {"ok": False, "error": str(e)}
-        if res.get("reboot_required"):
-            self._reboot_required = True
-        return {"ok": res["ok"], "reboot_required": res["reboot_required"],
-                "message": ("Virtualization is on. Restart Windows to finish."
-                            if res["reboot_required"] else
-                            "Virtualization is already on.")}
-
-    def restart_windows(self):
-        """Reboot, at the user's explicit click, after enabling WHPX."""
-        if sys.platform != "win32":
-            return {"ok": False, "error": "windows only"}
-        subprocess.Popen(["shutdown", "/r", "/t", "5"],
-                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        return {"ok": True}
-
-    # Two modes. The engine reports the same pair from `version --json`; this
-    # only covers an engine too old to report any. It doubles as the set
-    # engine_start() accepts, so a name that is neither of these nor a
-    # RETIRED_MODES alias is refused here rather than three layers down.
-    _FALLBACK_MODES = ["gaming", "farming"]
 
     @staticmethod
     def _bad_name(name):
@@ -1955,170 +1498,68 @@ class Api:
         }
 
     def engine_version(self):
-        """Contract handshake (omnidroid-api.md §4). The UI gates on
-        `contract`/`arch_aware`, and on the commands this app actually calls.
-
-        The contract version alone is NOT enough, and that gap is the bug this
-        check exists to close: an engine can speak contract 1.0 and still lack
-        `login`, `view` or `setup`. A stale bundled engine therefore sailed
-        through the handshake and only failed later, when the user clicked
-        "Add account" and got an argparse error from a subprocess. Now the
-        mismatch is named up front, in terms of what will not work."""
-        if engine_prefix() is None:
-            return {
-                "ok": False,
-                "error": "engine_missing",
-                "message": "omnidroid engine not found next to main.py.",
-            }
-        rep = run_engine(["version", "--json"], timeout=30)
-        if isinstance(rep, dict):
-            rep["missing_commands"] = self._missing_commands(rep)
-            rep["pool_supported"] = self._supports(rep, "pool")
-        return rep
-
-    # Engine subcommands this app invokes. Checked against the engine's own
-    # advertised list at handshake time. Kept next to the calls it describes:
-    # adding a run_engine() call for a command not listed here is the mistake
-    # this is meant to catch.
-    _REQUIRED_COMMANDS = ("version", "doctor", "bases", "use-base", "setup",
-                          "list", "login", "start", "stop", "remove", "view")
-
-    def _missing_commands(self, report):
-        """Required commands this engine does NOT advertise.
-
-        Returns [] when the engine reports no command list at all — an engine
-        that predates the field is not evidence of a missing command, and
-        guessing would put a false alarm in front of a working install."""
-        advertised = report.get("commands")
-        if not isinstance(advertised, list) or not advertised:
-            return []
-        have = {c for c in advertised if isinstance(c, str)}
-        return [c for c in self._REQUIRED_COMMANDS if c not in have]
-
-    # OPTIONAL engine commands: used when the engine has them, and the feature
-    # disappears from the UI when it doesn't. Deliberately NOT in
-    # _REQUIRED_COMMANDS — an engine without `pool` is older, not broken, and
-    # listing it there would turn "no warm pool on this build" into the
-    # version-mismatch banner and a warning about an install that works.
-    _OPTIONAL_COMMANDS = ("pool",)
-
-    @staticmethod
-    def _supports(report, command):
-        """Does this engine advertise `command`?
-
-        Unknown counts as NO here, the opposite of _missing_commands. The
-        asymmetry is deliberate and follows from what each answer costs: for a
-        required command, guessing "missing" would put a false alarm in front
-        of a working install; for an optional one, guessing "present" would put
-        a button in front of the user that ends in an argparse error from a
-        subprocess. Every engine that has `pool` also reports its commands."""
-        advertised = report.get("commands") if isinstance(report, dict) else None
-        if not isinstance(advertised, list):
-            return False
-        return command in {c for c in advertised if isinstance(c, str)}
-
-    def _engine_accepts(self, subcommand, flag):
-        """Does the engine's `subcommand` parser accept `flag`?
-
-        The commands handshake above cannot answer this. It compares whole
-        SUBCOMMANDS against the engine's advertised list, so an engine that has
-        `start` but not `start --gpu` passes it cleanly and then fails at launch
-        with `unrecognized arguments: --gpu auto` — an argparse error out of a
-        subprocess, which is the exact failure the handshake exists to prevent.
-        Hit on macOS with app 1.0.30.
-
-        Why a probe and not another advertised field: the engines that need
-        this are the OLD ones, and an old engine cannot be taught to advertise
-        anything. Whatever we ask has to be a question it could already answer,
-        and `--help` is that question.
-
-        UNKNOWN COUNTS AS NOT SUPPORTED, matching _supports() and for the same
-        reason: dropping a display policy costs the engine's own default, while
-        sending a flag it cannot parse costs the launch entirely.
-
-        Cached per (subcommand, flag). The engine binary cannot change under a
-        running app, so probing per launch would spend a subprocess re-learning
-        a constant. Keyed per SUBCOMMAND because `start` and `pool start` are
-        different parsers on the engine side.
-        """
-        key = (tuple(subcommand), flag)
-        if key not in self._engine_flags:
-            report = run_engine([*subcommand, "--help"], timeout=30)
-            # argparse prints the usage block FIRST and lists every option in
-            # it, so the flag lands well inside the 1000-char cap run_engine
-            # puts on non-JSON stdout (~char 520 of an 8 KB help today). If it
-            # ever moves past that, tests/test_engine_gpu_flag.py fails loudly
-            # rather than letting the flag vanish from every launch in silence.
-            text = str(report.get("message") or "") if isinstance(report, dict) else ""
-            self._engine_flags[key] = flag in text
-        return self._engine_flags[key]
+        """What engine this is. The UI used to gate on a contract handshake
+        with the bundled QEMU engine (its `version --json`, its advertised
+        command list, `--help` probes for flags); native omnidroid is shipped
+        WITH this app and moves with it, so there is no version skew left to
+        detect. The fields the UI still reads are kept."""
+        return {"ok": True, "engine": "omnidroid", "contract": ENGINE_CONTRACT,
+                "arch_aware": True, "missing_commands": [],
+                "bundle": droid.bundle_version()}
 
     def engine_doctor(self):
-        """Readiness check: engine present, base images registered, QEMU/adb OK."""
-        if engine_prefix() is None:
-            return {
-                "ok": False,
-                "ready": False,
-                "error": "engine_missing",
-                "message": "omnidroid.exe not found next to main.py.",
-            }
-        return run_engine(["doctor", "--json"], timeout=120)
-
-    def engine_bases(self):
-        """Registered bases with arch/type (contract §6.5) — lets the UI show
-        which architecture (x86 vs arm) each base is."""
-        return run_engine(["bases", "--json"], timeout=30)
-
-    def engine_use_base(self, tag):
-        """Set the default base for NEW accounts (contract §6.5). `use-base`
-        is text-only in the engine, so success is conveyed by exit code 0."""
-        if not isinstance(tag, str) or not tag:
-            return {"ok": False, "error": "bad_base", "message": "A base tag is required."}
-        res = run_engine(["use-base", tag])
-        return {
-            "ok": res.get("exit_code") == 0,
-            "message": (res.get("message") if res.get("exit_code") != 0
-                        else f"Default base for new accounts set to {tag}."),
-        }
-
-    def engine_setup(self):
-        """First-run setup (idempotent): folders + portable QEMU download."""
-        return run_engine(["setup"], progress=self._progress("setup"))
+        """Readiness: is there an omnidroid and an APK, and does the pool
+        answer if it is up. Never STARTS the pool -- that is a launch's job,
+        and booting Androids to answer a status poll would be a surprise."""
+        home = droid.bundle_dir()
+        apk = droid.apk_path()
+        if home is None:
+            return {"ok": False, "ready": False, "error": "engine_missing",
+                    "message": "omnidroid is not installed yet -- finish setup to download it."}
+        if apk is None:
+            return {"ok": False, "ready": False, "error": "apk_missing",
+                    "message": "The executor APK is missing -- finish setup to download it."}
+        return {"ok": True, "ready": True, "omnidroid_dir": str(home),
+                "apk": str(apk), "bundle": droid.bundle_version(),
+                "pool_port": self._pool.port, "pool_up": self._pool._alive()}
 
     def engine_list(self):
-        """All accounts with base, ports and running state.
+        """Every saved Roblox account, with what its instance is doing.
 
-        ⚠ WARM-POOL SLOTS ARE NOT ACCOUNTS AND MUST NEVER BE SHOWN AS ONE.
-        A slot is an ordinary instance named `_pool<n>` -- that is deliberate
-        in the engine, because it means `runtime/_pool0/run.json` is a normal
-        record and every guard, sweep and `stop` works on it with no special
-        case (see omnidroid/pool.py). `omnidroid list` therefore returns them,
-        tagged `pool_slot: true`, and the engine's own CLI prints them with a
-        `[warm pool]` marker.
+        The accounts are the store's (robloxaccounts.py); an account is
+        "running" while the instance this app started for it is alive in the
+        pool. Instances the pool has that this app did not start (the person's
+        own, from the omnidroid app) are not accounts and are not listed."""
+        try:
+            stored = accountsync().read_local()
+        except Exception as e:  # noqa: BLE001 - an unreadable store is an error the UI can show
+            return {"ok": False, "error": "accounts_unreadable", "message": str(e), "accounts": []}
+        live = self._pool.instances() if self._instances else {}
+        out = []
+        for name, rec in sorted(stored.items(), key=lambda kv: kv[0].lower()):
+            inst = live.get(self._instances.get(name))
+            state = inst.get("state") if inst else None
+            out.append({
+                "name": name,
+                "user_id": rec.get("user_id"),
+                "custom_name": rec.get("custom_name"),
+                "place_id": rec.get("place_id"),
+                "running": droid.is_live(state),
+                "state": state or "stopped",
+                "instance_id": inst.get("instance_id") if inst else None,
+                "up_s": inst.get("up_s") if inst else None,
+                "details": inst.get("details") if inst else None,
+            })
+        return {"ok": True, "accounts": out}
 
-        This app had no such marker. So the moment auto-warm turned the pool
-        on for people who had never asked for a pool, `_pool0`, `_pool1`,
-        `_pool2`... started appearing in the Accounts list as if they were
-        Roblox accounts the user owned -- with a Launch button, a Stop button
-        and a DELETE button next to each. Reported 2026-09-02 as "it always
-        spawns something like _pool0, 1, 2".
-
-        The names climb because that is what the pool is for: when a launch
-        ADOPTS `_pool0`, the manager boots `_pool1` to replace it, and the
-        adopted one keeps its slot name for the life of the instance (adoption
-        copies run.json rather than renaming, because a QEMU process cannot be
-        renamed after spawn). So a few launches leave a row of them.
-
-        They are filtered here, at the one place the UI learns what exists,
-        rather than in each view -- Home, Accounts and the launch bay all read
-        this. `pool status` is where a pool is supposed to be visible.
-        """
-        res = run_engine(["list", "--json"], timeout=60)
-        accounts = res.get("accounts") if isinstance(res, dict) else None
-        if isinstance(accounts, list):
-            res["accounts"] = [a for a in accounts
-                               if not (isinstance(a, dict) and a.get("pool_slot"))]
-        return res
+    def _running_names(self):
+        """Accounts whose instance is alive on this machine right now, or None
+        when that cannot be read (then nothing is reported or changed)."""
+        if not self._instances:
+            return set()
+        live = self._pool.instances()
+        return {name for name, iid in self._instances.items()
+                if droid.is_live((live.get(iid) or {}).get("state"))}
 
     def _publish_account(self, result):
         """Upload a freshly-captured Roblox account to the signed-in Omni user.
@@ -2143,33 +1584,50 @@ class Api:
 
         threading.Thread(target=_run, daemon=True).start()
 
+    @staticmethod
+    def _login_result(res):
+        """The store's answer in the shape the UI reads, never the cookie."""
+        if not isinstance(res, dict):
+            return {"ok": False, "error": "login_failed", "message": "The sign-in returned nothing."}
+        out = {k: v for k, v in res.items() if k != "cookie"}
+        if out.get("ok") and out.get("username"):
+            out.setdefault("name", out["username"])
+        return out
+
     def engine_login_browser(self):
-        """Add an account by interactive Roblox sign-in (omnidroid opens its
-        own browser). The account is saved under its Roblox username."""
-        res = run_engine(["login"], progress=self._progress("login"), timeout=360)
+        """Add an account by interactive Roblox sign-in in a real browser. The
+        person signs in; the cookie is picked up once Roblox confirms it, and
+        the account is saved under its Roblox username."""
+        import robloxaccounts
+        say = self._progress("login")
+        try:
+            res = robloxaccounts.capture_login(accountsync()._local_store_root(),
+                                               on_status=say)
+        except Exception as e:  # noqa: BLE001 - a browser that will not start is a message, not a crash
+            res = {"ok": False, "error": "login_failed", "message": f"{type(e).__name__}: {e}"}
+        res = self._login_result(res)
         self._publish_account(res)
+        self._push("accounts-changed", {})
         return res
 
     def engine_login_token(self, token):
-        """Add an account from a pasted Roblox cookie/token. Written to a
-        private temp file (never the argv/ps) and passed via --token-file."""
+        """Add an account from a pasted Roblox cookie. Verified before it is
+        trusted (a headless browser must see it as a signed-in session), and
+        never written anywhere but the store."""
         if not isinstance(token, str) or not token.strip():
             return {"ok": False, "error": "bad_token",
                     "message": "A Roblox cookie/token is required."}
-        import tempfile
-        fd, path = tempfile.mkstemp(prefix="omniexec-tok-", suffix=".txt")
+        import robloxaccounts
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(token.strip())
-            res = run_engine(["login", "--token-file", path, "--json"],
-                             progress=self._progress("login"), timeout=120)
-            self._publish_account(res)
-            return res
-        finally:
-            try:
-                os.remove(path)
-            except OSError:
-                pass
+            res = robloxaccounts.capture_login_from_cookie(
+                accountsync()._local_store_root(), token.strip(),
+                on_status=self._progress("login"))
+        except Exception as e:  # noqa: BLE001
+            res = {"ok": False, "error": "login_failed", "message": f"{type(e).__name__}: {e}"}
+        res = self._login_result(res)
+        self._publish_account(res)
+        self._push("accounts-changed", {})
+        return res
 
     # ---- network ----
 
@@ -2202,7 +1660,7 @@ class Api:
         third-party solver block (`provider`, `apiKeys`) from when captchas
         were bought from 2captcha/CapSolver. Those keys are secrets that no
         longer buy anything, so they are DROPPED and the fix written back once
-        — same self-healing discipline as RETIRED_MODES, but here it also
+        — same self-healing discipline as RETIRED_SETTINGS, but here it also
         stops a dead API key sitting in a config file forever.
         """
         s = self.get_settings()
@@ -2413,516 +1871,198 @@ class Api:
                     "message": f"No created account named {username!r}."}
         return {"ok": True, "account": rec}
 
-    def engine_modes(self):
-        """Mode list DERIVED from the engine's version report; falls back to a
-        constant (incl. farming) on an older engine that doesn't report modes."""
-        rep = run_engine(["version", "--json"], timeout=30)
-        modes = rep.get("modes") if isinstance(rep, dict) else None
-        return modes if isinstance(modes, list) and modes else list(self._FALLBACK_MODES)
+    # ---- instances ----
+    #
+    # ONE KIND OF LAUNCH. There used to be a choice before every start --
+    # Gaming or Farming, a GPU policy, a base, x86 or arm, a warm pool to keep
+    # -- because each was a different virtual machine with different costs.
+    # omnidroid has none of those trades: an instance is the executor APK on
+    # one of the pool's Androids, in a window of its own, and the pool decides
+    # where it goes. So Launch just launches.
 
-    GPU_POLICIES = ("auto", "headless", "window", "off")
+    # Not `cookies/`: that is the old engine's legacy per-account store, which
+    # robloxaccounts.py still folds into accounts.json (and marks with a
+    # `.migrated` file). Launch files have nothing to do with it.
+    LAUNCH_COOKIE_DIR = "launch-cookies"
 
-    def engine_start(self, name, mode=None, place=None, gpu=None):
-        """Cold-boot an instance detached (returns pid + ports).
+    def _cookie_file(self, name, cookie):
+        """The account's cookie as a file for omnidroid's roblox plugin
+        (`--cookie <file>`), private to this user.
 
-        `gpu` is the display/acceleration policy (see the engine's `--gpu`).
-        It is offered in the UI because on some hosts it is a REAL trade the
-        user has to make and not something this app can decide for them: QEMU
-        refuses a VNC server beside a GL window, so on a host where a window is
-        the only route to a GL context, `auto` buys ~24 fps and costs the
-        viewer, while `headless` keeps the viewer at ~3 fps. Validated here
-        rather than passed through, so a stale setting cannot turn into an
-        argparse error from a subprocess.
-
-        `mode` gets the same treatment, and needs it more: settings.json can
-        name a preset that no longer exists (see RETIRED_MODES)."""
-        error = self._bad_name(name)
-        if error:
-            return error
-        # No `--timeout`: the engine waits on the GUEST'S OWN progress signals
-        # (serial log, adb endpoint, dexopt count, QEMU's CPU time) and gives up
-        # on silence rather than on duration, which is the only way a boot can
-        # be judged without knowing how fast the user's PC is. Imposing a number
-        # from here would put the old ceiling straight back.
-        args = ["start", name, "--json"]
-        if isinstance(mode, str) and mode.strip():
-            asked = mode.strip().lower()
-            # Resolve the alias BEFORE argv, so what we launch, what we report
-            # in the lease, and what the engine records all say the live name.
-            mode = RETIRED_MODES.get(asked, asked)
-            if mode not in self._FALLBACK_MODES:
-                return {
-                    "ok": False,
-                    "error": "bad_mode",
-                    "message": f"Unknown launch mode {asked!r}. Choose Gaming or Farming.",
-                }
-            args += ["--mode", mode]
-        # Only if this engine has the flag. A bundled engine older than the app
-        # rejects it outright and the launch never happens; without it the
-        # engine picks its own display policy, which is what it did before
-        # --gpu existed. See _engine_accepts().
-        if (isinstance(gpu, str) and gpu.strip().lower() in self.GPU_POLICIES
-                and self._engine_accepts(["start"], "--gpu")):
-            args += ["--gpu", gpu.strip().lower()]
-        if place is not None and str(place).strip():
-            args += ["--place", str(place).strip()]
-        # The master autoexec switch reaches the engine through the
-        # environment, and it is applied HERE rather than once at startup so a
-        # toggle lands on the very next launch without an app restart.
-        self._apply_autoexec_env()
-        result = run_engine(args, progress=self._progress(name),
-                            timeout=ENGINE_IDLE_TIMEOUT)
-        if result.get("ok"):
-            # Claim the lease NOW rather than waiting up to a heartbeat period:
-            # the in-game exec bridge cannot claim its poll token until this
-            # account is registered as launched, so a late beat would show up as
-            # "no live session" for the first half-minute of every launch.
-            self._beat_now(name, "running", mode=mode, place=place)
-            self._autowarm_after_launch(mode, place, gpu)
-        self._push("accounts-changed", {})
-        return result
-
-    # How many slots auto-warm keeps. ONE, deliberately: the complaint this
-    # answers is "every launch cold-boots", and one slot removes the boot from
-    # the next launch. A second slot doubles a real cost (a warm slot is a
-    # running VM) to help only the case where two launches happen back to back
-    # before the pool refills. Somebody who wants that can ask for more.
-    AUTOWARM_SIZE = 1
-
-    def _autowarm_after_launch(self, mode, place, gpu):
-        """Keep one slot warm for the settings that just launched.
-
-        WHY IT RUNS AFTER A LAUNCH AND NOT AT STARTUP. A warm slot is only
-        adopted by a launch that resolves to the SAME machine -- the key hashes
-        mode, mem, vCPU, panel, offset and the rest -- and `--place` is part of
-        that, because the engine raises guest RAM to a per-game floor
-        (PS99 -> 3072 MB) which is itself hashed in. At startup this app does
-        not know what the user is about to launch, so a pool warmed then is
-        very likely warmed for the wrong machine: it costs a whole running VM
-        and is INVISIBLE to the launch, which cold-boots anyway while
-        `pool status` reports slots ready. A launch that just happened is the
-        one moment those settings are known to be real.
-
-        WHAT IT BUYS. Measured on this box: the boot stage of a launch is
-        33-60 s cold and 0.08-0.09 s when a slot is adopted. Nothing is
-        serialised, which is why this and not a snapshot -- WHPX registers a
-        migration blocker, so on Windows a pool of live machines is the only
-        fast path that exists.
-
-        WHAT IT COSTS, and why it is affordable enough to be a default. A slot
-        used to be the one running instance nothing governed, at 575-747 MB of
-        host RSS each. `park_slot` applies the mode's own working-set floor the
-        moment a slot is ready and holds it at 384-406 MB, and releases the cap
-        at adoption before any session is delivered.
-
-        Never raises and never blocks the launch it follows: it runs on its own
-        thread, and every failure is silent here (the pool's own status line in
-        the UI is where pool errors belong). A user who has explicitly turned
-        the pool off is left alone.
-
-        ⚠ IT ONLY RECORDS THE INTENT. Two attempts at doing the work from
-        here were wrong, and the second was wrong in an instructive way:
-
-        * Doing it inline adds a subprocess (`engine_version`, then `pool
-          start`) to the tail of every launch, on the thread the UI is
-          waiting on.
-        * Doing it on a thread spawned HERE is worse than it looks. It made
-          `engine_start`'s last `run_engine` call be the auto-warm's version
-          probe rather than the start itself -- which is precisely what
-          tests/test_slow_pc_boot.py inspects to prove the app imposes no boot
-          deadline on the engine -- and, because the thread outlives the call,
-          it went on writing into whatever `run_engine` was mocked to during
-          LATER tests. Three tests in two files failed, none of them about
-          auto-warm, and only when the suite ran as a whole. A background
-          thread that reaches the engine on its own schedule is a thing this
-          app already has exactly one of, and one is the right number.
-
-        So the launch records what it would like warmed and returns. The
-        HEARTBEAT does it, on its own thread, at its own cadence -- which is
-        also better behaviour: a user who launches three accounts in a row
-        gets one warm attempt after the flurry rather than three that stop
-        each other's pools.
-        """
-        self._autowarm_want = {"mode": mode, "place": place, "gpu": gpu}
-
-    def _autowarm_tick(self):
-        """Act on the last recorded intent, if any. Called from the heartbeat."""
-        want = getattr(self, "_autowarm_want", None)
-        if not want:
-            return
-        self._autowarm_want = None
-        self._autowarm_worker(want.get("mode"), want.get("place"),
-                              want.get("gpu"))
-
-    def _autowarm_enabled(self):
-        """True only when the user has asked for it AND the engine can do it.
-
-        OPT-IN. See DEFAULT_SETTINGS["autoWarm"] for why the opposite default
-        did not survive contact with a user. The setting is read every time
-        rather than cached, so flipping it takes effect on the next launch
-        instead of the next restart.
-        """
+        A file and never the value: the plugin refuses a cookie on its command
+        line, and a value in an argv is readable by every process on the
+        machine. Kept for as long as the instance is, because a restart of the
+        instance plants it again; removed when it stops (see _forget_cookie)."""
+        d = bootstrap.runtime_dir() / Api.LAUNCH_COOKIE_DIR
+        d.mkdir(parents=True, exist_ok=True)
+        path = d / f"{name}.txt"
+        tmp = path.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(cookie.strip())
         try:
-            if str(os.environ.get("OMNI_NO_AUTOWARM", "")).strip().lower() in (
-                    "1", "true", "yes", "on"):
-                return False
-            settings = self.get_settings()
-            # `pool.autoWarm` is where 1.0.33 wrote it; the top-level
-            # `autoWarm` is where it lives now. An existing OFF in the old
-            # place still means off -- somebody who turned this thing off must
-            # not have it turned back on by an update.
-            saved = settings.get("pool")
-            if isinstance(saved, dict) and saved.get("autoWarm") is False:
-                return False
-            if settings.get("autoWarm") is not True:
-                return False
-            return self.engine_version().get("pool_supported") is True
-        except Exception:      # noqa: BLE001
-            return False
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass  # Windows: the per-user runtime dir is the protection
+        tmp.replace(path)
+        return path
 
-    # A warm slot has to leave this much host memory free AFTER it exists.
-    # A pool is a speed optimisation, and an optimisation that pushes the
-    # machine into its pagefile is not one -- a host that swaps misses QEMU's
-    # vCPU deadlines, so the instance the user is actually playing gets slower
-    # in exchange for the next launch being faster. On the box this was
-    # written on the trade is free; on an 8 GB laptop running one gaming
-    # instance it is not, and that laptop is exactly who complained.
-    AUTOWARM_FREE_RAM_FLOOR_MB = 3072
-
-    def _autowarm_affordable(self):
-        """Is there room for a spare VM? Unknown answers NO.
-
-        The opposite of the engine's own "an unreadable host costs you the
-        upgrade, never the boot" rule, and deliberately: there, refusing to
-        guess costs a feature the user asked for. Here, guessing wrong costs
-        the user memory on a machine that may not have it, to speed up a
-        launch that has not been asked for yet.
-        """
+    @staticmethod
+    def _forget_cookie(name):
         try:
-            report = run_engine(["doctor", "--json"], timeout=POOL_TIMEOUT)
-            walls = ((report.get("capacity_farming") or {}).get("walls") or {})
-            free = (walls.get("ram") or {}).get("free_mb")
-            if not free:
-                return False
-            return int(free) >= self.AUTOWARM_FREE_RAM_FLOOR_MB
-        except Exception:      # noqa: BLE001
-            return False
-
-    def _autowarm_worker(self, mode, place, gpu):
-        """Warm one slot, unless one matching these settings is already warm.
-
-        The receipt check is what keeps this from re-warming on every launch:
-        `pool_start` STOPS the running pool before taking the config over
-        (otherwise the old slots are stranded, adopted by nothing, holding
-        their memory), so calling it when nothing has changed would tear down
-        a perfectly good warm slot and boot it again.
-        """
-        try:
-            if not self._autowarm_enabled():
-                return
-            if not self._autowarm_affordable():
-                return
-            wanted = {
-                "mode": (mode or "").strip().lower(),
-                "place": str(place).strip() if place is not None else "",
-                "gpu": gpu.strip().lower() if isinstance(gpu, str) else "",
-            }
-            if wanted["gpu"] not in self.GPU_POLICIES:
-                wanted["gpu"] = ""
-            if self._pool_receipt() == wanted:
-                status = run_engine(["pool", "status", "--json"],
-                                    timeout=POOL_TIMEOUT)
-                if isinstance(status, dict) and status.get("configured"):
-                    return
-            self.pool_start(self.AUTOWARM_SIZE, wanted["mode"],
-                            wanted["place"], wanted["gpu"])
-        except Exception:      # noqa: BLE001 - see _autowarm_after_launch
+            (bootstrap.runtime_dir() / Api.LAUNCH_COOKIE_DIR / f"{name}.txt").unlink(missing_ok=True)
+        except OSError:
             pass
 
-    def pool_set_auto_warm(self, enabled):
-        """Turn auto-warm on or off. Returns the value that was stored.
-
-        Writes BOTH the new top-level flag and the old `pool.autoWarm` one, so
-        a downgrade to 1.0.33 does not silently re-enable something the user
-        switched off."""
-        want = bool(enabled)
+    @staticmethod
+    def _clear_cookie_files():
+        """Every cookie file a previous run left (it ended without stopping
+        its instances). Nothing can be using them: the pool ends with the app."""
+        d = bootstrap.runtime_dir() / Api.LAUNCH_COOKIE_DIR
         try:
-            saved = self.get_settings().get("pool")
-            saved = dict(saved) if isinstance(saved, dict) else {}
-            saved["autoWarm"] = want
-            self.save_settings({"pool": saved, "autoWarm": want})
+            for f in d.glob("*.txt"):
+                f.unlink(missing_ok=True)
         except OSError:
-            return {"ok": False, "error": "settings_unwritable"}
-        if not want:
-            # Turning it OFF stops what it started. Leaving the slots up would
-            # be the worst of both: the cost of a pool with no promise that
-            # anything will adopt it.
-            run_engine(["pool", "stop", "--json"], timeout=POOL_STOP_TIMEOUT)
-            self._remember_pool(None)
-        return {"ok": True, "autoWarm": want}
+            pass
 
-    def engine_stop(self, name):
-        """Explicit power-off (adb shutdown -> QMP quit -> kill)."""
+    def engine_start(self, name, place=None):
+        """Launch the executor APK for one account, signed in, and send it to
+        `place` if one is given.
+
+        Returns as soon as omnidroid has taken the launch (its instance id);
+        the boot of an Android, the install and the sign-in happen after, and
+        the Accounts list shows each state as it comes (waiting, installing,
+        starting, running)."""
         error = self._bad_name(name)
         if error:
             return error
-        result = run_engine(["stop", name, "--json", "--timeout", str(STOP_TIMEOUT)],
-                            progress=self._progress(name),
-                            timeout=STOP_TIMEOUT + WATCHDOG_GRACE)
-        if result.get("ok"):
-            self._beat_now(name, "stopped")
+        if name in self._running_names():
+            return {"ok": True, "already_running": True,
+                    "instance_id": self._instances.get(name)}
+        rec = accountsync().read_local().get(name)
+        if not rec or not rec.get("cookie"):
+            return {"ok": False, "error": "no_account",
+                    "message": f"No saved sign-in for {name}. Add the account again."}
+        apk = droid.apk_path()
+        if apk is None:
+            return {"ok": False, "error": "apk_missing",
+                    "message": "The executor APK is missing -- finish setup to download it."}
+        place = str(place).strip() if place is not None else ""
+        if place and not place.isdigit():
+            return {"ok": False, "error": "bad_place",
+                    "message": f"{place!r} is not a place id (a number)."}
+
+        say = self._progress(name)
+        # The autoexec bundle goes up BEFORE the instance exists: the in-game
+        # menu fetches it at session start, keyed by this account's name.
+        self._apply_autoexec_env()
+        try:
+            import autoexec
+            with contextlib.redirect_stdout(_LineSink(say)):
+                autoexec.push_autoexec(name, None, accountsync()._local_store_root(),
+                                       name, base=self._exec_base())
+        except Exception as e:  # noqa: BLE001 - autoexec must never cost a launch
+            say(f"autoexec push skipped: {e}")
+
+        cookie = self._cookie_file(name, rec["cookie"])
+        # Quoted for omnidroid's option parser, which takes quotes as the
+        # command line does: the runtime dir has spaces on some machines.
+        options = f'--cookie "{cookie}"'
+        if place:
+            options += f" --place {place}"
+        say("starting omnidroid" if not self._pool._alive() else "asking omnidroid for an instance")
+        try:
+            res = self._pool.call("start_instance", {"apk": str(apk), "count": 1,
+                                                     "options": options}, timeout=120)
+        except droid.DroidError as e:
+            self._forget_cookie(name)
+            self._push("accounts-changed", {})
+            return {"ok": False, "error": "start_failed", "message": str(e)}
+        ids = res.get("instances") or []
+        if not ids:
+            self._forget_cookie(name)
+            return {"ok": False, "error": "start_failed",
+                    "message": res.get("note") or "omnidroid started no instance."}
+        self._instances[name] = ids[0]
+        say(res.get("note") or f"instance #{ids[0]}")
+        # Claim the lease NOW rather than waiting up to a heartbeat period:
+        # the in-game exec bridge cannot claim its poll token until this
+        # account is registered as launched.
+        self._beat_now(name, "running", place=place or None)
+        self._push("accounts-changed", {})
+        return {"ok": True, "instance_id": ids[0], "note": res.get("note")}
+
+    def engine_stop(self, name):
+        """Close the account's instance: its app stops and its window goes.
+        The Android it ran on stays warm for the next launch."""
+        error = self._bad_name(name)
+        if error:
+            return error
+        iid = self._instances.pop(name, None)
+        result = {"ok": True, "was_running": iid is not None}
+        if iid is not None:
+            try:
+                self._pool.call("stop_instance", {"instance_id": iid}, timeout=30)
+            except droid.DroidError as e:
+                # Already gone (ended, or its window closed) is a stop that
+                # has happened; anything else is worth saying.
+                if "ended already" not in str(e) and "no instance" not in str(e):
+                    result = {"ok": False, "error": "stop_failed", "message": str(e)}
+        self._forget_cookie(name)
+        self._beat_now(name, "stopped")
         self._push("accounts-changed", {})
         return result
 
     def engine_remove(self, name):
-        """DESTRUCTIVE: stop if running, then delete accounts/<name>/ entirely
-        (system overlay + data.qcow2 + state). The account's data is gone forever."""
+        """Forget a saved account: stop its instance, then delete its record
+        (and its cookie) from this machine's store. The Roblox account itself
+        is untouched."""
         error = self._bad_name(name)
         if error:
             return error
-        result = run_engine(["remove", name, "--json"], progress=self._progress(name), timeout=300)
+        self.engine_stop(name)
+        import robloxaccounts
+        existed = robloxaccounts.remove_account(accountsync()._local_store_root(), name)
         self._push("accounts-changed", {})
-        return result
-
-    # ---- warm pool ----
-    #
-    # N instances pre-booted to the account-free ready point, so a launch skips
-    # the boot entirely. Measured on this box: the boot stage of a cold farming
-    # launch is 35-60 s, adopting a warm slot is 0.093 s. WHPX cannot snapshot
-    # a VM on Windows, so a pool of live machines is the ONLY fast path there.
-
-    # A slot is a fully booted VM, so the ceiling here is a resource ceiling
-    # rather than an argparse one: each one costs ~2.2-3.2 GB of host RSS and
-    # ~1.3 GB of disk scratch while it waits. Four is already most of a normal
-    # machine; a mistyped 40 has to be refused, not dutifully passed on.
-    POOL_MAX_SIZE = 4
-
-    @staticmethod
-    def _pool_size(size):
-        """(size, None), or (None, error dict) for anything else.
-
-        Bools are rejected explicitly because `isinstance(True, int)` is True
-        in Python: a JS `true` arriving on this bridge would otherwise be
-        accepted as "keep 1 warm" from a caller that meant to pass a flag."""
-        if isinstance(size, bool):
-            n = None
-        elif isinstance(size, int):
-            n = size
-        elif isinstance(size, float) and size.is_integer():
-            n = int(size)      # JSON numbers cross the bridge as floats
-        elif isinstance(size, str) and size.strip().isdigit():
-            n = int(size.strip())
-        else:
-            n = None
-        if n is None or not 1 <= n <= Api.POOL_MAX_SIZE:
-            return None, {
-                "ok": False,
-                "error": "bad_pool_size",
-                "message": f"Keep between 1 and {Api.POOL_MAX_SIZE} instances "
-                           f"warm — each one is a running virtual machine.",
-            }
-        return n, None
-
-    def _pool_mode(self, mode):
-        """(mode, None), or (None, error dict).
-
-        Checked against the engine's OWN mode list rather than _FALLBACK_MODES,
-        because this decides what gets warmed for hours: a name a newer engine
-        added is worth warming, and a name it dropped must fail here with a
-        sentence, not three layers down as argparse's stderr in a subprocess
-        nobody sees. Aliases resolve first for the same reason as in
-        engine_start — settings.json can still name a retired preset."""
-        asked = mode.strip().lower() if isinstance(mode, str) else ""
-        if not asked:
-            return None, {
-                "ok": False,
-                "error": "bad_mode",
-                "message": "Pick a launch mode before keeping an instance warm "
-                           "— a slot is only usable by a launch in the same mode.",
-            }
-        resolved = RETIRED_MODES.get(asked, asked)
-        if resolved not in self.engine_modes():
-            return None, {
-                "ok": False,
-                "error": "bad_mode",
-                "message": f"Unknown launch mode {asked!r}. Choose Gaming or Farming.",
-            }
-        return resolved, None
-
-    def _pool_receipt(self):
-        """What THIS app last warmed the pool for, or None.
-
-        The receipt exists because the engine cannot answer the question. Its
-        pool records the RESOLVED machine (mode, mem, vCPU, panel...), and the
-        place id that chose that mem is not in it — so "is the warm pool still
-        the one my launch settings would use?" is only answerable against what
-        we asked for."""
-        try:
-            saved = self.get_settings().get("pool")
-        except Exception:  # noqa: BLE001 — a settings problem must not break the pool
-            return None
-        spec = saved.get("warmedFor") if isinstance(saved, dict) else None
-        return spec if isinstance(spec, dict) else None
-
-    def _remember_pool(self, spec, size=None):
-        """Record (or clear, with spec=None) the receipt. Best-effort, exactly
-        like the settings migration in get_settings(): an unwritable settings
-        file costs one extra re-warm later, and must not turn a pool that IS
-        running into an error the user has to read."""
-        try:
-            self.save_settings({"pool": {} if spec is None
-                                else {"warmedFor": spec, "size": size,
-                                      "at": time.time()}})
-        except OSError:
-            pass
-
-    def pool_status(self):
-        """What the pool is doing, plus this app's receipt for it.
-
-        The number that means "your next launch is instant" is
-        `ready_matching`, not `ready`: it counts only ready slots whose key
-        matches the pool's configured spec, i.e. the ones a launch can actually
-        adopt. The UI must show that one, and only when `warmed_for` still
-        matches the settings in the launch bay (see pool_start)."""
-        res = run_engine(["pool", "status", "--json"], timeout=POOL_TIMEOUT)
-        if isinstance(res, dict):
-            res["warmed_for"] = self._pool_receipt()
-        return res
-
-    def pool_start(self, size=1, mode=None, place=None, gpu=None):
-        """Keep `size` instances pre-booted for EXACTLY these launch settings.
-
-        `pool start`, never `pool fill`. Start writes the config, spawns the
-        detached manager and returns in a moment; fill boots the slots in the
-        calling process, which is this process, and would hold the UI thread
-        for the whole 35-60 s per slot.
-
-        THE MATCHING RULE, which is the entire point of the feature. A slot is
-        only ever adopted by a launch that resolves to the SAME machine, and
-        `--place` is part of that: the engine raises guest RAM to a per-game
-        floor (PS99 -> 3072 MB) and `mem` is hashed into the slot key. A pool
-        warmed without the place the user is about to launch is INVISIBLE to
-        that launch — every launch cold-boots while `pool status` cheerfully
-        reports slots ready. So the pool is warmed with the same mode/place/gpu
-        the launch bay is holding, and a change to any of them re-warms it.
-
-        RE-WARMING STOPS THE OLD POOL FIRST, and that is not tidiness. `pool
-        start` alone would only overwrite the pool's key; the manager's sweep
-        deletes DEAD slots only (verified liveness is its single gate on
-        deletion), so the slots warmed for the old settings would stay booted,
-        never be adopted by anything, and hold their ~2.2-3.2 GB of RAM and
-        ~1.3 GB of scratch until somebody went looking. A pool for settings
-        nobody is going to launch is pure cost, so it is never left running.
-        """
-        n, error = self._pool_size(size)
-        if error:
-            return error
-        mode, error = self._pool_mode(mode)
-        if error:
-            return error
-        place = str(place).strip() if place is not None else ""
-        # An unrecognised policy is dropped rather than forwarded, the same as
-        # engine_start — and it has to be the same, or the pool would be keyed
-        # on a display policy the launch never asks for.
-        gpu = gpu.strip().lower() if isinstance(gpu, str) else ""
-        if gpu not in self.GPU_POLICIES:
-            gpu = ""
-        wanted = {"mode": mode, "place": place, "gpu": gpu}
-
-        status = run_engine(["pool", "status", "--json"], timeout=POOL_TIMEOUT)
-        configured = status.get("configured") if isinstance(status, dict) else None
-        if configured and self._pool_receipt() != wanted:
-            # Something is warm for other settings (or for settings this app
-            # has no receipt for), and we are about to take the config over.
-            # Leaving those slots live would strand them: see the docstring.
-            run_engine(["pool", "stop", "--json"], timeout=POOL_STOP_TIMEOUT)
-            self._remember_pool(None)
-
-        args = ["pool", "start", "--size", str(n), "--mode", mode, "--json"]
-        if place:
-            args += ["--place", place]
-        # Same engine, same flag, same argparse rejection as engine_start.
-        if gpu and self._engine_accepts(["pool", "start"], "--gpu"):
-            args += ["--gpu", gpu]
-        res = run_engine(args, progress=self._progress("pool"), timeout=POOL_TIMEOUT)
-        if res.get("ok"):
-            self._remember_pool(wanted, n)
-        return {**res, "warmed_for": self._pool_receipt()}
-
-    def pool_stop(self):
-        """Stop the manager and power off the warm slots — the RAM and the
-        scratch come back now.
-
-        The receipt is cleared only on success. If the stop failed the slots
-        are still up, and forgetting that we warmed them is how a pool nobody
-        wants survives every later chance to notice it (the UI re-tries the
-        stop on mount whenever the toggle is off and a receipt exists)."""
-        res = run_engine(["pool", "stop", "--json"], timeout=POOL_STOP_TIMEOUT)
-        if res.get("ok"):
-            self._remember_pool(None)
-        return res
-
-    # ---- viewer ----
+        return {"ok": True, "removed": name, "existed": existed}
 
     def engine_view(self, name):
-        """Open omnidroid's own viewer window on an instance (--start boots it
-        if stopped). Disconnecting a viewer never stops the instance.
-
-        One engine call, the same shape as start/stop: the engine owns the
-        viewer, this button only asks for it. Deliberately no `--native` —
-        that flag hands the screen to the OS client (macOS Screen Sharing),
-        which is the one thing the View button must not do.
-        """
+        """Every instance already has a window of its own -- omnidroid opens it
+        when the app draws its first frame -- so there is nothing to open.
+        Kept so an older page that still calls it gets an answer, not an
+        unknown-method error."""
         error = self._bad_name(name)
         if error:
             return error
-        return run_engine(
-            ["view", name, "--start", "--json", "--timeout", str(VIEW_TIMEOUT)],
-            progress=self._progress(name),
-            timeout=VIEW_TIMEOUT + WATCHDOG_GRACE)
-
-    def engine_hide(self, name):
-        """Hide an instance's window without stopping it.
-
-        The window's own X asks (hide or stop); this is the same 'hide' from
-        the app side, so a window that was hidden can always be brought back
-        by View without the user having to find it on the desktop.
-        """
-        error = self._bad_name(name)
-        if error:
-            return error
-        # REFUSE, do not degrade. This is the opposite call from engine_start's
-        # `--gpu`, and deliberately so: dropping an unsupported `--gpu` costs a
-        # display policy and the launch still happens, but dropping `--hide`
-        # turns this command into `view <name> --json`, which OPENS the viewer.
-        # Silently putting a window on screen for someone who asked to close
-        # one is worse than telling them this engine cannot do it.
-        if not self._engine_accepts(["view"], "--hide"):
-            return {
-                "ok": False,
-                "error": "unsupported_by_engine",
-                "message": ("This engine build cannot hide a window — close it "
-                            "with the window's own X, or stop the instance."),
-            }
-        return run_engine(["view", name, "--hide", "--json"],
-                          timeout=VIEW_TIMEOUT)
+        if name not in self._running_names():
+            return {"ok": False, "error": "not_running",
+                    "message": f"{name} is not running. Launch it first."}
+        return {"ok": True, "message": "Its window is open on your desktop."}
 
     # ---- shutdown ----
 
     def _shutdown(self):
-        """No embedded viewer/proxy state to tear down — the engine owns its
-        own viewer windows. Instances keep running regardless; only an
-        explicit stop powers them off (engine contract).
-
-        The presence lease is deliberately NOT released here: closing the app
-        does not stop the VMs, so claiming they stopped would be a lie. The
-        lease simply lapses ~90 s later, which is the honest answer for
-        "nothing is reporting on this any more"."""
+        """The pool is this process's child (droid.py), so ending it here ends
+        every instance this app started -- and their cookie files go with
+        them. A pool somebody else was running is left alone."""
         self._heartbeat_stop.set()
         # Stop the update watcher too, so a 30-minute wait cannot hold the
         # interpreter open past the window closing.
         self._update_stop.set()
-        self._stop_autowarmed_pool()
+        if self._pool.owned():
+            self._release_all_leases()
+        else:
+            # Somebody else's pool keeps our instances running; close them, so
+            # closing the app still means what it says.
+            for name in list(self._instances):
+                try:
+                    self.engine_stop(name)
+                except Exception:  # noqa: BLE001 - we are on the way out
+                    pass
+        try:
+            self._pool.shutdown()
+        except Exception:      # noqa: BLE001 - we are on the way out
+            pass
+        self._clear_cookie_files()
         # Unlike the engine's own instances, a mining process is not something
         # the user asked to keep running unattended -- it is this process's
         # own child, spawned straight into this machine's CPU/GPU, and
@@ -2933,34 +2073,36 @@ class Api:
         except Exception:      # noqa: BLE001 - we are on the way out
             pass
 
-    def _stop_autowarmed_pool(self):
-        """Power off a pool THIS APP warmed, on the way out.
 
-        ⚠ THE ONE PLACE THE "INSTANCES OUTLIVE THE APP" RULE DOES NOT APPLY.
-        Everywhere else that rule is right and load-bearing: a user launched
-        those instances on purpose, QEMU is detached so they keep farming with
-        the window closed, and stopping them here would throw away exactly
-        what the product is for.
+class _LineSink:
+    """A file-like that hands each complete line to `say` -- for the autoexec
+    module's prints, which belong in the launch's progress, not on stdout
+    (stdout is the RPC bridge)."""
 
-        A warm slot is the opposite. Nobody launched it; it exists only to
-        make THIS APP'S next launch instant, and once the app is gone there is
-        no next launch. Leaving it up meant a multi-gigabyte VM and a detached
-        pool manager running indefinitely after the window closed, re-warming
-        itself forever -- which is half of what "it always spawns _pool0, 1,
-        2" was describing (2026-09-02). The other half is engine_list.
+    def __init__(self, say):
+        self._say = say
+        self._buf = ""
+        self._busy = False
 
-        Only a pool we have a RECEIPT for is stopped. Somebody who ran
-        `omnidroid pool start` by hand meant it, and their pool is not ours to
-        collect. Best-effort and quick: this runs while the process is exiting,
-        so a slow or missing engine must not hold the window open.
-        """
-        try:
-            if not self._pool_receipt():
-                return
-            run_engine(["pool", "stop", "--json"], timeout=POOL_STOP_TIMEOUT)
-            self._remember_pool(None)
-        except Exception:      # noqa: BLE001 - we are on the way out
-            pass
+    def write(self, text):
+        # `say` may print (a test double does; a log handler could): while it
+        # runs, stdout is still this sink, so a line written from inside it
+        # must not come back here -- that recursed until Python gave up.
+        if self._busy:
+            return len(text)
+        self._buf += text
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            if line.strip():
+                self._busy = True
+                try:
+                    self._say(line)
+                finally:
+                    self._busy = False
+        return len(text)
+
+    def flush(self):
+        pass
 
 
 def _apply_update_mode(argv):
@@ -3125,35 +2267,16 @@ def main():
             "app_version": updates.APP_VERSION,
             "runtime_dir": str(rt),
             "frozen": bool(getattr(sys, "frozen", False)),
-            "elevated": bootstrap.is_elevated(),
             **bootstrap.engine_ready(rt),
-            "accel": bootstrap.windows_accel_status(),
+            "omnidroid": str(droid.bundle_dir() or ""),
+            "omnidroid_bundle": droid.bundle_version(),
+            "apk": str(droid.apk_path() or ""),
             "installed": sorted(bootstrap.installed_state(rt)
                                 .get("artifacts", {})),
         }, indent=2))
         return
 
-    if len(sys.argv) > 1 and sys.argv[1] == "--omnidroid":
-        # In-binary engine dispatch (frozen build's engine_prefix() returns
-        # [sys.executable, "--omnidroid"]): re-exec the frozen app's own
-        # Python with the omnidroid CLI's own argv shape and run the engine
-        # in-process instead of shelling out to a separate binary.
-        sys.argv = ["omnidroid", *sys.argv[2:]]
-        # Belt and braces: the engine spawns its own detached children (the
-        # VNC viewer, the autocap recorder) by re-running THIS binary, and it
-        # must put "--omnidroid" in front or the child relaunches the GUI.
-        # bootstrap.configure_engine() normally sets this in the parent and it
-        # is inherited; setting it here too covers an engine invoked directly.
-        os.environ.setdefault("OMNIDROID_SELF_ARGV", "--omnidroid")
-        from omnidroid.cli import main as engine_main
-        engine_main()
-        return
-
-    # GUI parent process: set the engine env for THIS session on every
-    # launch (first-boot AND relaunch of an already-installed runtime), so
-    # every engine subprocess spawned below inherits it. See
-    # _configure_engine_on_launch's docstring for why this can't be left to
-    # bootstrap_start() alone.
+    # Every launch, not only a first boot: see _configure_engine_on_launch.
     _configure_engine_on_launch()
 
     if "--rpc" not in sys.argv:

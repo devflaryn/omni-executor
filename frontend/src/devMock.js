@@ -10,18 +10,17 @@ export function installDevMock() {
   const settings = JSON.parse(localStorage.getItem("omni-settings") || "{}");
   let editorState = JSON.parse(localStorage.getItem("omni-editor") || "null");
   const accounts = [
-    { name: "admn1b12farm2", base: "bliss-15", arch: "x86", running: true, mode: "farming", vnc_port: 5901, adb_port: 5555, has_vnc: true },
-    { name: "admn1b12farm4", base: "bliss-15", arch: "x86", running: true, mode: "gaming", has_vnc: false, window_client: [1280, 720], adb_port: 5557, window_visible: true },
-    { name: "farm_alpha", base: "bliss-15", arch: "arm", running: false },
-    { name: "farm_beta", base: "bliss-15", arch: "x86", running: false },
-    { name: "scout-01", base: "bliss-15", arch: "x86", running: false },
+    { name: "admn1b12farm2", running: true, state: "running", instance_id: 1 },
+    { name: "admn1b12farm4", running: true, state: "installing", instance_id: 2 },
+    { name: "farm_alpha", running: false, state: "stopped" },
+    { name: "farm_beta", running: false, state: "stopped" },
+    { name: "scout-01", running: false, state: "stopped" },
     // Enough rows to overflow the Accounts panel, so the preview exercises the
     // scrolling canvas rather than a list that happens to fit.
     ...Array.from({ length: 14 }, (_, i) => ({
       name: `farmhand-${String(i + 1).padStart(2, "0")}`,
-      base: "bliss-15",
-      arch: i % 3 === 0 ? "arm" : "x86",
       running: false,
+      state: "stopped",
     })),
   ];
   const autoexec = [{ name: "00-antiafk.lua" }, { name: "10-collect.lua" }, { name: "20-rejoin.lua" }];
@@ -69,28 +68,25 @@ export function installDevMock() {
           },
     }),
     bootstrap_status: async () => ({ ready: true }),
-    engine_version: async () => ({ ok: true, contract: "1.0", arch_aware: true, pool_supported: false, missing_commands: [] }),
-    engine_modes: async () => ["gaming", "farming"],
-    engine_doctor: async () => ({ ready: true, qemu_present: true, adb_present: true }),
+    engine_version: async () => ({ ok: true, engine: "omnidroid", contract: "1.0", arch_aware: true, missing_commands: [], bundle: "mock" }),
+    engine_doctor: async () => ({ ok: true, ready: true, apk: "OmniExecutor.apk", pool_up: true, pool_port: 7457 }),
     engine_list: async () => ({ ok: true, accounts: accounts.map((a) => ({ ...a })) }),
     cloud_presence: async () => ({ ok: true, presence: {} }),
-    engine_bases: async () => ({ bases: [] }),
-    engine_start: (name, mode) =>
+    engine_start: (name) =>
       later(1800, () => {
         const a = find(name);
-        if (a) Object.assign(a, { running: true, mode: mode || "gaming", vnc_port: 5910, adb_port: 5560, has_vnc: true });
+        if (a) Object.assign(a, { running: true, state: "running", instance_id: 9 });
         push("accounts-changed", {});
         return { ok: true };
       }),
     engine_stop: (name) =>
       later(900, () => {
         const a = find(name);
-        if (a) Object.assign(a, { running: false, mode: undefined });
+        if (a) Object.assign(a, { running: false, state: "stopped", instance_id: undefined });
         push("accounts-changed", {});
         return { ok: true };
       }),
     engine_view: async () => ({ ok: true }),
-    engine_hide: async () => ({ ok: true }),
     engine_remove: async () => ({ ok: true }),
     list_autoexec: async () => ({ ok: true, scripts: autoexec.map((s) => ({ ...s })) }),
     open_autoexec_folder: async () => ({ ok: true }),

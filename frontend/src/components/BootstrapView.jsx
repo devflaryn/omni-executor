@@ -1,59 +1,40 @@
-/* First-boot screen: installs everything this machine needs, in order —
-   the host tools (QEMU, adb), then the base images — and only then hands
-   over to the app shell.
+/* First-boot screen: downloads what this machine needs -- the omnidroid
+   bundle and the executor APK -- and only then hands over to the app shell.
 
-   It used to REFUSE to start until QEMU was already installed, and nothing in
-   the app ever installed QEMU. A fresh machine therefore sat here forever,
-   reading "QEMU is required" beside a hint promising an automatic install that
-   could not happen, with a Re-check button that could only ever return the
-   same answer. Setup now begins unconditionally and reports what it is doing;
-   the only thing a user is ever asked for is the administrator prompt, and
-   only on a machine that actually needs one. */
+   There is nothing to install on the HOST any more. The QEMU engine needed a
+   portable QEMU, adb, Windows Hypervisor Platform (an administrator prompt
+   and a restart) and several GB of base images; native omnidroid needs none
+   of that, so this screen is a download and nothing else. */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  bootstrapStatus,
-  bootstrapStart,
-  enableVirtualization,
-  restartWindows,
-  onEngineEvent,
-} from "../api.js";
+import { bootstrapStatus, bootstrapStart, onEngineEvent } from "../api.js";
 import { Button } from "./ui.jsx";
 import { CpuIcon } from "./icons.jsx";
 
-/* What the user sees for each phase the backend reports. `tools` and
-   `elevate` are the new ones: they cover the window between "the app opened"
-   and "there is anything to show a percentage for", which is exactly where a
-   fresh install used to look frozen. */
+/* What the user sees for each phase the backend reports. */
 const PHASE_LABEL = {
-  tools: "Checking what this PC needs…",
-  elevate: "Waiting for administrator permission…",
-  install: "Installing QEMU…",
   download: null, // falls through to the artifact name
   start: null,
   done: "Finishing up…",
 };
 
 const ARTIFACT_LABEL = {
-  qemu: "Downloading QEMU",
-  adb: "Downloading Android platform tools",
+  "omnidroid-win": "Downloading omnidroid",
+  "omnidroid-mac": "Downloading omnidroid",
+  "omniexec-apk-win": "Downloading the executor",
+  "omniexec-apk-mac": "Downloading the executor",
 };
 
 export default function BootstrapView({ onReady }) {
-  const [status, setStatus] = useState(null);
+  const [, setStatus] = useState(null);
   const [progress, setProgress] = useState(null);
   const [error, setError] = useState(null);
-  const [rebooting, setRebooting] = useState(false);
-  const [enabling, setEnabling] = useState(false);
   // Tracks whether we've already fired bootstrap_start this session, so a
   // re-render or a status refresh only ever kicks off one install.
   const startedRef = useRef(false);
 
   const maybeStart = useCallback((s) => {
-    // Deliberately NOT gated on s.qemu_ok — installing QEMU is the job, not
-    // the entry requirement. Only an unfinished setup and a pending reboot
-    // hold it back.
-    if (s && !s.ready && !s.reboot_required && !startedRef.current) {
+    if (s && !s.ready && !startedRef.current) {
       startedRef.current = true;
       bootstrapStart();
     }
@@ -75,9 +56,7 @@ export default function BootstrapView({ onReady }) {
     const off = onEngineEvent((event, payload) => {
       if (cancelled) return;
       if (event === "bootstrap-progress") setProgress(payload);
-      else if (event === "bootstrap-reboot") {
-        setStatus((s) => ({ ...(s || {}), reboot_required: true }));
-      } else if (event === "bootstrap-done") {
+      else if (event === "bootstrap-done") {
         setProgress(null);
         refresh();
       } else if (event === "bootstrap-error") {
@@ -91,16 +70,6 @@ export default function BootstrapView({ onReady }) {
     };
   }, [refresh]);
 
-  const onEnable = async () => {
-    setEnabling(true);
-    const res = await enableVirtualization();
-    setEnabling(false);
-    if (!res?.ok) setError(res?.error || "Could not enable virtualization.");
-    else if (res.reboot_required) {
-      setStatus((s) => ({ ...(s || {}), reboot_required: true }));
-    } else refresh();
-  };
-
   const pct = progress?.percent ? Math.round(progress.percent) : 0;
   const showBar = Boolean(progress?.total) && !error;
   const label =
@@ -109,59 +78,8 @@ export default function BootstrapView({ onReady }) {
     progress?.artifact ??
     "Preparing…";
 
-  // A pending restart outranks everything: the hypervisor feature is enabled
-  // on disk but not live, so nothing further can succeed until Windows
-  // reboots. Showing progress underneath it would be a lie.
-  if (status?.reboot_required) {
-    return (
-      <Shell>
-        <div className="max-w-md rounded-lg border border-amber-600/40 bg-amber-950/20 p-4 text-[14px]">
-          <p className="mb-2 font-medium text-amber-400">Restart required</p>
-          <p className="mb-3 text-ink-2">
-            Windows Hypervisor Platform has been turned on. Windows needs to
-            restart before Omni Executor can run the Android VM. Setup will
-            carry on by itself afterwards.
-          </p>
-          <Button
-            variant="solid"
-            size="sm"
-            disabled={rebooting}
-            onClick={async () => {
-              setRebooting(true);
-              await restartWindows();
-            }}
-          >
-            {rebooting ? "Restarting…" : "Restart now"}
-          </Button>
-        </div>
-      </Shell>
-    );
-  }
-
   return (
     <Shell>
-      {/* Windows only, and only on an explicit False -- whpx_ok is tri-state
-          and `null` means "not determined yet" (e.g. QEMU still installing).
-          Showing a virtualization-is-off warning on a machine that is
-          actually fine would be worse than saying nothing. */}
-      {status?.whpx_ok === false && (
-        <div className="max-w-md rounded-lg border border-amber-600/40 bg-amber-950/20 p-4 text-[14px]">
-          {/* "will be slow", not "is broken". The engine falls back to
-              software emulation rather than refusing to boot, so this is a
-              speed warning with an offer attached — wording it as a blocker
-              would send away a user whose machine works. */}
-          <p className="mb-2 font-medium text-amber-400">
-            This PC is running the VM without hardware acceleration
-          </p>
-          <p className="mb-3 whitespace-pre-line text-ink-2">
-            {status.whpx_hint}
-          </p>
-          <Button size="sm" variant="solid" disabled={enabling} onClick={onEnable}>
-            {enabling ? "Waiting for permission…" : "Turn on acceleration"}
-          </Button>
-        </div>
-      )}
-
       {!error && (
         <div className="w-full max-w-md">
           <div className="mb-2 flex justify-between text-[12px] text-ink-3">
@@ -179,8 +97,8 @@ export default function BootstrapView({ onReady }) {
             />
           </div>
           <p className="mt-3 text-center text-[12px] text-ink-3">
-            This only happens once. It downloads several GB, so it can take a
-            while.
+            This only happens once. It downloads about a gigabyte, so it can
+            take a while.
           </p>
         </div>
       )}

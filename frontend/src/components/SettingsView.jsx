@@ -1,10 +1,10 @@
 /* Settings: identity, appearance, and the engine's own facts. */
 
 import { useEffect, useRef, useState } from "react";
-import { api, loadSettings } from "../api.js";
+import { api } from "../api.js";
 import { useEngine } from "../engine.jsx";
 import { Button, Field, Lamp, Panel, PanelHead } from "./ui.jsx";
-import { CpuIcon, GearIcon, MoonIcon, RocketIcon, SunIcon, UserIcon } from "./icons.jsx";
+import { CpuIcon, GearIcon, MoonIcon, SunIcon, UserIcon } from "./icons.jsx";
 import UpdatePanel from "./UpdateBanner.jsx";
 
 function initials(name) {
@@ -30,21 +30,10 @@ export default function SettingsView({
   const saveTimer = useRef(null);
   const savedTimer = useRef(null);
 
-  const [bases, setBases] = useState(null);
-  const [baseBusy, setBaseBusy] = useState(false);
-
   useEffect(() => {
     setName(profile.name);
     setTag(profile.tag);
   }, [profile.name, profile.tag]);
-
-  // Base images only exist once the engine is present; ask once.
-  useEffect(() => {
-    if (engine.backend !== true) return;
-    api("engine_bases").then((res) => {
-      setBases(Array.isArray(res?.bases) ? res.bases : Array.isArray(res) ? res : []);
-    });
-  }, [engine.backend]);
 
   const scheduleSave = (nextName, nextTag) => {
     clearTimeout(saveTimer.current);
@@ -54,13 +43,6 @@ export default function SettingsView({
       clearTimeout(savedTimer.current);
       savedTimer.current = setTimeout(() => setSaved(false), 1500);
     }, 500);
-  };
-
-  const chooseBase = async (tagValue) => {
-    setBaseBusy(true);
-    const res = await api("engine_use_base", tagValue);
-    setBaseBusy(false);
-    showToast(res.message || (res.ok ? "Default base updated" : "Couldn't change the base"), res.ok ? "success" : "error");
   };
 
   return (
@@ -168,8 +150,6 @@ export default function SettingsView({
           </div>
         </Panel>
 
-        <LaunchSpeedPanel active={active} showToast={showToast} />
-
         {/* Engine */}
         <Panel className="overflow-hidden">
           <PanelHead
@@ -184,55 +164,15 @@ export default function SettingsView({
           />
           <div className="flex flex-col gap-4 p-4">
             <dl className="grid grid-cols-2 gap-x-4 gap-y-2.5 font-mono text-[12.5px]">
-              <Row label="Contract" value={engine.version?.contract ?? "—"} />
-              <Row
-                label="Arch aware"
-                value={engine.version?.arch_aware == null ? "—" : engine.version.arch_aware ? "yes" : "no"}
-              />
-              <Row label="QEMU" value={fmtFlag(engine.doctor?.qemu_present)} />
-              <Row label="adb" value={fmtFlag(engine.doctor?.adb_present)} />
+              <Row label="Engine" value="omnidroid" />
+              <Row label="Build" value={engine.version?.bundle ?? "—"} />
+              <Row label="Pool" value={engine.doctor?.pool_up ? `up on port ${engine.doctor.pool_port}` : "starts with a launch"} />
+              <Row label="Executor APK" value={fmtFlag(engine.doctor ? Boolean(engine.doctor.apk) : null)} />
             </dl>
-
-            {bases?.length > 0 && (
-              <div className="rule-t pt-4">
-                <Field
-                  label="Base image for new accounts"
-                  htmlFor="base-select"
-                  hint="Existing instances keep the base they were created with."
-                >
-                  <select
-                    id="base-select"
-                    defaultValue=""
-                    disabled={baseBusy}
-                    onChange={(e) => e.target.value && chooseBase(e.target.value)}
-                    className="input cursor-pointer"
-                  >
-                    <option value="">Choose a base…</option>
-                    {bases.map((b) => {
-                      const tagValue = typeof b === "string" ? b : b.tag;
-                      const arch = typeof b === "string" ? null : b.arch;
-                      return (
-                        <option key={tagValue} value={tagValue}>
-                          {arch ? `${tagValue} (${arch})` : tagValue}
-                        </option>
-                      );
-                    })}
-                  </select>
-                </Field>
-              </div>
-            )}
 
             <div className="rule-t flex gap-2 pt-4">
               <Button size="sm" onClick={engine.refreshDoctor} disabled={engine.backend !== true}>
                 Re-check engine
-              </Button>
-              <Button
-                variant="solid"
-                size="sm"
-                onClick={engine.runSetup}
-                disabled={engine.backend !== true || engine.settingUp}
-              >
-                {engine.settingUp ? "Installing…" : "Run setup"}
               </Button>
             </div>
           </div>
@@ -428,71 +368,3 @@ function Row({ label, value }) {
 }
 
 const fmtFlag = (v) => (v == null ? "—" : v ? "present" : "missing");
-
-
-/* Launch speed: the warm-instance switch, and nothing else.
-
-   OFF by default, and here rather than buried, because the version that
-   shipped it ON put `_pool0`, `_pool1`, `_pool2` in the user's Accounts list
-   and left a virtual machine running after the window closed. The switch has
-   to be findable by whoever wants the speed and invisible to everyone else,
-   which is what a Settings row is for.
-
-   Self-contained on purpose: it reads and writes its own setting rather than
-   taking props, so App.jsx does not grow state only one panel ever reads. */
-function LaunchSpeedPanel({ active, showToast }) {
-  const [on, setOn] = useState(null);
-
-  useEffect(() => {
-    if (!active) return undefined;
-    let alive = true;
-    loadSettings().then((s) => {
-      if (alive) setOn(s?.autoWarm === true);
-    });
-    return () => {
-      alive = false;
-    };
-  }, [active]);
-
-  const toggle = async (next) => {
-    setOn(next);
-    const res = await api("pool_set_auto_warm", next);
-    if (!res?.ok) {
-      setOn(!next);
-      showToast?.("Could not save that setting", "error");
-      return;
-    }
-    showToast?.(
-      next
-        ? "Keeping one instance warm — your next launch will skip the boot."
-        : "Warm instance off. Anything kept warm has been shut down.",
-      "info"
-    );
-  };
-
-  return (
-    <Panel className="overflow-hidden">
-      <PanelHead icon={RocketIcon} title="Launch speed" />
-      <div className="flex flex-col gap-4 p-4">
-        <label className="flex cursor-pointer items-start gap-3">
-          <input
-            type="checkbox"
-            className="check mt-0.5"
-            checked={on === true}
-            disabled={on === null}
-            onChange={(e) => toggle(e.target.checked)}
-          />
-          <span className="text-[13px] leading-snug text-ink">
-            Keep one instance warm
-            <span className="mt-0.5 block text-[12px] text-ink-3">
-              After a launch, quietly pre-boot one machine with the same settings so the next
-              launch skips the boot &mdash; measured 33&ndash;39&nbsp;s down to 0.08&nbsp;s. It
-              costs one running virtual machine while the app is open, is skipped when this PC
-              is short on memory, and is shut down when you close the app.
-            </span>
-          </span>
-        </label>
-      </div>
-    </Panel>
-  );
-}

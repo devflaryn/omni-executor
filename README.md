@@ -1,9 +1,17 @@
 # Omni Executor
 
-Desktop app for the **omnidroid** engine — each account is an isolated,
-headless Android (Bliss OS) instance managed via QEMU. The GUI drives the
-engine exclusively through its CLI (`omnidroid.exe`, JSON output); see
-`omnidroid.md` for the engine's own manual.
+Desktop app for **native omnidroid**: every saved Roblox account launches the
+executor APK (`OmniExecutor-v0.apk`) on omnidroid's warm Androids -- real
+Android userspace run as ordinary desktop processes, no VM, no QEMU, no adb --
+in a window of its own. There is one kind of launch: no Gaming/Farming modes,
+no GPU policy, no base images, no x86/arm choice.
+
+The app drives omnidroid over its MCP server (`droid.py`): it starts
+`omnidroid serve` as its own child (the pool ends with the app) or uses the
+pool already serving on port 7457 if the omnidroid app is open. A launch is
+`start_instance {apk, options: "--cookie <file> --place <id>"}` -- the
+account's cookie goes to omnidroid's roblox plugin as a private FILE in the
+runtime dir, never on a command line, and is deleted when the instance stops.
 
 ## How it is put together
 
@@ -13,7 +21,7 @@ Three pieces, and it is worth knowing which is which before changing anything:
 |---|---|---|
 | **shell** | a Tauri (Rust) app: the window, and nothing else | `src-tauri/` |
 | **frontend** | React + Tailwind, embedded in the shell at compile time | `frontend/` |
-| **backend** | Python: the whole `Api`, and — via `--omnidroid` — the engine | `main.py` and friends |
+| **backend** | Python: the whole `Api`, and the omnidroid client (`droid.py`) | `main.py` and friends |
 
 The shell spawns the backend as a child process and they speak
 newline-delimited JSON over its stdin/stdout (`rpc.py`). No port, no token, no
@@ -36,9 +44,11 @@ npm install                    # the Tauri CLI (root)
 npm --prefix frontend install  # the app's own deps
 ```
 
-Put `omnidroid.exe` (Windows) or `omnidroid` (Linux) next to `main.py`.
-The engine self-bootstraps on first use; the Accounts tab shows a readiness
-banner (with a "Run setup" button) if anything is missing.
+Running from source needs no download: `droid.py` finds the sibling
+`../omnidroid` checkout's release build and `../omni-exec-android/OmniExecutor-v0.apk`.
+A shipped app downloads both on first launch from the dist API's `native`
+channel (`bootstrap.py`): the omnidroid bundle to `<runtime>/omnidroid` and the
+APK to `<runtime>/apk/OmniExecutor.apk`.
 
 ## Run
 
@@ -55,12 +65,9 @@ which is what the shell does for you.
 - **Editor** — tabbed Lua editor with syntax colours. Tabs, text and the
   active tab persist across relaunches (`editor.json` next to
   `settings.json`). Run targets every running instance ("All") or one.
-- **Instances** — create/start/stop/remove accounts, live engine state.
-  Tick several rows to launch or stop them together with the launch bay's
-  mode.
-  Double-click or "Open viewer" attaches a controllable noVNC view; closing
-  the viewer only disconnects — instances keep running until explicitly
-  stopped.
+- **Accounts** — add/create/remove accounts and launch or stop them. Tick
+  several rows to launch or stop them together. Each row shows omnidroid's
+  own state for its instance (waiting, installing, starting, running).
 - **Settings** — profile + theme.
 
 ## Frontend development
@@ -140,17 +147,14 @@ LAN; `OMNI_DEV_SERVER=0` turns it off for one run without deleting the file.
 Settings → Server prints whatever the api base resolved to, so a redirected
 session says so on screen.
 
-**The guest is redirected too.** The in-VM executor's server address is
-compiled into its native library, so omnidroid moves the packets instead — one
-`iptables` DNAT rule per boot sends the guest's calls to `179.198.197.7` to the
-host's backend at `10.0.2.2:5500` (QEMU slirp's alias for the host loopback).
-The engine inherits `OMNI_DEV_SERVER` from this app, so one switch moves both
-halves; `omnidroid/devserver.py` has the details and `omnidroid/configs/dev.json`
-is the file-based equivalent for driving the engine directly.
+**The guests are not redirected.** The QEMU engine moved the guest's packets
+to the local backend with an `iptables` rule; native omnidroid has no such
+hook. The app still hands `OMNI_DEV_SERVER` to the pool it starts, so a
+redirect added to omnidroid later picks the setting up with no change here.
 
 ### It does not ship
 
-`devserver.py` and `omnidroid/devserver.py` are listed in `excludes` in all
+`devserver.py` is listed in `excludes` in all
 three PyInstaller specs, so they are **absent from a release bundle**. Every
 call site imports them in a `try/except ImportError` and falls back to the
 production server, which means a customer's copy has no code to switch on —

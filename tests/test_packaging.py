@@ -5,13 +5,13 @@ PyInstaller's analysis walks bytecode, so it *does* find a plain
 and those modules land in the PYZ with or without a hiddenimports entry. What it
 cannot resolve on its own is a dependency that is imported conditionally AND
 ships native binaries or package data: selenium (whose Selenium Manager is an
-executable), tkinter and PIL (the built-in VNC viewer). Each of those has
-already caused a "works from source, broken when frozen" bug here.
+executable) and selenium_stealth (whose patch scripts are package data). Each
+of those has already caused a "works from source, broken when frozen" bug here.
 
 The failure mode these tests exist for is subtler than a missing entry: a fix
 gets applied to the spec of whichever platform it broke on, and never mirrored.
-That is exactly what had happened — the Windows spec carried the selenium and
-PIL fixes and the macOS spec did not, so the same bugs were sitting unfixed in
+That is exactly what had happened — the Windows spec carried the selenium
+fixes and the macOS spec did not, so the same bugs were sitting unfixed in
 every Mac build.
 """
 
@@ -29,8 +29,7 @@ SPECS = [WIN_SPEC, MAC_SPEC, LINUX_SPEC]
 # Imported conditionally and carrying native binaries or package data, so
 # PyInstaller cannot pull them in unaided. Every one of these is a bug that
 # already happened.
-RUNTIME_ONLY = ("selenium", "selenium_stealth", "tkinter", "PIL",
-                "omnidroid")
+RUNTIME_ONLY = ("selenium", "selenium_stealth")
 
 
 def _declared(spec_path):

@@ -16,65 +16,10 @@ import { api, hasBackend, onEngineEvent } from "./api.js";
 // The frozen contract version this app was built against (omnidroid-api.md v1).
 const EXPECTED_CONTRACT = "1.0";
 
-// engine_modes() is the source of truth for which ids exist; this only
-// prettifies the ones we know, so a new engine build can surface a new mode
-// without a frontend change.
-// Two presets, and that is the whole list. They are not two points on a
-// quality slider, they are opposite jobs — all of one host for one session,
-// or the least an instance can run on so the host can hold many — so each one
-// names the thing it gives up as well as the thing it buys.
-const MODE_INFO = {
-  gaming: {
-    label: "Gaming",
-    spec: "GPU · sized to this host",
-    note: "The best hardware acceleration this machine can give one instance. Not for running many at once.",
-  },
-  farming: {
-    label: "Farming",
-    spec: "Headless · smallest footprint",
-    note: "Unattended, with no fps or picture-quality target: as many instances as the host will hold. Screenshots still work.",
-  },
-};
-
-const FALLBACK_MODES = ["gaming", "farming"];
-
-// A newer engine can report a mode this build has never heard of. Show its id
-// as it came, and say nothing about what it does — an invented description is
-// worse than none.
-export function describeMode(id) {
-  return MODE_INFO[id] || { label: String(id), spec: "", note: "Reported by the engine." };
-}
-
-// The display/acceleration setting. `auto` is right for almost everyone: you
-// never see a QEMU window either way, because where a window is the only route
-// to a GL context it is opened HIDDEN and the viewer hosts it (measured 58 fps
-// embedded, against 3.2 with software rendering). The other three exist for
-// hosts and situations where that trade should be made differently.
-export const GPU_INFO = {
-  auto: {
-    label: "Automatic (recommended)",
-    note: "Hardware rendering, and you still only ever see this app's viewer.",
-  },
-  headless: {
-    label: "Software rendering",
-    note: "No GPU. Much slower, but the lightest possible on the host — what farming uses.",
-  },
-  window: {
-    label: "Show the QEMU window",
-    note: "For debugging: puts QEMU's own window on screen instead of hiding it.",
-  },
-  off: { label: "No acceleration", note: "Software rendering, GPU untouched." },
-};
-
-export function describeGpu(id) {
-  return GPU_INFO[id] || { label: id, note: "" };
-}
-
-function normalizeModes(list) {
-  return list
-    .map((m) => (typeof m === "string" ? m : m && typeof m.id === "string" ? m.id : null))
-    .filter(Boolean);
-}
+// There is one kind of launch. The QEMU engine offered Gaming and Farming
+// presets, a GPU policy and a warm pool, because each was a different virtual
+// machine with a different cost; native omnidroid has none of those trades, so
+// none of them is offered any more.
 
 export const errText = (res) => res?.message || res?.error || "Engine error";
 
@@ -90,14 +35,9 @@ export function EngineProvider({ activeTab, showToast, children }) {
   const [backend, setBackend] = useState(null); // null while probing
   const [version, setVersion] = useState(null);
   const [doctor, setDoctor] = useState(null);
-  const [modes, setModes] = useState(FALLBACK_MODES);
   const [accounts, setAccounts] = useState([]);
   const [busy, setBusy] = useState({}); // name -> what it is doing
   const [progress, setProgress] = useState({}); // scope -> latest engine stderr line
-  const [settingUp, setSettingUp] = useState(false);
-  const [pool, setPool] = useState(null); // last `pool status`, or null until asked
-  const [poolBusy, setPoolBusy] = useState(false);
-  const [poolError, setPoolError] = useState(null);
 
   const setBusyFor = useCallback((name, label) => {
     setBusy((prev) => {
@@ -142,9 +82,6 @@ export function EngineProvider({ activeTab, showToast, children }) {
       setBackend(ok);
       if (!ok) return;
       api("engine_version").then(setVersion);
-      api("engine_modes").then((res) => {
-        if (Array.isArray(res) && res.length) setModes(normalizeModes(res));
-      });
       refreshDoctor();
       refreshList();
       refreshPresence();
@@ -185,41 +122,14 @@ export function EngineProvider({ activeTab, showToast, children }) {
 
   // ---- actions ----
 
-  const openViewer = useCallback(
-    async (name) => {
-      const res = await api("engine_view", name);
-      if (!res.ok) showToast(errText(res), "error");
-      // The engine flips run.json's `window_visible`, and the row's button is
-      // drawn off it. Without this the button keeps offering "View" for a
-      // window that is already up until the next poll happens to land.
-      refreshList();
-    },
-    [refreshList, showToast]
-  );
-
-  /* Take the window off the screen WITHOUT stopping the instance.
-     This exists because the window is no longer something the app puts up at
-     the end of a launch — a watched boot presents it at spawn, so it is on
-     screen for the whole boot and the whole session after it. A window you
-     cannot put away is one whose only exit is Stop, and Stop kills the game.
-     Same engine call the window's own close path uses: `view <name> --hide`. */
-  const hideViewer = useCallback(
-    async (name) => {
-      const res = await api("engine_hide", name);
-      if (!res.ok) showToast(errText(res), "error");
-      refreshList();
-    },
-    [refreshList, showToast]
-  );
-
   /* `bulk` is set by startMany: several instances were asked for at once, so
-     the single-instance guard does not apply (the intent IS many) and the
-     viewer is not popped for each one — a farm of windows is not a thing
-     anyone wants opened for them. */
+     one toast at the end says how it went instead of one per account. Each
+     instance opens its own window when its app draws -- omnidroid's, not ours
+     -- so there is no viewer to pop. */
   const start = useCallback(
     async (name, launch, { bulk = false } = {}) => {
       const account = accounts.find((a) => a.name === name);
-      if (account?.running) return bulk ? true : openViewer(name);
+      if (account?.running) return true;
       const far = presence[name];
       if (far?.state === "running" && !far.isLocal) {
         // Same Roblox account in two places logs one of them out. Say where it
@@ -234,31 +144,27 @@ export function EngineProvider({ activeTab, showToast, children }) {
       // refuses is the same ROBLOX account twice (checked above), because that
       // one genuinely logs itself out.
       setBusyFor(name, "Starting");
-      const res = await api("engine_start", name, launch.mode, launch.place, launch.gpu);
+      const res = await api("engine_start", name, launch?.place);
       setBusyFor(name, null);
       clearProgress(name);
       if (res.ok) {
         if (!bulk) {
-          showToast(
-            res.first_boot ? `${name} is booting — first boot takes a while` : `${name} is running`,
-            "success"
-          );
+          showToast(`${name} is starting — its window opens when the game draws`, "success");
         }
         await refreshList();
         refreshPresence();
-        if (!bulk) openViewer(name);
         return true;
       }
       showToast(bulk ? `${name}: ${errText(res)}` : errText(res), "error");
       refreshList();
       return false;
     },
-    [accounts, clearProgress, openViewer, presence, refreshList, refreshPresence, setBusyFor, showToast]
+    [accounts, clearProgress, presence, refreshList, refreshPresence, setBusyFor, showToast]
   );
 
   /* Launch several. Each start is its own bridge call on its own thread, so
-     they run concurrently; the stagger just keeps N QEMU spawns from landing
-     in the same millisecond. Resolves when the last one has reported. */
+     they run concurrently; the stagger just keeps N launches from reaching
+     omnidroid in the same millisecond. Resolves when the last one has reported. */
   const startMany = useCallback(
     async (names, launch) => {
       const list = names.filter((n, i) => names.indexOf(n) === i);
@@ -318,70 +224,12 @@ export function EngineProvider({ activeTab, showToast, children }) {
       const res = await api("engine_remove", name);
       setBusyFor(name, null);
       clearProgress(name);
-      showToast(res.ok ? `Removed ${name} and deleted its data` : errText(res), res.ok ? "success" : "error");
+      showToast(res.ok ? `Removed ${name} from this computer` : errText(res), res.ok ? "success" : "error");
       refreshList();
       return res.ok;
     },
     [clearProgress, refreshList, setBusyFor, showToast]
   );
-
-  // ---- warm pool ----
-
-  /* The pool is an OPTIONAL engine feature, so it is gated on the same
-     handshake as the missing-command banner: main.py reports whether the
-     engine advertises `pool`, and an engine without it makes the control
-     disappear rather than offer a button that ends in an argparse error. */
-  const poolSupported = version?.pool_supported === true;
-
-  const refreshPool = useCallback(async () => {
-    if (!poolSupported) return null;
-    const res = await api("pool_status");
-    setPool(res);
-    return res;
-  }, [poolSupported]);
-
-  /* Warm the pool for the settings the launch bay is holding. Every failure
-     is kept here, on the pool's own status line: nothing about the pool may
-     interrupt what the user is doing, and nothing about it may touch `start`
-     — a launch with a broken pool simply boots the slow way, which is what it
-     did before the pool existed. */
-  const startPool = useCallback(
-    async (size, mode, place, gpu) => {
-      setPoolBusy(true);
-      const res = await api("pool_start", size, mode, place, gpu);
-      setPoolError(res?.ok ? null : errText(res));
-      setPoolBusy(false);
-      await refreshPool();
-      return res;
-    },
-    [refreshPool]
-  );
-
-  const stopPool = useCallback(async () => {
-    setPoolBusy(true);
-    const res = await api("pool_stop");
-    setPoolError(res?.ok ? null : errText(res));
-    setPoolBusy(false);
-    await refreshPool();
-    return res;
-  }, [refreshPool]);
-
-  // First reading, as soon as the handshake says the feature exists. Everything
-  // after this is driven by the launch panel: a start, a stop, a settings
-  // change, or its own slow poll — never a timer in here.
-  useEffect(() => {
-    if (poolSupported) refreshPool();
-  }, [poolSupported, refreshPool]);
-
-  const runSetup = useCallback(async () => {
-    setSettingUp(true);
-    const res = await api("engine_setup");
-    setSettingUp(false);
-    clearProgress("setup");
-    showToast(res.ok ? "Engine setup complete" : errText(res), res.ok ? "success" : "error");
-    refreshDoctor();
-    refreshList();
-  }, [clearProgress, refreshDoctor, refreshList, showToast]);
 
   const loginBrowser = useCallback(async () => {
     const res = await api("engine_login_browser");
@@ -445,7 +293,7 @@ export function EngineProvider({ activeTab, showToast, children }) {
   const health = useMemo(() => {
     if (backend === null) return { tone: "off", label: "Connecting" };
     if (backend === false) return { tone: "off", label: "Preview mode" };
-    if (doctor?.error === "engine_missing") return { tone: "fault", label: "Engine missing" };
+    if (doctor?.error === "engine_missing" || doctor?.error === "apk_missing") return { tone: "fault", label: "Setup needed" };
     if (contractMismatch) return { tone: "busy", label: "Version mismatch" };
     if (doctor && !doctor.ready) return { tone: "busy", label: "Setup needed" };
     if (!doctor) return { tone: "off", label: "Checking" };
@@ -461,7 +309,7 @@ export function EngineProvider({ activeTab, showToast, children }) {
         text: "Preview mode. Instances need the desktop app — run python main.py.",
       };
     }
-    if (doctor?.error === "engine_missing") {
+    if (doctor?.error === "engine_missing" || doctor?.error === "apk_missing") {
       return { tone: "error", text: doctor.message };
     }
     if (contractMismatch) {
@@ -483,17 +331,7 @@ export function EngineProvider({ activeTab, showToast, children }) {
       };
     }
     if (doctor && !doctor.ready) {
-      const problems = [];
-      if (doctor.missing_files?.length) {
-        problems.push(`base images missing from ${doctor.images_dir}: ${doctor.missing_files.join(", ")}`);
-      }
-      if (doctor.qemu_present === false) problems.push("QEMU isn't installed yet");
-      if (doctor.adb_present === false) problems.push("adb isn't on PATH");
-      return {
-        tone: "warn",
-        text: `The engine isn't ready — ${problems.join("; ") || doctor.message || "run setup to finish installing"}.`,
-        canSetup: true,
-      };
+      return { tone: "warn", text: doctor.message || "omnidroid isn't ready yet." };
     }
     return null;
   }, [backend, doctor, contractMismatch, version, missingCommands]);
@@ -502,7 +340,6 @@ export function EngineProvider({ activeTab, showToast, children }) {
     backend,
     version,
     doctor,
-    modes,
     accounts: accountsWithPresence,
     running,
     runningElsewhere,
@@ -510,14 +347,6 @@ export function EngineProvider({ activeTab, showToast, children }) {
     refreshPresence,
     busy,
     progress,
-    settingUp,
-    pool,
-    poolSupported,
-    poolBusy,
-    poolError,
-    refreshPool,
-    startPool,
-    stopPool,
     health,
     issue,
     refreshList,
@@ -527,9 +356,6 @@ export function EngineProvider({ activeTab, showToast, children }) {
     stop,
     stopMany,
     remove,
-    openViewer,
-    hideViewer,
-    runSetup,
     loginBrowser,
     loginToken,
   };

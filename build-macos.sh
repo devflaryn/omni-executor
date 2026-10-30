@@ -6,8 +6,9 @@
 #   1. npm          -- build the React frontend into frontend/dist
 #   2. cargo tauri  -- build "Omni Executor.app", which EMBEDS frontend/dist
 #                      and owns the window, the icon and the Info.plist
-#   3. PyInstaller  -- freeze main.py + the sibling omnidroid engine into the
-#                      headless backend, and drop it INSIDE the bundle at
+#   3. PyInstaller  -- freeze main.py into the headless backend (no engine
+#                      inside: native omnidroid is a separate bundle the app
+#                      downloads), and drop it INSIDE the bundle at
 #                      Contents/Resources/backend/
 #
 # The shell must be built after the frontend (Tauri bakes the assets in at
@@ -46,11 +47,12 @@ mv "dist/omni-exec-py" "$BACKEND_DIR"
 
 # The in-binary engine dispatch is the thing most likely to be silently broken
 # by a packaging change, and it costs a second to prove.
-echo "==> smoke test: omni-exec-py --omnidroid version --json"
-if "$BACKEND_DIR/omni-exec-py" --omnidroid version --json >/dev/null 2>&1; then
-  echo "    engine dispatch OK"
+echo "==> smoke test: omni-exec-py --doctor"
+if "$BACKEND_DIR/omni-exec-py" --doctor | grep -q '"app_version"'; then
+  echo "    backend OK"
 else
-  echo "    WARNING: engine dispatch failed — the frozen omnidroid is not callable" >&2
+  echo "    backend smoke test FAILED" >&2
+  exit 1
 fi
 
 # AFTER the backend is inside: signing a bundle and then adding files to it

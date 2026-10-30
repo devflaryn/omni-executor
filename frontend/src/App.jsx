@@ -9,7 +9,6 @@ import HomeView from "./components/HomeView.jsx";
 import EditorView from "./components/EditorView.jsx";
 import AccountsView from "./components/AccountsView.jsx";
 import SettingsView from "./components/SettingsView.jsx";
-import FarmingView from "./components/FarmingView.jsx";
 import StatTrackView from "./components/StatTrackView.jsx";
 import EarnView from "./components/EarnView.jsx";
 import NetworkView from "./components/NetworkView.jsx";
@@ -22,7 +21,6 @@ import {
   CodeDuoIcon,
   EarnDuoIcon,
   GearDuoIcon,
-  GridDuoIcon,
   HomeDuoIcon,
   SignalDuoIcon,
   UsersDuoIcon,
@@ -35,22 +33,24 @@ const NAV = [
   { id: "home", label: "Home", Icon: HomeDuoIcon, hint: "1" },
   { id: "editor", label: "Editor", Icon: CodeDuoIcon, hint: "2" },
   { id: "accounts", label: "Accounts", Icon: UsersDuoIcon, hint: "3" },
-  { id: "farming", label: "Farming", Icon: GridDuoIcon, hint: "4", premium: true },
-  // Stat Track sits next to Farming because it answers Farming's question —
-  // "is the fleet actually earning anything" — and the two are read together.
-  { id: "stattrack", label: "Stat Track", Icon: ChartDuoIcon, hint: "5", premium: true },
+  // Stat Track sits next to Accounts because it answers the question a fleet
+  // of accounts raises -- "is it actually earning anything".
+  { id: "stattrack", label: "Stat Track", Icon: ChartDuoIcon, hint: "4", premium: true },
   // Network sits before Settings, not inside it: what it reports is a live
   // condition of the machine — the same kind of thing as "3 running" — and
   // the proxy it owns is a knob you set while watching that reading, not a
   // preference you file away next to the theme.
-  { id: "network", label: "Network", Icon: SignalDuoIcon, hint: "6" },
+  { id: "network", label: "Network", Icon: SignalDuoIcon, hint: "5" },
   // Earn sits after Network and before Settings — it's a thing you DO
   // (enroll, mine, spend) rather than a preference you file away.
-  { id: "earn", label: "Earn", Icon: EarnDuoIcon, hint: "7" },
-  { id: "settings", label: "Settings", Icon: GearDuoIcon, hint: "8" },
+  { id: "earn", label: "Earn", Icon: EarnDuoIcon, hint: "6" },
+  { id: "settings", label: "Settings", Icon: GearDuoIcon, hint: "7" },
 ];
 
-const DEFAULT_LAUNCH = { mode: "gaming", gpu: "auto", place: "" };
+// A launch takes a place and nothing else: no mode, no GPU policy (see
+// engine.jsx). A settings.json from an older build may still carry `mode` and
+// `gpu`; main.py drops them, and nothing here reads them.
+const DEFAULT_LAUNCH = { place: "" };
 const DEFAULT_PROFILE = { name: "Guest", tag: "" };
 
 export default function App() {
@@ -288,13 +288,6 @@ export default function App() {
                 showToast={showToast}
                 addRequest={addRequest}
               />
-              <FarmingView
-                active={tab === "farming"}
-                auth={auth}
-                launch={launch}
-                onGo={switchTab}
-                showToast={showToast}
-              />
               <StatTrackView
                 active={tab === "stattrack"}
                 auth={auth}
@@ -342,9 +335,7 @@ function ContextBar({ tab, profile, chrome, netSummary }) {
         }`
       : tab === "editor"
         ? `Engine ${health.label.toLowerCase()}`
-        : tab === "farming"
-          ? `Engine ${health.label.toLowerCase()}`
-          : // The bar states one TRUE fact per tab, and the only one this side
+        : // The bar states one TRUE fact per tab, and the only one this side
             // of the app knows for certain is how many instances are up HERE.
             // "How many are reporting" is the server's answer and the tab
             // itself carries it — repeating a guess at it here would be a

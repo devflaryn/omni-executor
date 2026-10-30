@@ -1,9 +1,9 @@
-"""Two-way sync between omnidroid's local account store and the cloud one.
+"""Two-way sync between the local account store and the cloud one.
 
-The local store is `<runtime>/accounts.json`, owned by omnidroid
-(`omnidroid/accounts.py`): one file, keyed by Roblox username, holding the
+The local store is `<runtime>/accounts.json` (robloxaccounts.py, carried over
+from the old engine): one file, keyed by Roblox username, holding the
 `.ROBLOSECURITY` cookie for each account. This module is the ONLY place in
-omni-executor that touches it, and it reuses omnidroid's own reader/writer
+omni-executor that touches it, and it reuses that module's reader/writer
 rather than reimplementing the schema — the file is shared state between two
 programs, and two independent notions of its format is how such a file rots.
 
@@ -51,23 +51,14 @@ def _local_store_root() -> Path:
 
 
 def _omnidroid_accounts():
-    """omnidroid's accounts module.
+    """The account store module.
 
-    Frozen builds bundle the whole omnidroid package (see the .spec), so the
-    import just works. Running from source, the sibling checkout is not on
-    sys.path — main.py's engine fallback shells out with PYTHONPATH set, but
-    an in-process import needs the path added here.
+    Was omnidroid's own `omnidroid.accounts`, frozen into the app with the old
+    QEMU engine. Native omnidroid has no account store, so the module now lives
+    here as robloxaccounts.py -- same file format, same accounts.json.
     """
-    try:
-        from omnidroid import accounts as mod
-        return mod
-    except ImportError:
-        sibling = Path(__file__).resolve().parent.parent / "omnidroid"
-        if (sibling / "omnidroid" / "accounts.py").is_file():
-            sys.path.insert(0, str(sibling))
-            from omnidroid import accounts as mod
-            return mod
-        raise
+    import robloxaccounts as mod
+    return mod
 
 
 def read_local():

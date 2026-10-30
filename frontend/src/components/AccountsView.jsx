@@ -6,7 +6,7 @@
    launch bay never slides off the bottom of a long list. */
 
 import { useEffect, useMemo, useState } from "react";
-import { GPU_INFO, describeGpu, describeMode, errText, useEngine } from "../engine.jsx";
+import { errText, useEngine } from "../engine.jsx";
 import {
   Button,
   Field,
@@ -21,8 +21,6 @@ import {
   AlertIcon,
   InfoIcon,
   LayersIcon,
-  MonitorIcon,
-  MonitorOffIcon,
   PlayIcon,
   PlusIcon,
   RocketIcon,
@@ -45,7 +43,7 @@ function initials(name) {
 
 export default function AccountsView({ active, launch, onLaunch, showToast, addRequest = 0 }) {
   const engine = useEngine();
-  const { accounts, busy, progress, backend, issue, settingUp, modes } = engine;
+  const { accounts, busy, progress, backend, issue } = engine;
 
   const [selected, setSelected] = useState(null);
   // Ticked rows, for bulk launch/stop. Separate from `selected` (the row the
@@ -122,20 +120,8 @@ export default function AccountsView({ active, launch, onLaunch, showToast, addR
           <Notice
             tone={issue.tone}
             icon={issue.tone === "info" ? InfoIcon : AlertIcon}
-            action={
-              issue.canSetup && (
-                <Button variant="solid" size="sm" onClick={engine.runSetup} disabled={settingUp}>
-                  {settingUp ? "Installing…" : "Run setup"}
-                </Button>
-              )
-            }
           >
             <p>{issue.text}</p>
-            {settingUp && (
-              <p className="mt-1 truncate font-mono text-[12px] opacity-70">
-                {progress.setup || "Working…"}
-              </p>
-            )}
           </Notice>
         )}
 
@@ -203,8 +189,6 @@ export default function AccountsView({ active, launch, onLaunch, showToast, addR
                       onSelect={() => setSelected(account.name)}
                       onStart={() => engine.start(account.name, launch)}
                       onStop={() => engine.stop(account.name)}
-                      onOpen={() => engine.openViewer(account.name)}
-                      onHide={() => engine.hideViewer(account.name)}
                       onRemove={() => removeAccount(account)}
                     />
                   ))}
@@ -225,53 +209,6 @@ export default function AccountsView({ active, launch, onLaunch, showToast, addR
           <Panel className="animate-rise flex min-h-0 flex-col overflow-hidden">
             <PanelHead icon={RocketIcon} title="Launch" />
             <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-3.5">
-              <Field label="Mode" htmlFor="launch-mode">
-                <select
-                  id="launch-mode"
-                  value={launch.mode}
-                  onChange={(e) => onLaunch({ ...launch, mode: e.target.value })}
-                  className="input cursor-pointer"
-                >
-                  {modes.map((id) => {
-                    const m = describeMode(id);
-                    return (
-                      <option key={id} value={id}>
-                        {m.spec ? `${m.label} — ${m.spec}` : m.label}
-                      </option>
-                    );
-                  })}
-                </select>
-                <p className="text-[12px] leading-snug text-ink-3">{describeMode(launch.mode).note}</p>
-              </Field>
-
-              {/* This used to be hidden for farming, on the grounds that
-                  farming is headless by definition so the choice could not
-                  take effect. That stopped being true: measured 2026-08-15 on
-                  PS99, three quarters of a software farming instance's CPU is
-                  llvmpipe rasterising frames nobody looks at (141% -> 72%
-                  guest CPU once the host GPU does it), so farming now defaults
-                  to `auto` and takes the GPU through a window it then hides.
-                  Nothing appears on screen either way — what the setting now
-                  trades is CPU against the VNC-based capture tools, which is a
-                  real choice and belongs to the user. */}
-              {(
-                <Field label="Graphics" htmlFor="launch-gpu">
-                  <select
-                    id="launch-gpu"
-                    value={launch.gpu || "auto"}
-                    onChange={(e) => onLaunch({ ...launch, gpu: e.target.value })}
-                    className="input cursor-pointer"
-                  >
-                    {Object.keys(GPU_INFO).map((id) => (
-                      <option key={id} value={id}>
-                        {describeGpu(id).label}
-                      </option>
-                    ))}
-                  </select>
-                  <p className="text-[12px] leading-snug text-ink-3">{describeGpu(launch.gpu || "auto").note}</p>
-                </Field>
-              )}
-
               <Field
                 label="Place ID"
                 htmlFor="launch-place"
@@ -293,8 +230,8 @@ export default function AccountsView({ active, launch, onLaunch, showToast, addR
               <div className="rule-t flex flex-col gap-2 pt-3.5">
                 {bulk ? (
                   <>
-                    {/* Several rows are ticked: the bay's Mode / Graphics /
-                        Place apply to all of them. */}
+                    {/* Several rows are ticked: the bay's Place applies to
+                        all of them. */}
                     <Button
                       variant="solid"
                       size="lg"
@@ -320,7 +257,7 @@ export default function AccountsView({ active, launch, onLaunch, showToast, addR
                       {bulkBusy
                         ? "Working on the selection…"
                         : bulkStopped.length
-                          ? `${checked.size} selected · ${describeMode(launch.mode).label} mode, all at once`
+                          ? `${checked.size} selected · all at once`
                           : `${checked.size} selected · all already running`}
                     </p>
                     <button
@@ -337,13 +274,16 @@ export default function AccountsView({ active, launch, onLaunch, showToast, addR
                       variant="solid"
                       size="lg"
                       className="w-full"
-                      onClick={() => selectedAccount && engine.start(selectedAccount.name, launch)}
+                      onClick={() =>
+                        selectedAccount &&
+                        (selectedAccount.running ? engine.stop(selectedAccount.name) : engine.start(selectedAccount.name, launch))
+                      }
                       disabled={!selectedAccount || Boolean(selectedBusy)}
                     >
                       {selectedAccount?.running ? (
                         <>
-                          <MonitorIcon className="h-4 w-4" />
-                          Open viewer
+                          <StopIcon className="h-3.5 w-3.5" />
+                          Stop
                         </>
                       ) : (
                         <>
@@ -357,7 +297,7 @@ export default function AccountsView({ active, launch, onLaunch, showToast, addR
                         ? `${selectedBusy} ${selectedAccount.name}…`
                         : selectedAccount
                           ? selectedAccount.running
-                            ? `${selectedAccount.name} is running`
+                            ? `${selectedAccount.name} is ${selectedAccount.state === "running" ? "running" : selectedAccount.state}`
                             : `${selectedAccount.name} is selected`
                           : accounts.length > 1
                             ? "Pick an account, or tick several to launch them together"
@@ -398,8 +338,6 @@ function AccountRow({
   onSelect,
   onStart,
   onStop,
-  onOpen,
-  onHide,
   onRemove,
 }) {
   const running = Boolean(account.running);
@@ -414,18 +352,12 @@ function AccountRow({
     tone = "busy";
     status = `${busyLabel}…`;
   } else if (running) {
-    tone = "live";
-    // A GPU boot has NO VNC server — QEMU refuses one beside a GL context —
-    // so printing its vnc_port here named a port nothing was listening on,
-    // which is the first thing anyone debugging "the viewer won't connect"
-    // reaches for. `has_vnc` comes from the engine's own run.json. Say what
-    // the instance actually has: a window, and the size the guest is being
-    // shown at.
-    const client = account.window_client;
-    status =
-      account.has_vnc === false
-        ? `Window ${client ? `${client[0]}×${client[1]}` : "(no VNC)"} · ADB ${account.adb_port ?? "—"}`
-        : `VNC ${account.vnc_port ?? "—"} · ADB ${account.adb_port ?? "—"}`;
+    // omnidroid's own state: waiting (its Android boots), installing,
+    // starting, running. Only the last one is the game up.
+    tone = account.state === "running" ? "live" : "busy";
+    status = account.state === "running"
+      ? `Running · instance #${account.instance_id ?? "?"}`
+      : `${account.state || "starting"}…`;
   } else if (remote) {
     // Not "off": it IS running, just not here. Showing this row as stopped is
     // what made people launch the same account twice.
@@ -439,7 +371,6 @@ function AccountRow({
       tabIndex={0}
       aria-pressed={selected}
       onClick={onSelect}
-      onDoubleClick={() => running && onOpen()}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
@@ -475,18 +406,6 @@ function AccountRow({
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
           <span className="truncate text-[14px] font-medium text-ink">{account.name}</span>
-          {account.arch && (
-            <span
-              title={`CPU architecture: ${account.arch}`}
-              className={`chip uppercase ${account.arch === "arm" ? "chip-accent" : ""}`}
-            >
-              {account.arch}
-            </span>
-          )}
-          {account.base && <span className="chip hidden md:inline-flex">{account.base}</span>}
-          {running && account.mode && (
-            <span className="chip chip-live capitalize">{account.mode}</span>
-          )}
           {remote && (
             <span
               className="chip chip-accent"
@@ -507,32 +426,6 @@ function AccountRow({
       <div className="flex shrink-0 items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
         {running ? (
           <>
-            {/* Deliberately NOT disabled while busy. `busyLabel` stays
-                "Starting" for the whole boot -- minutes -- but QEMU's VNC
-                server binds the moment the process spawns, and `running`
-                flips as soon as its run.json exists. Watching the boot is
-                the one thing you most want during it, and disabling this
-                was the difference between "nothing is happening" and
-                seeing Android come up.
-
-                On a GPU boot the window is ALREADY on screen by the time this
-                row appears — the engine presents it at spawn so the loading
-                animation is visible while Android comes up — so this button
-                becomes "put it away" rather than "bring it out". Hiding never
-                stops the instance; the game keeps running and rendering, and
-                the same button brings it back. `window_visible` comes from the
-                engine's own run.json (account_status), never guessed here: a
-                window this app hid and a window the user never had are the
-                same thing to look at and very different things to click. */}
-            {account.window_visible ? (
-              <IconButton label="Hide the window (the instance keeps running)" onClick={onHide}>
-                <MonitorOffIcon className="h-4 w-4" />
-              </IconButton>
-            ) : (
-              <IconButton label="Open viewer" tone="accent" onClick={onOpen}>
-                <MonitorIcon className="h-4 w-4" />
-              </IconButton>
-            )}
             <IconButton label="Stop instance" onClick={onStop} disabled={Boolean(busyLabel)}>
               <StopIcon className="h-3.5 w-3.5" />
             </IconButton>
@@ -552,7 +445,7 @@ function AccountRow({
           </IconButton>
         )}
         <IconButton
-          label="Remove account and delete its data"
+          label="Remove account from this computer"
           tone="danger"
           onClick={onRemove}
           disabled={Boolean(busyLabel)}
