@@ -452,6 +452,7 @@ def apply_staged_app(target_dir, wait_pid, timeout=90, log=print):
     log(f"[update] replacing {target} with {source}")
     report = bootstrap.replace_tree(source, target, log=log)
     log(f"[update] {report['files']} file(s) installed")
+    _resign(target, log)
 
     # The staging dir has served its purpose. Leaving it costs ~90 MB and, more
     # to the point, leaves a receipt the new build would read on its next
@@ -465,6 +466,21 @@ def apply_staged_app(target_dir, wait_pid, timeout=90, log=print):
             else {"start_new_session": True}
         subprocess.Popen([str(exe)], stdin=subprocess.DEVNULL, **kwargs)
     return {"ok": True, "target": str(target)}
+
+
+def _resign(target, log):
+    """A published macOS build may hold real files where the signed bundle had
+    links (see push-native.py), which leaves its signature describing something
+    else. Sign what is actually installed. Best effort: a build that opens with a
+    stale ad-hoc signature is still better than a failed update."""
+    if sys.platform != "darwin" or Path(target).suffix != ".app":
+        return
+    try:
+        subprocess.run(["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(target)],
+                       check=True, capture_output=True, timeout=120)
+        log("[update] re-signed the bundle")
+    except (OSError, subprocess.SubprocessError) as exc:
+        log(f"[update] could not re-sign the bundle: {exc}")
 
 
 def _pid_alive(pid):

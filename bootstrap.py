@@ -25,7 +25,7 @@ sent every one of them a gigabyte they cannot use; putting this app's runtime
 on `stable` would have handed IT their base images. `native` keeps the two
 generations from ever seeing each other's files.
 """
-import hashlib, json, os, re, shutil, sys, tarfile, time, urllib.request, urllib.error, zipfile
+import hashlib, json, os, re, shutil, stat, sys, tarfile, time, urllib.request, urllib.error, zipfile
 from pathlib import Path
 
 # DEV MODE, ABSENT FROM RELEASE BUILDS. Every PyInstaller spec here excludes
@@ -352,12 +352,15 @@ _TRASH_PREFIX = ".omni-replaced-"
 
 def _tree_files(root: Path, skip_prefix: str = None) -> list:
     """Every file under `root`, as paths relative to it. Directories are not
-    listed: this module never acts on one."""
+    listed: this module never acts on one. A symlink counts as a file even when it
+    points at a directory: a macOS build's Python.framework is held together by
+    them, and os.walk reports those among the directories and doesn't enter them."""
     out = []
     for dirpath, dirnames, filenames in os.walk(root):
         if skip_prefix:
             dirnames[:] = [d for d in dirnames if not d.startswith(skip_prefix)]
-        for name in filenames:
+        links = [d for d in dirnames if os.path.islink(os.path.join(dirpath, d))]
+        for name in filenames + links:
             out.append(Path(dirpath, name).relative_to(root))
     return out
 
@@ -419,7 +422,11 @@ def replace_tree(source: Path, target: Path, log=None) -> dict:
         for rel in _tree_files(source):
             dest = target / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
-            _patiently(lambda: shutil.copy2(source / rel, dest))
+            # The old build may have had a real folder where this build has a
+            # link. Its files are parked by now, so the folder is empty.
+            if (source / rel).is_symlink() and dest.is_dir() and not dest.is_symlink():
+                dest.rmdir()
+            _patiently(lambda: shutil.copy2(source / rel, dest, follow_symlinks=False))
             copied += 1
         say(f"[replace] wrote {copied} file(s) to {target}")
     except BaseException:
@@ -547,22 +554,39 @@ def _safe_extract(tf: tarfile.TarFile, dest: Path) -> None:
 def _safe_extract_zip(zf: zipfile.ZipFile, dest: Path) -> None:
     """Same containment rule as _safe_extract, for zips.
 
-    Zip has no link members to reject, but it very much has `../` traversal in
-    entry names, and ZipFile.extract's own sanitising is not something to rely
-    on when the archive replaces an executable directory.
+    It has `../` traversal in entry names, and ZipFile.extract's own sanitising is
+    not something to rely on when the archive replaces an executable directory.
+
+    It also has symlinks, which ZipFile.extract writes out as small text files. A
+    macOS build can't survive that: `_internal/Python` is a link to the Python
+    library, so the build would fail to load before it could install itself. So
+    they are made as real links, and only if they stay inside the archive's folder.
     """
     dest = dest.resolve()
+    links, members = [], []
     for info in zf.infolist():
         target = (dest / info.filename).resolve()
         if not (target == dest or dest in target.parents):
             raise BootstrapError(f"unsafe zip member: {info.filename}")
-    _unlink_before_rewrite(dest, [i.filename for i in zf.infolist() if not i.is_dir()])
-    zf.extractall(dest)
+        is_link = sys.platform != "win32" and stat.S_ISLNK(info.external_attr >> 16)
+        (links if is_link else members).append(info)
+    _unlink_before_rewrite(dest, [i.filename for i in members if not i.is_dir()])
+    zf.extractall(dest, members=members)
+    for info in links:
+        path = dest / info.filename
+        pointee = zf.read(info).decode("utf-8")
+        resolved = Path(os.path.normpath(path.parent / pointee))
+        if os.path.isabs(pointee) or not (resolved == dest or dest in resolved.parents):
+            raise BootstrapError(f"unsafe zip link: {info.filename} -> {pointee}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_symlink() or path.exists():
+            path.unlink()
+        os.symlink(pointee, path)
     # Zip does not carry the executable bit on every toolchain (PowerShell's
     # Compress-Archive drops POSIX modes entirely), so a macOS bundle unpacked
     # from one would have a non-executable binary inside it.
     if sys.platform != "win32":
-        for info in zf.infolist():
+        for info in members:
             mode = info.external_attr >> 16
             if mode:
                 try:
