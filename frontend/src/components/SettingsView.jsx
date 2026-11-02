@@ -115,7 +115,7 @@ export default function SettingsView({
               <span>
                 <span className="block text-[13.5px] font-medium text-ink">Theme</span>
                 <span className="block text-[12px] text-ink-3">
-                  Dark is the default sheet; light is the daylight version.
+                  Choose how the app looks.
                 </span>
               </span>
               <div

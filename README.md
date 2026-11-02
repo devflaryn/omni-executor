@@ -110,7 +110,7 @@ across the desktop by grabbing a list row is a window that fights you.
 **The Windows corner needs help, and this is why.** WebView2's windowed
 hosting honours alpha 0 but has no *partial* per-pixel alpha, so a page-drawn
 `border-radius` alone leaves hard steps at the corners. `src-tauri/src/chrome.rs`
-cuts the same 33 px round-rect out of the HWND, anchored to the CLIENT rect
+cuts the same 14 px round-rect out of the HWND, anchored to the CLIENT rect
 (an undecorated window still carries an invisible ~8 px resize frame, so
 cutting the window rect puts the arc in the wrong place). The radius is one
 number in three files — `chrome.rs`, `--window-radius` in `styles.css`, and the

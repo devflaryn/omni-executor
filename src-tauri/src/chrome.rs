@@ -24,7 +24,7 @@ use tauri::WebviewWindow;
 /// the pre-mount `html::before` in `index.html`. They must agree, or the
 /// page's corner and the window's corner part company.
 #[cfg(windows)]
-pub const CORNER_RADIUS: f64 = 33.0;
+pub const CORNER_RADIUS: f64 = 14.0;
 
 /// One-time setup: stop Windows 11 from drawing its own corner and border.
 #[cfg(windows)]

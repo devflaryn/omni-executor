@@ -1,45 +1,39 @@
 @import "tailwindcss";
-@import "@fontsource-variable/plus-jakarta-sans";
+@import "@fontsource-variable/figtree";
 
 /* ---------------------------------------------------------------------------
-   Omni Executor — soft near-black theme.
+   Omni Executor: neutral black, the same look as the website (omni-backend).
 
    Four grounds, darkest on the left: the rail, the canvas it sits beside,
    the surfaces that carry content on that canvas, and the raised controls on
-   those. Corners are soft everywhere — pill buttons, rounded
-   cards, a radius scale two steps past the stock one — and the type is a
-   wide geometric grotesque set a size up from typical UI copy, so a panel
-   reads as a card of content rather than a dense table.
+   those. There is no blue in the greys.
 
-   The accent is a blue, the same blue in both themes; everything else in
-   colour is a status — the lamps and the tinted chips they tag rows with.
+   The accent is the ink itself: white on the dark sheet and near-black on the
+   light one. Everything else in colour is a status: the lamps and the tinted
+   chips they tag rows with.
 
    Every colour comes from a semantic token below, so `.light` on <html>
    re-points the same names and no component needs a per-theme variant.
    --------------------------------------------------------------------------- */
 
 @theme {
-  /* Plus Jakarta Sans: a wide geometric grotesque with open apertures and a
-     tall x-height — the app's whole voice, display sizes and body alike. It
-     carries UI copy a size larger than Inter would at the same measure, which
-     is what the roomier type scale here depends on. */
+  /* Figtree: the website's face too, so the app and the site read as one
+     product. Bundled through fontsource because the app has to work offline. */
   --font-sans:
-    "Plus Jakarta Sans Variable", "Plus Jakarta Sans", system-ui, -apple-system,
+    "Figtree Variable", "Figtree", system-ui, -apple-system,
     "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono:
     "Cascadia Code", "SF Mono", "JetBrains Mono", "Fira Code", Consolas,
     "DejaVu Sans Mono", monospace;
 
-  /* Soft-corner scale: every named radius sits two steps rounder than the
-     stock scale, so the whole app rounds up without touching call sites.
-     `lg` is the workhorse (rows, icon buttons), `xl` the field/notice radius
-     and `2xl` the card — a card corner has to read as round from across the
-     window, which is what pushes it past the usual 16px. */
-  --radius-md: 0.625rem;
-  --radius-lg: 0.875rem;
-  --radius-xl: 1.125rem;
-  --radius-2xl: 1.375rem;
-  --radius-3xl: 1.625rem;
+  /* Corner scale, set here so call sites never change. `lg` is the workhorse
+     (buttons, rows, icon buttons), `xl` the field/notice radius and `2xl` the
+     card. Same values as the website's cards and buttons. */
+  --radius-md: 0.5rem;
+  --radius-lg: 0.5625rem;
+  --radius-xl: 0.625rem;
+  --radius-2xl: 0.75rem;
+  --radius-3xl: 0.875rem;
 
   /* The WINDOW's radius — not part of the scale above, because it is not a
      taste call: on Windows the same number is cut out of the HWND by
@@ -47,36 +41,31 @@
      window's corner must be the same arc. Change one, change both. Also
      mirrored in index.html's pre-mount paint, and in CORNER_LEN in
      TitleBar.jsx, whose corner resize handles have to reach the arc. */
-  --window-radius: 33px;
+  --window-radius: 14px;
 
-  /* Ground — a near-black charcoal with only a whisper of blue left in it,
-     matched to the reference sheet: the canvas sits at ~#181a25 and the
-     surfaces barely step above it, so panels read via hairlines more than
-     value.
-     `rail` is its own token and not a shade of the canvas: the icon rail now
-     sits a step ABOVE the canvas — a lighter band, with the hairline spine
+  /* Ground: pure neutral greys. `rail` is its own token and not a shade of the
+     canvas: the icon rail sits a step BELOW the canvas, with the hairline spine
      sharpening the edge. */
-  --color-rail: #22252f;
-  --color-canvas: #181a25;
-  --color-surface: #1e222d;
-  --color-raised: #262b39;
-  --color-line: #333949;
-  --color-line-soft: #232732;
+  --color-rail: #0d0d0d;
+  --color-canvas: #0f0f0f;
+  --color-surface: #161616;
+  --color-raised: #212121;
+  --color-line: #262626;
+  --color-line-soft: #1c1c1c;
 
   /* Text */
-  --color-ink: #f2f2f5;
-  --color-ink-2: #9aa1b3;
-  --color-ink-3: #6c6c78;
+  --color-ink: #f5f5f5;
+  --color-ink-2: #a6a6a6;
+  --color-ink-3: #7a7a7a;
 
-  /* Accent — blue: selection, primary action, "work in progress". Bright
-     enough to carry white type at button sizes, which is what `accent-ink`
-     assumes. */
-  --color-accent: #3b7bfd;
-  --color-accent-hi: #5a92ff;
-  --color-accent-ink: #ffffff;
+  /* Accent: selection, primary action, "work in progress". White here, so
+     anything drawn ON the accent has to use `accent-ink`, not a literal white. */
+  --color-accent: #f5f5f5;
+  --color-accent-hi: #d9d9d9;
+  --color-accent-ink: #0a0a0a;
 
   /* Status lamps — the only other colour in the app */
-  --color-live: #4ec98a;
+  --color-live: #4ade80;
   /* Between live and danger: a link that answers, slowly. Amber rather than
      the gold --color-premium, which means "a plan", not "a warning". */
   --color-warn: #e0a94f;
@@ -122,24 +111,21 @@
   }
 }
 
-/* Daylight sheet: soft white paper, black accent. */
+/* Light sheet: soft white paper, near-black accent. */
 html.light {
-  --color-rail: #ececed;
-  --color-canvas: #f7f7f8;
+  --color-rail: #ececec;
+  --color-canvas: #f7f7f7;
   --color-surface: #ffffff;
-  --color-raised: #eeeef0;
-  --color-line: #e0e0e4;
-  --color-line-soft: #e9e9ec;
+  --color-raised: #eeeeee;
+  --color-line: #e0e0e0;
+  --color-line-soft: #e9e9e9;
 
   --color-ink: #161616;
   --color-ink-2: #606060;
-  --color-ink-3: #8f8f8f;
+  --color-ink-3: #8a8a8a;
 
-  /* The same blue, darkened for a white sheet: #3b7ff5 on #f7f7f8 is legible
-     but too pale to carry white button type, and the accent has to stay the
-     app's identity colour across both themes. */
-  --color-accent: #2563eb;
-  --color-accent-hi: #1d4ed8;
+  --color-accent: #161616;
+  --color-accent-hi: #333333;
   --color-accent-ink: #ffffff;
 
   --color-live: #2c7d4b;
@@ -173,11 +159,8 @@ html.light {
        React mounts), both of which are clipped to --window-radius. */
     background: transparent;
     color: var(--color-ink);
-    /* Inter at near-normal tracking, with its UI alternates on — the smooth
-       grotesque voice. The editor resets spacing so caret metrics stay
-       exact. */
+    /* The editor resets spacing so caret metrics stay exact. */
     letter-spacing: -0.004em;
-    font-feature-settings: "cv05", "cv11";
   }
   /* Native form controls should follow the sheet, not the OS. */
   select option {
@@ -283,15 +266,15 @@ html.light {
   }
 
   .btn {
-    @apply ring-focus inline-flex shrink-0 items-center justify-center gap-2 rounded-full
+    @apply ring-focus inline-flex shrink-0 items-center justify-center gap-2 rounded-lg
       text-[13.5px] font-semibold whitespace-nowrap transition-all duration-150
       active:scale-[0.97] disabled:pointer-events-none disabled:opacity-45;
   }
   .btn-solid {
     @apply bg-accent text-accent-ink hover:bg-accent-hi;
   }
-  /* Quiet is a FILLED pill, not an outlined one: on a sheet this soft an
-     unfilled hairline button reads as disabled next to a solid one. */
+  /* Quiet is FILLED, not outlined: on a sheet this soft an unfilled hairline
+     button reads as disabled next to a solid one. */
   .btn-quiet {
     @apply border border-line bg-surface text-ink-2 hover:border-ink-3/45 hover:bg-raised hover:text-ink;
   }
@@ -345,9 +328,12 @@ html.light {
     background-repeat: no-repeat;
     background-size: 12px;
   }
-  /* One tick for both themes: it is drawn on the accent, and the accent
-     carries white type in both. */
+  /* The tick is drawn on the accent, so it follows accent-ink: dark on the
+     white accent, and white on the light theme's near-black one. */
   .check:checked {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230a0a0a' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 12 5 5 9-10'/%3E%3C/svg%3E");
+  }
+  html.light .check:checked {
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 12 5 5 9-10'/%3E%3C/svg%3E");
   }
 

@@ -143,15 +143,15 @@ function WinButton({ label, danger, children, ...rest }) {
    They disappear while maximised (a maximised window has no edges). macOS
    keeps a real frame and resizes from it.
 
-   THE NUMBERS FOLLOW THE CORNER RADIUS, and that is not cosmetic. A 33px
+   THE NUMBERS FOLLOW THE CORNER RADIUS, and that is not cosmetic. A 14px
    round-rect is cut out of the window on Windows, so a small square handle
    pinned to the very corner would sit ENTIRELY in the clipped-away notch and
    never receive a press — corner resize would look implemented and be dead.
    Each corner is therefore an L of two arms as long as the radius, thick
-   enough (12px) that the arc's 45-degree bulge — which is ~9.7px in from the
-   corner on both axes — falls inside them. */
+   enough (12px) that the arc's 45-degree bulge, about 4.1px in from the corner
+   on both axes, falls inside them. */
 const EDGE_PX = 5;
-const CORNER_LEN = 33; // = --window-radius / chrome.rs CORNER_RADIUS
+const CORNER_LEN = 14; // = --window-radius / chrome.rs CORNER_RADIUS
 const CORNER_THICK = 12;
 
 export function ResizeEdges({ chrome }) {
