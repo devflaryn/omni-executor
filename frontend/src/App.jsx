@@ -43,7 +43,7 @@ const NAV = [
   { id: "network", label: "Network", Icon: SignalDuoIcon, hint: "5" },
   // Earn sits after Network and before Settings — it's a thing you DO
   // (enroll, mine, spend) rather than a preference you file away.
-  { id: "earn", label: "Earn", Icon: EarnDuoIcon, hint: "6" },
+  { id: "earn", label: "Earn", Icon: EarnDuoIcon, hint: "6", badge: "Beta" },
   { id: "settings", label: "Settings", Icon: GearDuoIcon, hint: "7" },
 ];
 
@@ -298,6 +298,7 @@ export default function App() {
               <EarnView
                 active={tab === "earn"}
                 auth={auth}
+                chrome={chrome}
                 showToast={showToast}
                 onAuthChange={refreshAuth}
               />
@@ -354,5 +355,12 @@ function ContextBar({ tab, profile, chrome, netSummary }) {
                 : `Engine ${health.label.toLowerCase()}`
               : profile.name || "Guest";
 
-  return <TitleBar title={nav?.label ?? "Omni Executor"} subtitle={subtitle} chrome={chrome} />;
+  return (
+    <TitleBar
+      title={nav?.label ?? "Omni Executor"}
+      badge={nav?.badge}
+      subtitle={subtitle}
+      chrome={chrome}
+    />
+  );
 }

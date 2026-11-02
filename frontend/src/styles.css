@@ -396,6 +396,36 @@ html.light {
   display: none;
 }
 
+/* The Earn tab: one sheet, balance on one side and the miner on the other. Both
+   sides pin their action to the bottom, so the two buttons line up. */
+.earn-sheet {
+  display: grid;
+  grid-template-columns: 1fr;
+  overflow: hidden;
+  border: 1px solid var(--color-line);
+  border-radius: 12px;
+  background: var(--color-surface);
+}
+.earn-side {
+  display: flex;
+  min-width: 0;
+  min-height: 340px;
+  flex-direction: column;
+  padding: 24px;
+}
+.earn-side + .earn-side {
+  border-top: 1px solid var(--color-line);
+}
+@media (min-width: 860px) {
+  .earn-sheet {
+    grid-template-columns: 1fr 1fr;
+  }
+  .earn-side + .earn-side {
+    border-top: 0;
+    border-left: 1px solid var(--color-line);
+  }
+}
+
 /* Native-window resize handles drawn over the web content (Windows/Linux,
    see TitleBar.jsx). Absolute, not fixed: they anchor to the sheet, which is
    the whole window. */

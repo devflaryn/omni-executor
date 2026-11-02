@@ -75,7 +75,7 @@ export function WindowShell({ chrome, children }) {
   );
 }
 
-export default function TitleBar({ title, subtitle, chrome, leading = null }) {
+export default function TitleBar({ title, badge, subtitle, chrome, leading = null }) {
   const drag = useWindowDrag(chrome);
   const [maximized, setMaximized] = useMaximized(chrome);
 
@@ -93,6 +93,11 @@ export default function TitleBar({ title, subtitle, chrome, leading = null }) {
             about it. Both sit at reading size — the strip names where you are,
             and a name you have to squint at is not doing that. */}
         <h1 className="truncate text-[14px] font-semibold tracking-[-0.01em] text-ink">{title}</h1>
+        {badge && (
+          <span className="shrink-0 rounded-md border border-line px-1.5 py-px text-[11.5px] font-medium text-ink-2">
+            {badge}
+          </span>
+        )}
         {subtitle && (
           <>
             <span className="text-ink-3/70" aria-hidden="true">

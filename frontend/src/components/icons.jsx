@@ -398,7 +398,7 @@ export const GearDuoIcon = (props) => (
 
 export const EarnDuoIcon = (props) => (
   <svg {...rail} {...props}>
-    <circle {...DIM} cx="12" cy="12" r="8.3" />
-    <path d="M12 7.4v9.2M9.7 9.6c0-1.1 1-1.7 2.3-1.7s2.3.55 2.3 1.6-1 1.4-2.3 1.4-2.3.45-2.3 1.5 1 1.6 2.3 1.6 2.3-.6 2.3-1.7" />
+    <path d="M7.6 4.5h8.8l4.2 5.3L12 20l-8.6-10.2z" />
+    <path {...DIM} d="M3.6 9.8h16.8M8.9 9.8 12 20l3.1-10.2M8.9 9.8l1.7-5.3M15.1 9.8l-1.7-5.3" />
   </svg>
 );
