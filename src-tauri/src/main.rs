@@ -14,7 +14,7 @@
 //!
 //!   macOS         a titled window with an OVERLAY titlebar and a hidden
 //!                 title, which is what leaves the native traffic lights in
-//!                 place at top-left over the page.
+//!                 place at top-left over the page, centred on its rail.
 //!   Windows/Linux undecorated; the page draws minimise/maximise/close on the
 //!                 right and hands drags and resizes back to the OS through
 //!                 `startDragging` / `startResizeDragging`.
@@ -32,6 +32,30 @@ use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 /// once React has mounted; this is the backstop for a frontend that fails to
 /// boot, so a broken page still gives the user a window they can close.
 const SHOW_FALLBACK_MS: u64 = 2500;
+
+/// Where to put the traffic lights so they sit centred across the page's 96 px
+/// rail and level with the 56 px titlebar's text (see Sidebar.jsx).
+///
+/// It has to depend on the OS, because Tauri takes the position when the window
+/// is created, before the buttons can be measured, and macOS 26 spaces them wider:
+/// the three span 60 px there, against 54 px before. The second number is not the
+/// distance from the top: macOS keeps the buttons a few points above the bottom of
+/// the titlebar this sets the height of. Measured on macOS 27 (x 18, top 21).
+#[cfg(target_os = "macos")]
+fn traffic_lights() -> (f64, f64) {
+    let major = std::process::Command::new("/usr/bin/sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .and_then(|version| version.trim().split('.').next()?.parse::<u32>().ok())
+        .unwrap_or(26);
+    if major >= 26 {
+        (18.0, 30.0)
+    } else {
+        (21.0, 28.0)
+    }
+}
 
 struct AppState {
     backend: Arc<backend::Backend>,
@@ -155,10 +179,12 @@ fn main() {
                 // Mac user expects them: top-LEFT, drawn by the OS. Set at
                 // CREATION because macOS builds the titlebar backdrop at first
                 // show and ignores later changes.
+                let lights = traffic_lights();
                 builder
                     .decorations(true)
                     .title_bar_style(TitleBarStyle::Overlay)
                     .hidden_title(true)
+                    .traffic_light_position(tauri::LogicalPosition::new(lights.0, lights.1))
             };
 
             #[cfg(not(target_os = "macos"))]

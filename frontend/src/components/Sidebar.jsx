@@ -21,13 +21,13 @@ export default function Sidebar({ nav, tab, onTab, chrome, premium = false }) {
     <aside
       className={`spine-r flex shrink-0 flex-col bg-rail ${mac ? "w-[96px]" : "w-[90px]"}`}
     >
-      {/* macOS: the native traffic lights float over this corner, so clear
-          a strip for them (it doubles as extra drag surface). The rail is
-          also a touch wider there so the lights never cross its edge. */}
-      {mac && <div className="h-9 shrink-0" {...drag} />}
+      {/* macOS: the native traffic lights sit in this strip, centred across the
+          rail and level with the titlebar's text (main.rs traffic_lights). It is
+          the titlebar's height, and it doubles as extra drag surface. */}
+      {mac && <div className="h-14 shrink-0" {...drag} />}
 
       {/* Identity — doubles as the window drag handle on this side. */}
-      <div className="flex h-16 shrink-0 items-center justify-center" {...drag}>
+      <div className={`flex shrink-0 items-center justify-center ${mac ? "h-12" : "h-16"}`} {...drag}>
         {/* The mark is the bare glyph on the rail — no tile behind it. The
             box keeps the same footprint so the drag surface and the nav
             column's rhythm don't move. */}
