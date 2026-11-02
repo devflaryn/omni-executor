@@ -332,6 +332,9 @@ def me():
     # server's null would make the greeting flicker back to the fallback.
     cur["username"] = user.get("username") or cur.get("username")
     cur["subscription"] = data.get("subscription") or {}
+    # Kept with the login so the channel still works offline. Goes when they
+    # sign out, along with the rest of this file.
+    cur["updateChannels"] = data.get("updateChannels") or cur.get("updateChannels")
     if cur.get("token"):
         _save_auth(cur)
     return {"email": cur.get("email"), "username": cur.get("username"),

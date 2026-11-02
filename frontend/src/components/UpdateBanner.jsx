@@ -14,6 +14,13 @@ import { close as closeWindow } from "../window.js";
 import { Button, Lamp, Panel, PanelHead } from "./ui.jsx";
 import { CpuIcon } from "./icons.jsx";
 
+// What each update channel is, in the words Settings uses for it.
+const CHANNELS = {
+  prod: { label: "Prod", hint: "Tested releases. Recommended for most people." },
+  beta: { label: "Beta", hint: "New versions earlier. They may have bugs." },
+  dev: { label: "Dev", hint: "Internal builds, updated often. Things can break." },
+};
+
 const fmtBytes = (n) => {
   if (!n) return null;
   const mb = n / 1048576;
@@ -35,6 +42,12 @@ export function useUpdates() {
     setStatus(res);
     return res;
   }, []);
+
+  // Ask once as well. The watcher's first report can land before this listens,
+  // and Settings needs a status to show the channel at all.
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
 
   useEffect(
     () =>
@@ -106,6 +119,28 @@ export function useUpdates() {
     }, 600);
   }, []);
 
+  /* Move to an older build on a steadier channel. Only ever a button press. */
+  const startSwitch = useCallback(async () => {
+    setError(null);
+    setBusy("app");
+    const res = await api("update_app", true);
+    if (!res?.ok) {
+      setBusy(null);
+      setError(res?.message || "Couldn't download that version");
+    }
+  }, []);
+
+  const setChannel = useCallback(async (name) => {
+    setError(null);
+    const res = await api("update_set_channel", name);
+    if (res?.error === "channel_forbidden" || res?.error === "already_running") {
+      setError(res.message);
+      return false;
+    }
+    setStatus(res);
+    return true;
+  }, []);
+
   const setAutoUpdate = useCallback(
     async (on) => {
       await saveSettings({ autoUpdate: on });
@@ -123,6 +158,8 @@ export function useUpdates() {
     refresh,
     startRuntime,
     startApp,
+    startSwitch,
+    setChannel,
     restartIntoUpdate,
     setAutoUpdate,
   };
@@ -251,7 +288,9 @@ export function UpdateModal({ updates, onDismiss }) {
       <Card>
         <div className="flex items-center gap-2.5">
           <Lamp tone="live" size={7} />
-          <h2 className="text-[16px] font-semibold text-ink">Update found</h2>
+          <h2 className="text-[16px] font-semibold text-ink">
+            {staged.downgrade ? "Ready to switch" : "Update found"}
+          </h2>
         </div>
         <p className="mt-2.5 text-[13.5px] leading-snug text-ink-2">
           <span className="font-medium text-ink">Version {staged.version}</span> is downloaded
@@ -300,10 +339,21 @@ export default function UpdatePanel({ updates, showToast }) {
     refresh,
     startRuntime,
     startApp,
+    startSwitch,
+    setChannel,
     restartIntoUpdate,
     setAutoUpdate,
   } = updates;
   const [checking, setChecking] = useState(false);
+  const [switching, setSwitching] = useState(false);
+
+  const pickChannel = async (id) => {
+    if (id === channel?.active) return;
+    setSwitching(true);
+    const ok = await setChannel(id);
+    setSwitching(false);
+    if (ok) showToast(`Now following ${CHANNELS[id].label}`, "success");
+  };
 
   const checkNow = async () => {
     setChecking(true);
@@ -321,6 +371,8 @@ export default function UpdatePanel({ updates, showToast }) {
   const runtime = status?.runtime;
   const staged = status?.staged;
   const pct = progress?.percent ? Math.round(progress.percent) : 0;
+  const channel = status?.channel;
+  const activeLabel = CHANNELS[channel?.active]?.label;
 
   return (
     <Panel className="overflow-hidden">
@@ -346,6 +398,43 @@ export default function UpdatePanel({ updates, showToast }) {
           <Row label="App version" value={app?.current ?? "—"} />
           <Row label="Latest" value={app?.available ?? "—"} />
         </dl>
+
+        {channel && (
+          <div className="flex items-center justify-between gap-4">
+            <span className="min-w-0">
+              <span className="block text-[13.5px] font-medium text-ink">Update channel</span>
+              <span className="block text-[12px] leading-snug text-ink-3">
+                {channel.picked !== channel.active
+                  ? `This account can't use ${CHANNELS[channel.picked]?.label ?? channel.picked}, so this computer follows ${activeLabel}.`
+                  : CHANNELS[channel.active]?.hint}
+              </span>
+            </span>
+            <div
+              role="radiogroup"
+              aria-label="Update channel"
+              className="flex shrink-0 gap-1 rounded-lg border border-line bg-raised p-1"
+            >
+              {channel.allowed.map((id) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="radio"
+                  aria-checked={channel.active === id}
+                  disabled={switching || Boolean(busy)}
+                  onClick={() => pickChannel(id)}
+                  className={`ring-focus flex h-7 items-center rounded-md px-2.5 text-[12.5px] font-semibold
+                              transition-colors duration-150 disabled:cursor-not-allowed ${
+                                channel.active === id
+                                  ? "bg-accent text-accent-ink"
+                                  : "text-ink-2 hover:text-ink"
+                              }`}
+                >
+                  {CHANNELS[id]?.label ?? id}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         <label className="flex cursor-pointer items-start gap-3">
           <input
@@ -400,6 +489,24 @@ export default function UpdatePanel({ updates, showToast }) {
             {app.canApply ? (
               <Button size="sm" onClick={startApp} disabled={Boolean(busy)}>
                 {busy === "app" ? `Downloading… ${pct}%` : "Download"}
+              </Button>
+            ) : (
+              <p className="text-[12px] leading-snug text-ink-3">{app.reason}</p>
+            )}
+          </div>
+        )}
+
+        {app?.downgrade && !staged && (
+          <div className="rule-t pt-4">
+            <p className="mb-2 text-[13.5px] text-ink">
+              You&apos;re on {app.current}, which is newer than {activeLabel} ({app.available}).
+            </p>
+            <p className="mb-3 text-[12px] leading-snug text-ink-3">
+              You&apos;ll stay on it until {activeLabel} catches up, or you can switch now.
+            </p>
+            {app.canApply ? (
+              <Button size="sm" onClick={startSwitch} disabled={Boolean(busy)}>
+                {busy === "app" ? `Downloading… ${pct}%` : `Install ${app.available}`}
               </Button>
             ) : (
               <p className="text-[12px] leading-snug text-ink-3">{app.reason}</p>

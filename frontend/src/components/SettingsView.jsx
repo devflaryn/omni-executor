@@ -178,7 +178,9 @@ export default function SettingsView({
           </div>
         </Panel>
 
-        <p className="silk pb-2 text-center text-ink-3">Omni Executor · v2.0</p>
+        <p className="silk pb-2 text-center text-ink-3">
+          Omni Executor{updates?.status?.app?.current ? ` ${updates.status.app.current}` : ""}
+        </p>
       </div>
     </div>
   );

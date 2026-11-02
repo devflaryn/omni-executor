@@ -190,6 +190,11 @@ def check(base_url=None):
     # app.version alone is just a number, and offering an update the client
     # cannot fetch is worse than saying nothing.
     result["app"]["update"] = bool(app_art) and is_newer(available, APP_VERSION)
+    # Running something newer than this channel has: someone moved to a steadier
+    # channel. They stay put until it catches up, unless they ask to switch now.
+    # Never automatic, because a garbled or rolled-back manifest must not be able
+    # to downgrade anyone.
+    result["app"]["downgrade"] = bool(app_art) and is_newer(APP_VERSION, available)
     result["app"]["bytes"] = int((app_art or {}).get("bytes") or 0)
     return result
 
@@ -204,7 +209,7 @@ def apply_runtime(base_url=None, progress=None):
     return bootstrap.ensure_runtime(base_url=base_url, progress=progress)
 
 
-def stage_app(base_url=None, progress=None):
+def stage_app(base_url=None, progress=None, allow_downgrade=False):
     """Download and unpack a new app build beside the runtime dir.
 
     Staged rather than applied: the swap has to happen with this process gone,
@@ -216,7 +221,8 @@ def stage_app(base_url=None, progress=None):
     art = _app_artifact(manifest)
     if not art:
         raise UpdateError("no app build is published for this platform")
-    if not is_newer(art.get("version"), APP_VERSION):
+    downgrade = allow_downgrade and is_newer(APP_VERSION, art.get("version"))
+    if not downgrade and not is_newer(art.get("version"), APP_VERSION):
         raise UpdateError(f"published build {art.get('version')} is not newer "
                           f"than {APP_VERSION}")
 
@@ -235,7 +241,7 @@ def stage_app(base_url=None, progress=None):
         raise UpdateError("the downloaded build did not contain an app directory")
     (root / "staged.json").write_text(json.dumps({
         "version": art.get("version"), "build": str(build),
-        "sha256": art.get("sha256"), "staged": time.time(),
+        "sha256": art.get("sha256"), "staged": time.time(), "downgrade": downgrade,
     }, indent=2), encoding="utf-8")
     return build
 
@@ -274,6 +280,8 @@ def staged_info():
     build = Path(info.get("build", ""))
     if not build.is_dir():
         return None
+    if info.get("downgrade"):
+        return info if is_newer(APP_VERSION, info.get("version")) else None
     if not is_newer(info.get("version"), APP_VERSION):
         return None
     return info

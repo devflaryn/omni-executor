@@ -270,6 +270,7 @@ class Api:
         # case for the brief window between construction and serve().
         self._bridge = None
         self._bootstrapping = False
+        bootstrap.use_channel_source(self._dist_channel, cloud.token)
         # The omnidroid pool (started on the first launch, not here), and the
         # instance this app started for each account: name -> instance id.
         self._pool = droid.Pool()
@@ -1133,8 +1134,61 @@ class Api:
         reason, never as "up to date": telling someone they are current when
         you could not reach the server is how a machine sits on a broken base
         image for a week."""
+        return self._update_report()
+
+    def _update_report(self):
+        """The check, plus everything the update UI reads alongside it. One
+        place, so a manual check can't answer with less than the background one
+        does: leaving `staged` out made a downloaded build's Restart button
+        vanish on the next refresh."""
         import updates
-        return updates.check()
+        report = updates.check()
+        report["staged"] = updates.staged_info()
+        report["autoUpdate"] = self._auto_update_enabled()
+        report["channel"] = self._channel_state()
+        return report
+
+    def _channel_state(self):
+        """Which update channel this machine follows.
+
+        `picked` is what Settings saved, `active` is what is really used: a
+        machine set to Dev that signs in to a normal account follows Prod, and
+        goes back to Dev when a dev account signs in. The server enforces this
+        too, so editing settings.json gets nobody a dev build."""
+        allowed = cloud.auth().get("updateChannels") or ["prod", "beta"]
+        try:
+            picked = self.get_settings().get("updateChannel") or "prod"
+        except Exception:  # noqa: BLE001
+            picked = "prod"
+        return {"picked": picked, "allowed": allowed,
+                "active": picked if picked in allowed else "prod"}
+
+    def _dist_channel(self):
+        return bootstrap.UPDATE_CHANNELS.get(self._channel_state()["active"],
+                                             bootstrap.NATIVE_CHANNEL)
+
+    def update_set_channel(self, name):
+        """Follow a different update channel, starting now."""
+        import updates
+        if name not in self._channel_state()["allowed"]:
+            return {"ok": False, "error": "channel_forbidden",
+                    "message": "This account can't use that channel."}
+        if self._updating:
+            return {"ok": False, "error": "already_running",
+                    "message": "An update is downloading. Try again when it's finished."}
+        self.save_settings({"updateChannel": name})
+        # A build downloaded for the old channel is not what they just chose.
+        updates.discard_staged()
+        report = self._update_report()
+
+        # Fetch anything newer straight away rather than at the next poll.
+        def _tick():
+            try:
+                self._update_tick()
+            except Exception as exc:  # noqa: BLE001 — never break a running app
+                self._push("update-status", {"ok": False, "error": str(exc)})
+        threading.Thread(target=_tick, daemon=True).start()
+        return report
 
     def _check_updates_on_launch(self):
         """Start the update watcher: check now, then keep checking.
@@ -1184,10 +1238,7 @@ class Api:
                        process holds the presence lease and the editor buffer.
                        The UI gets a banner and a button, never a surprise.
         """
-        import updates
-        report = updates.check()
-        report["staged"] = updates.staged_info()
-        report["autoUpdate"] = self._auto_update_enabled()
+        report = self._update_report()
         self._push("update-status", report)
 
         if not report.get("ok") or not report.get("app", {}).get("update"):
@@ -1277,12 +1328,13 @@ class Api:
         threading.Thread(target=_run, daemon=True).start()
         return {"ok": True, "started": True}
 
-    def update_app(self):
+    def update_app(self, allow_downgrade=False):
         """Download a new build of this app and stage it.
 
         Staging only. The swap needs this process gone, so it happens in
         update_app_restart() — which is also the point where the user gets to
-        say when."""
+        say when. `allow_downgrade` is the Settings button for moving to an
+        older build on a steadier channel; nothing automatic ever passes it."""
         import updates
         ok, reason = updates.can_apply_app()
         if not ok:
@@ -1294,7 +1346,8 @@ class Api:
         def _run():
             try:
                 build = updates.stage_app(
-                    progress=lambda p: self._push("update-progress", p))
+                    progress=lambda p: self._push("update-progress", p),
+                    allow_downgrade=bool(allow_downgrade))
                 self._push("update-done", {"scope": "app", "build": str(build),
                                            "staged": updates.staged_info()})
             except Exception as exc:  # noqa: BLE001

@@ -65,9 +65,7 @@ def test_the_runtime_comes_from_its_own_channel():
     """Clients up to 1.0.44 read `stable`, and treat every hashed artifact in
     it as something to download. The omnidroid bundle must never be one of
     those, and this app must never be handed their base images."""
-    import inspect
-    default = inspect.signature(main.bootstrap.read_manifest).parameters["channel"].default
-    assert default == main.bootstrap.NATIVE_CHANNEL == "native"
+    assert main.Api()._dist_channel() == main.bootstrap.NATIVE_CHANNEL == "native"
 
 
 def test_an_unpacked_bundle_puts_each_file_on_a_new_inode(tmp_path, monkeypatch):

@@ -29,12 +29,44 @@ export function installDevMock() {
   const find = (n) => accounts.find((a) => a.name === n);
   const later = (ms, fn) => new Promise((r) => setTimeout(() => r(fn()), ms));
   const push = (e, p) => window.omniEvent?.(e, p);
+  // ?mock&dev previews a dev-tagged account; ?mock&newer a build ahead of its channel.
+  const params = new URLSearchParams(location.search);
+  const mockUpdate = () => {
+    const allowed = params.has("dev") ? ["prod", "beta", "dev"] : ["prod", "beta"];
+    const picked = settings.updateChannel || "prod";
+    const active = allowed.includes(picked) ? picked : "prod";
+    const newer = params.has("newer");
+    return {
+      ok: true,
+      autoUpdate: settings.autoUpdate !== false,
+      staged: null,
+      channel: { picked, allowed, active },
+      app: {
+        current: newer ? "1.3.0" : "1.0.0",
+        available: { prod: "1.0.0", beta: "1.0.0", dev: "1.0.0" }[active],
+        update: false,
+        downgrade: newer,
+        canApply: true,
+        reason: null,
+      },
+      runtime: { update: false, artifacts: [], bytes: 0, managed: true },
+    };
+  };
 
   window.__omniMock = {
     // The window itself is Tauri's now (frontend/src/window.js), and every
     // call there no-ops outside the shell — so the only window question left
     // for the backend is which chrome layout to draw.
     get_platform: async () => "win32",
+    update_check: async () => mockUpdate(),
+    update_set_channel: async (name) => {
+      if (!mockUpdate().channel.allowed.includes(name)) {
+        return { ok: false, error: "channel_forbidden", message: "This account can't use that channel." };
+      }
+      settings.updateChannel = name;
+      localStorage.setItem("omni-settings", JSON.stringify(settings));
+      return mockUpdate();
+    },
     get_settings: async () => settings,
     save_settings: async (patch) => {
       Object.assign(settings, patch);
@@ -277,9 +309,13 @@ export function installDevMock() {
     mining_status: async () => ({
       ok: true,
       installed: Boolean(settings.miningInstalled),
+      enrolled: Boolean(settings.miningInstalled),
       running: Boolean(settings.miningRunning),
       hashrate: settings.miningRunning ? 1200 + Math.round(Math.random() * 300) : 0,
-      creditedMicros: 0,
+      estHashrate: { gpu: 1350000, cpu: 2400 },
+      rates: { rvn: 0.000009, xmr: 0.0021 },
+      coins: { rvn: true, xmr: true },
+      creditedMicros: 124000,
     }),
     mining_enroll: () =>
       later(1200, () => {

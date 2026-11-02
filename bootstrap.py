@@ -25,7 +25,7 @@ sent every one of them a gigabyte they cannot use; putting this app's runtime
 on `stable` would have handed IT their base images. `native` keeps the two
 generations from ever seeing each other's files.
 """
-import hashlib, json, os, shutil, sys, tarfile, time, urllib.request, urllib.error, zipfile
+import hashlib, json, os, re, shutil, sys, tarfile, time, urllib.request, urllib.error, zipfile
 from pathlib import Path
 
 # DEV MODE, ABSENT FROM RELEASE BUILDS. Every PyInstaller spec here excludes
@@ -45,6 +45,40 @@ _MAX_RETRIES = 3
 # The dist channel this app's runtime AND its own app builds are published on.
 # See the module docstring for why it is not `stable`.
 NATIVE_CHANNEL = "native"
+
+# The update channels a user chooses between, and what the dist server calls
+# each one. Prod is `native`: the name every installed 1.0.x client asks for.
+UPDATE_CHANNELS = {"prod": NATIVE_CHANNEL, "beta": "beta", "dev": "dev"}
+_DEV_CHANNEL = "dev"
+
+# Set once by the app (main.Api). Until then, and in tests, it is prod and no token.
+_channel_source = lambda: NATIVE_CHANNEL
+_token_source = lambda: None
+
+
+def use_channel_source(channel, token):
+    """How to find the channel this machine follows, and its sign-in token.
+    Both are asked afresh each time, so a Settings change or a sign-out applies
+    to the very next request."""
+    global _channel_source, _token_source
+    _channel_source, _token_source = channel, token
+
+
+def active_channel() -> str:
+    return _channel_source()
+
+
+def _channel_auth(req, channel):
+    """Dev builds need a dev account. The token goes on those requests only."""
+    token = _token_source() if channel == _DEV_CHANNEL else None
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    return req
+
+
+def _prod_name(name: str) -> str:
+    """`omnidroid-win-beta` is the beta build of `omnidroid-win`."""
+    return re.sub(r"-(beta|dev)$", "", name)
 
 
 class BootstrapError(Exception):
@@ -117,11 +151,13 @@ def installed_state(rt: Path) -> dict:
     return {"artifacts": {}, "app_version": None}
 
 
-def read_manifest(base_url: str, os_name: str = None, channel: str = NATIVE_CHANNEL) -> dict:
+def read_manifest(base_url: str, os_name: str = None, channel: str = None) -> dict:
     os_name = os_name or current_os()
+    channel = channel or active_channel()
     url = f"{base_url.rstrip('/')}{MANIFEST_PATH}?os={os_name}&channel={channel}"
     try:
-        with urllib.request.urlopen(url, timeout=30) as r:
+        req = _channel_auth(urllib.request.Request(url), channel)
+        with urllib.request.urlopen(req, timeout=30) as r:
             if r.status != 200:
                 raise BootstrapError(f"manifest HTTP {r.status}")
             data = json.loads(r.read())
@@ -216,7 +252,7 @@ def download_blob(base_url: str, artifact: dict, tmp_path: Path, progress=None) 
         have = tmp_path.stat().st_size if tmp_path.exists() else 0
         if have > total:  # corrupt partial
             _discard(tmp_path); have = 0
-        req = urllib.request.Request(url)
+        req = _channel_auth(urllib.request.Request(url), artifact.get("channel"))
         if have:
             req.add_header("Range", f"bytes={have}-")
         try:
@@ -560,6 +596,12 @@ def ensure_runtime(base_url: str = None, progress=None) -> dict:
         tmp = _part_file(staging, a)
         download_blob(base_url, a, tmp, progress)
         place_artifact(a, tmp, rt)
+        # One receipt per install location. A build from another channel has
+        # just been written over this one's files, so its receipt is no longer
+        # true, and keeping it would make switching back download nothing.
+        for other in [n for n in installed.setdefault("artifacts", {})
+                      if n != a["name"] and _prod_name(n) == _prod_name(a["name"])]:
+            del installed["artifacts"][other]
         installed.setdefault("artifacts", {})[a["name"]] = {
             "version": a.get("version"), "sha256": a["sha256"], "bytes": a.get("bytes")}
         changed.append(a["name"])
