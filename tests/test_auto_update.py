@@ -1,13 +1,9 @@
 """Auto-update: what happens WITHOUT anyone clicking.
 
-The download is automatic; the RESTART is always the user's. A new build is
-staged in the background (invisible, and it makes the restart instant), and
-then the app tells the user: at launch it emits `update-ready`, which the
-frontend turns into a popup ("Update found — Restart & apply"). It never swaps
-and relaunches on its own — a window that vanishes by itself at startup is
-exactly what people find alarming, and a build that reported the wrong version
-would turn a silent auto-restart into a loop. The user clicking "Restart &
-apply" is both the consent and the loop-stop.
+At launch a new build installs itself: it downloads, the window closes, the build
+is swapped and the new version opens. While the app is open it only downloads, and
+the banner leaves the restart to the user. A launch tries a given version only
+once, so a build that keeps reporting itself as out of date can't loop.
 """
 
 import json
@@ -40,9 +36,11 @@ def _report(update=True, version="9.9.9", can_apply=True, ok=True, staged=None):
             "runtime": {"update": False}, "staged": staged}
 
 
-def _tick(api, monkeypatch, report, launch=False, stage_result="ok"):
+def _tick(api, monkeypatch, report, launch=False, stage_result="ok", may_apply=True,
+          restart_result=None):
     """Run one _update_tick with updates.* faked. Returns what it did."""
     did = {"staged": False, "restarted": False}
+    tried = did.setdefault("tried", [])
     staged_info = report.get("staged")
 
     def fake_stage_app(progress=None):
@@ -54,42 +52,57 @@ def _tick(api, monkeypatch, report, launch=False, stage_result="ok"):
     fake.check.return_value = {k: v for k, v in report.items() if k != "staged"}
     fake.APP_VERSION = "1.0.0"
     fake.stage_app.side_effect = fake_stage_app
+    fake.may_auto_apply.return_value = may_apply
+    fake.note_auto_apply.side_effect = tried.append
     # staged_info answers "nothing" until stage_app has run, then the receipt.
     fake.staged_info.side_effect = lambda: (
         {"version": report["app"]["available"]} if did["staged"] else staged_info)
 
     monkeypatch.setitem(sys.modules, "updates", fake)
-    monkeypatch.setattr(api, "update_app_restart",
-                        lambda: did.__setitem__("restarted", True))
+    def restart():
+        did["restarted"] = True
+        return restart_result or {"ok": True}
+
+    monkeypatch.setattr(api, "update_app_restart", restart)
     before = len(api._pushed)
     api._update_tick(launch=launch)
-    # The popup is driven by an update-ready event, not by a restart.
-    did["prompted"] = any(e == "update-ready" for e, _ in api._pushed[before:])
+    events = api._pushed[before:]
+    # The banner's cue, as opposed to installing right now.
+    did["banner"] = any(e == "update-ready" for e, _ in events)
+    did["closing"] = any(e == "update-applying" and p.get("closing") for e, p in events)
+    did["screen"] = any(e == "update-applying" and not p.get("closing") for e, p in events)
     return did
 
 
 # ------------------------------------------------------- the two behaviours
 
-def test_at_launch_a_new_version_stages_and_prompts(api, monkeypatch):
-    """A launch downloads the build and then PROMPTS — it does not swap and
-    relaunch on its own. The user gets the popup, not a vanishing window."""
+def test_at_launch_a_new_version_installs_itself(api, monkeypatch):
     did = _tick(api, monkeypatch, _report(), launch=True)
-    assert did["staged"] and did["prompted"] and not did["restarted"]
+    assert did["screen"] and did["staged"] and did["restarted"] and did["closing"]
+    assert not did["banner"]
+    assert did["tried"] == ["9.9.9"]
+    # A page that loaded late learns the same thing from any check.
+    assert api._launch_update == {"version": "9.9.9", "closing": True}
 
 
-def test_while_running_it_downloads_but_does_not_restart(api, monkeypatch):
-    """The restart is the user's to schedule: this process holds the presence
-    lease its other machines read, and whatever is in the editor."""
+def test_while_running_it_downloads_then_shows_the_banner(api, monkeypatch):
     did = _tick(api, monkeypatch, _report(), launch=False)
-    assert did["staged"] and not did["restarted"]
+    assert did["staged"] and did["banner"]
+    assert not did["restarted"] and not did["screen"] and not did["closing"]
+    assert api._launch_update is None
 
 
 def test_an_already_staged_build_is_not_downloaded_twice(api, monkeypatch):
-    """An update already staged (a previous tick got it) is not re-downloaded;
-    the launch still prompts to restart into it."""
-    did = _tick(api, monkeypatch,
-                _report(staged={"version": "9.9.9"}), launch=True)
-    assert not did["staged"] and did["prompted"] and not did["restarted"]
+    """Staged by an earlier session: the next launch installs it straight away."""
+    did = _tick(api, monkeypatch, _report(staged={"version": "9.9.9"}), launch=True)
+    assert not did["staged"] and did["restarted"] and did["closing"]
+
+
+def test_a_check_that_took_too_long_no_longer_counts_as_launch(api, monkeypatch):
+    """On a bad route the answer can come half a minute in. They may be working."""
+    monkeypatch.setattr(api, "LAUNCH_APPLY_SECONDS", -1)
+    did = _tick(api, monkeypatch, _report(), launch=True)
+    assert did["staged"] and did["banner"] and not did["restarted"]
 
 
 def test_a_staged_build_for_a_DIFFERENT_version_is_replaced(api, monkeypatch):
@@ -132,7 +145,17 @@ def test_the_setting_turns_the_whole_thing_off(api, monkeypatch):
 
 def test_a_failed_download_does_not_restart_into_nothing(api, monkeypatch):
     did = _tick(api, monkeypatch, _report(), launch=True, stage_result="boom")
-    assert did["staged"] and not did["restarted"]
+    assert did["staged"] and not did["restarted"] and not did["closing"]
+    # The Updating screen clears on this, and the app carries on.
+    assert any(e == "update-error" for e, _ in api._pushed)
+    assert api._launch_update is None
+
+
+def test_a_failed_install_keeps_the_window_and_falls_back_to_the_banner(api, monkeypatch):
+    did = _tick(api, monkeypatch, _report(), launch=True,
+                restart_result={"ok": False, "message": "no staged build"})
+    assert did["restarted"] and not did["closing"] and did["banner"]
+    assert api._launch_update is None
 
 
 def test_a_failed_background_download_is_reported_as_automatic(api, monkeypatch):
@@ -143,18 +166,38 @@ def test_a_failed_background_download_is_reported_as_automatic(api, monkeypatch)
     assert errors and errors[-1]["auto"] is True
 
 
-# --------------------------------------------------- no restart loop, by design
+# ------------------------------------------------------------ no restart loop
 
-def test_launch_never_restarts_on_its_own(api, monkeypatch):
-    """The loop that used to need guarding cannot happen: a launch prompts, it
-    does not swap. Even a build that keeps reporting itself as out of date only
-    ever re-opens the same popup — which a human closes — never a window that
-    disappears by itself. Two launches in a row, zero automatic restarts."""
-    first = _tick(api, monkeypatch, _report(), launch=True)
-    assert first["prompted"] and not first["restarted"]
-    second = _tick(api, monkeypatch,
-                   _report(staged={"version": "9.9.9"}), launch=True)
-    assert second["prompted"] and not second["restarted"]
+def test_a_version_already_tried_gets_the_banner_not_another_restart(api, monkeypatch):
+    """A build that still reports the old version after installing would otherwise
+    close the window on every launch, forever."""
+    did = _tick(api, monkeypatch, _report(staged={"version": "9.9.9"}), launch=True, may_apply=False)
+    assert did["banner"] and not did["restarted"] and not did["closing"] and not did["screen"]
+
+
+def test_one_automatic_try_per_version(tmp_path, monkeypatch):
+    import updates
+    monkeypatch.setattr(main.bootstrap, "runtime_dir", lambda: tmp_path)
+    assert updates.may_auto_apply("1.1.0")
+    updates.note_auto_apply("1.1.0")
+    assert not updates.may_auto_apply("1.1.0")
+    # A fixed release is a new version, so it gets its own try.
+    assert updates.may_auto_apply("1.1.1")
+
+
+def test_the_record_survives_the_swap_deleting_the_staging_dir(tmp_path, monkeypatch):
+    import updates
+    monkeypatch.setattr(main.bootstrap, "runtime_dir", lambda: tmp_path)
+    updates.note_auto_apply("1.1.0")
+    updates.discard_staged()
+    assert not updates.may_auto_apply("1.1.0")
+
+
+def test_a_damaged_record_does_not_stop_updates(tmp_path, monkeypatch):
+    import updates
+    monkeypatch.setattr(main.bootstrap, "runtime_dir", lambda: tmp_path)
+    (tmp_path / "auto-update.json").write_text("not json", encoding="utf-8")
+    assert updates.may_auto_apply("1.1.0")
 
 
 # --------------------------------------------------------------- the watcher

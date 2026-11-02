@@ -287,6 +287,32 @@ def staged_info():
     return info
 
 
+def _auto_apply_file():
+    # Beside the staging dir, not in it: a swap deletes the staging dir, and this
+    # has to outlive the swap to do its job.
+    return bootstrap.runtime_dir() / "auto-update.json"
+
+
+def may_auto_apply(version):
+    """Whether a launch may install `version` without being asked.
+
+    One try per version. A build that still reports the old version after
+    installing (it has happened: 1.0.25 and 1.0.26 both reported 1.0.24), or an
+    install that fails, would otherwise close the window on every launch, forever.
+    After one try it falls back to the banner, where a person decides."""
+    try:
+        tried = json.loads(_auto_apply_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True
+    return not isinstance(tried, dict) or tried.get("version") != version
+
+
+def note_auto_apply(version):
+    path = _auto_apply_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"version": version, "at": time.time()}), encoding="utf-8")
+
+
 def discard_staged():
     """Throw away a staged build. Called after a successful swap so the next
     launch is not still offering it."""

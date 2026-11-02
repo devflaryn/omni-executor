@@ -1,16 +1,23 @@
-/* Settings: identity, appearance, and the engine's own facts. */
+/* Settings: who you are, how the app updates, and how it looks.
+
+   Each section is one sheet of rows, the same surface the Earn tab uses. A row
+   says what a setting is on the left and holds its control on the right. */
 
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
-import { useEngine } from "../engine.jsx";
-import { Button, Field, Lamp, Panel, PanelHead } from "./ui.jsx";
-import { CpuIcon, GearIcon, MoonIcon, SunIcon, UserIcon } from "./icons.jsx";
-import UpdatePanel from "./UpdateBanner.jsx";
+import { Button } from "./ui.jsx";
+import { MoonIcon, SunIcon } from "./icons.jsx";
+import UpdatePanel, { SettingRow, SettingsSection } from "./UpdateBanner.jsx";
 
 function initials(name) {
   const parts = String(name).trim().split(/\s+/).filter(Boolean);
   return (parts.slice(0, 2).map((p) => p[0]).join("") || "?").toUpperCase();
 }
+
+const THEMES = [
+  { id: "dark", label: "Dark", Icon: MoonIcon },
+  { id: "light", label: "Light", Icon: SunIcon },
+];
 
 export default function SettingsView({
   active,
@@ -23,160 +30,38 @@ export default function SettingsView({
   onAuthChange,
   updates,
 }) {
-  const engine = useEngine();
-  const [name, setName] = useState(profile.name);
-  const [tag, setTag] = useState(profile.tag);
-  const [saved, setSaved] = useState(false);
-  const saveTimer = useRef(null);
-  const savedTimer = useRef(null);
-
-  useEffect(() => {
-    setName(profile.name);
-    setTag(profile.tag);
-  }, [profile.name, profile.tag]);
-
-  const scheduleSave = (nextName, nextTag) => {
-    clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      onProfile({ name: nextName.trim(), tag: nextTag.trim() });
-      setSaved(true);
-      clearTimeout(savedTimer.current);
-      savedTimer.current = setTimeout(() => setSaved(false), 1500);
-    }, 500);
-  };
-
   return (
-    <div className={`min-h-0 flex-1 overflow-y-auto px-5 py-5 ${active ? "" : "hidden"}`}>
-      <div className="animate-rise mx-auto flex w-full max-w-[640px] flex-col gap-4">
-        <OmniAccountPanel auth={auth} onAuthChange={onAuthChange} showToast={showToast} />
+    <div className={`min-h-0 flex-1 overflow-y-auto px-5 pt-3 pb-5 ${active ? "" : "hidden"}`}>
+      <div className="animate-rise mx-auto flex w-full max-w-[720px] flex-col gap-7">
+        <ProfileSection
+          profile={profile}
+          onProfile={onProfile}
+          auth={auth}
+          onAuthChange={onAuthChange}
+          showToast={showToast}
+        />
 
         {updates && <UpdatePanel updates={updates} showToast={showToast} />}
 
-        {/* Profile */}
-        <Panel className="overflow-hidden">
-          <PanelHead
-            icon={UserIcon}
-            title="Profile"
-            right={
-              <span
-                className={`silk text-live transition-opacity duration-300 ${saved ? "opacity-100" : "opacity-0"}`}
-              >
-                Saved
-              </span>
-            }
-          />
-          <div className="flex items-start gap-4 p-4">
-            <span
-              className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl border border-accent/40
-                         bg-accent/12 font-mono text-lg font-bold text-accent"
-              aria-hidden="true"
-            >
-              {initials(name || "?")}
-            </span>
-            <div className="flex min-w-0 flex-1 flex-col gap-3">
-              <Field label="Display name" htmlFor="profile-name">
-                <input
-                  id="profile-name"
-                  value={name}
-                  onChange={(e) => {
-                    setName(e.target.value);
-                    scheduleSave(e.target.value, tag);
-                  }}
-                  className="input"
-                  maxLength={40}
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </Field>
-              <Field label="Status" htmlFor="profile-tag">
-                <input
-                  id="profile-tag"
-                  value={tag}
-                  onChange={(e) => {
-                    setTag(e.target.value);
-                    scheduleSave(name, e.target.value);
-                  }}
-                  className="input"
-                  maxLength={60}
-                  autoComplete="off"
-                  spellCheck={false}
-                  placeholder="Scripting away…"
-                />
-              </Field>
+        <SettingsSection title="Appearance">
+          <SettingRow label="Theme" hint="Choose how the app looks.">
+            <div role="radiogroup" aria-label="Theme" className="segmented">
+              {THEMES.map(({ id, label, Icon }) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="radio"
+                  aria-checked={theme === id}
+                  onClick={() => onTheme(id)}
+                  className="segmented-item"
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                  {label}
+                </button>
+              ))}
             </div>
-          </div>
-        </Panel>
-
-        {/* Appearance */}
-        <Panel className="overflow-hidden">
-          <PanelHead icon={GearIcon} title="Appearance" />
-          <div className="flex flex-col gap-4 p-4">
-            <div className="flex items-center justify-between gap-4">
-              <span>
-                <span className="block text-[13.5px] font-medium text-ink">Theme</span>
-                <span className="block text-[12px] text-ink-3">
-                  Choose how the app looks.
-                </span>
-              </span>
-              <div
-                role="radiogroup"
-                aria-label="Theme"
-                className="flex shrink-0 gap-1 rounded-lg border border-line bg-raised p-1"
-              >
-                {[
-                  { id: "dark", label: "Dark", Icon: MoonIcon },
-                  { id: "light", label: "Light", Icon: SunIcon },
-                ].map(({ id, label, Icon }) => (
-                  <button
-                    key={id}
-                    type="button"
-                    role="radio"
-                    aria-checked={theme === id}
-                    onClick={() => onTheme(id)}
-                    className={`ring-focus flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12.5px]
-                                font-semibold transition-colors duration-150 ${
-                                  theme === id
-                                    ? "bg-accent text-accent-ink"
-                                    : "text-ink-2 hover:text-ink"
-                                }`}
-                  >
-                    <Icon className="h-3.5 w-3.5" />
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-          </div>
-        </Panel>
-
-        {/* Engine */}
-        <Panel className="overflow-hidden">
-          <PanelHead
-            icon={CpuIcon}
-            title="Engine"
-            right={
-              <span className="flex items-center gap-2 text-[12.5px] text-ink-2">
-                <Lamp tone={engine.health.tone} pulse={engine.health.tone === "busy"} size={6} />
-                {engine.health.label}
-              </span>
-            }
-          />
-          <div className="flex flex-col gap-4 p-4">
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-2.5 font-mono text-[12.5px]">
-              <Row label="Engine" value="omnidroid" />
-              <Row label="Build" value={engine.version?.bundle ?? "—"} />
-              <Row label="Pool" value={engine.doctor?.pool_up ? `up on port ${engine.doctor.pool_port}` : "starts with a launch"} />
-              <Row label="Executor APK" value={fmtFlag(engine.doctor ? Boolean(engine.doctor.apk) : null)} />
-            </dl>
-
-            <div className="rule-t flex gap-2 pt-4">
-              <Button size="sm" onClick={engine.refreshDoctor} disabled={engine.backend !== true}>
-                Re-check engine
-              </Button>
-            </div>
-          </div>
-        </Panel>
+          </SettingRow>
+        </SettingsSection>
 
         <p className="silk pb-2 text-center text-ink-3">
           Omni Executor{updates?.status?.app?.current ? ` ${updates.status.app.current}` : ""}
@@ -186,31 +71,62 @@ export default function SettingsView({
   );
 }
 
-/* The Omni account: which login this machine is using, what the plan is, what
-   this machine calls itself (that name is what other devices SEE — it is the
-   "Mac mini" in "Running on Mac mini"), and the way out. */
-function OmniAccountPanel({ auth, onAuthChange, showToast }) {
+/* Your Omni account and how you appear in the app. The device name is what your
+   other machines SEE: it is the "Mac mini" in "Running on Mac mini". */
+function ProfileSection({ profile, onProfile, auth, onAuthChange, showToast }) {
+  const [name, setName] = useState(profile.name);
+  const [tag, setTag] = useState(profile.tag);
   const [device, setDevice] = useState(auth?.device?.name || "");
-  const [syncing, setSyncing] = useState(false);
   const [key, setKey] = useState("");
   const [redeeming, setRedeeming] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const saveTimer = useRef(null);
+  const savedTimer = useRef(null);
   const nameTimer = useRef(null);
+
+  useEffect(() => {
+    setName(profile.name);
+    setTag(profile.tag);
+  }, [profile.name, profile.tag]);
 
   useEffect(() => {
     setDevice(auth?.device?.name || "");
   }, [auth?.device?.name]);
 
+  const flashSaved = () => {
+    setSaved(true);
+    clearTimeout(savedTimer.current);
+    savedTimer.current = setTimeout(() => setSaved(false), 1500);
+  };
+
+  const scheduleSave = (nextName, nextTag) => {
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      onProfile({ name: nextName.trim(), tag: nextTag.trim() });
+      flashSaved();
+    }, 500);
+  };
+
+  const renameDevice = (next) => {
+    setDevice(next);
+    clearTimeout(nameTimer.current);
+    nameTimer.current = setTimeout(async () => {
+      await api("set_device_name", next);
+      flashSaved();
+    }, 600);
+  };
+
   const sub = auth?.subscription || {};
   const premium = sub.tier === "premium";
-  // Free is the resting state now, not a failure — an account with no plan and
-  // an account whose plan lapsed are both simply "Free", and the expired case
-  // still says so because "your 90 days ran out" is the useful half of it.
-  const planLine = premium
+  // Free is the resting state, not a failure. An expired plan still says so,
+  // because "your 90 days ran out" is the useful half of it.
+  const plan = premium
     ? sub.plan === "lifetime"
-      ? "Premium · lifetime"
-      : `Premium · ${sub.daysRemaining} day${sub.daysRemaining === 1 ? "" : "s"} left`
+      ? "Premium, lifetime"
+      : `Premium, ${sub.daysRemaining} day${sub.daysRemaining === 1 ? "" : "s"} left`
     : sub.plan
-      ? `Free · ${sub.planLabel || sub.plan} expired`
+      ? `Free, ${sub.planLabel || sub.plan} expired`
       : "Free";
 
   const redeem = async () => {
@@ -226,17 +142,11 @@ function OmniAccountPanel({ auth, onAuthChange, showToast }) {
     const next = res.subscription || {};
     showToast(
       next.plan === "lifetime"
-        ? "Redeemed — this account is on the lifetime plan"
-        : `Redeemed — premium for ${next.daysRemaining} more day${next.daysRemaining === 1 ? "" : "s"}`,
+        ? "Redeemed. This account is on the lifetime plan"
+        : `Redeemed. Premium for ${next.daysRemaining} more day${next.daysRemaining === 1 ? "" : "s"}`,
       "success"
     );
     onAuthChange?.();
-  };
-
-  const renameDevice = (next) => {
-    setDevice(next);
-    clearTimeout(nameTimer.current);
-    nameTimer.current = setTimeout(() => api("set_device_name", next), 600);
   };
 
   const syncNow = async () => {
@@ -251,11 +161,10 @@ function OmniAccountPanel({ auth, onAuthChange, showToast }) {
     const down = res.pulled?.length || 0;
     const foreign = res.foreign?.length || 0;
     if (foreign) {
-      // Worth saying out loud rather than hiding in a count: these are
-      // accounts another Omni user left on this machine, and the app is
-      // deliberately not uploading them into the current user's account.
+      // Worth saying out loud: these are accounts another Omni user left on this
+      // machine, and the app is deliberately not uploading them into this one.
       showToast(
-        `Synced — ${up} up, ${down} down · left ${foreign} account${
+        `Synced ${up} up, ${down} down. Left ${foreign} account${
           foreign === 1 ? "" : "s"
         } belonging to another Omni user alone`,
         "info"
@@ -263,7 +172,7 @@ function OmniAccountPanel({ auth, onAuthChange, showToast }) {
       return;
     }
     showToast(
-      up || down ? `Synced — ${up} uploaded, ${down} downloaded` : "Already up to date",
+      up || down ? `Synced ${up} up, ${down} down` : "Already up to date",
       "success"
     );
   };
@@ -274,99 +183,129 @@ function OmniAccountPanel({ auth, onAuthChange, showToast }) {
   };
 
   return (
-    <Panel className="overflow-hidden">
-      <PanelHead
-        icon={UserIcon}
-        title="Omni account"
-        right={
-          <span className="flex items-center gap-2 text-[12.5px] text-ink-2">
-            {/* "off", not "fault": free is a normal state of a working
-                account, and a red lamp would read as something being broken. */}
-            <Lamp tone={premium ? "live" : "off"} size={6} />
-            {planLine}
-          </span>
-        }
-      />
-      <div className="flex flex-col gap-4 p-4">
-        <dl className="grid grid-cols-2 gap-x-4 gap-y-2.5 font-mono text-[12.5px]">
-          <Row label="Username" value={auth?.username || "—"} />
-          <Row label="Signed in" value={auth?.email || "—"} />
-          <Row label="Server" value={(auth?.apiBase || "").replace(/^https?:\/\//, "") || "—"} />
-        </dl>
-
-        {/* The only place a key is entered. It used to be on the sign-up form,
-            where it decided whether you got an account at all; now it buys time
-            on an account you already have, which is a Settings action. */}
-        <Field
-          label="License key"
-          htmlFor="redeem-key"
-          hint={
-            premium
-              ? "Redeeming again stacks the days onto what is left, or converts to lifetime."
-              : "Have a key? Redeem it to go premium."
-          }
+    <SettingsSection
+      title="Profile"
+      right={
+        <span
+          className={`text-[12.5px] text-live transition-opacity duration-300 ${saved ? "opacity-100" : "opacity-0"}`}
         >
-          <div className="flex gap-2">
-            <input
-              id="redeem-key"
-              className="input font-mono tracking-wide"
-              placeholder="OMNI-XXXX-XXXX-XXXX"
-              value={key}
-              spellCheck={false}
-              disabled={redeeming}
-              // Keys are printed and dictated in upper case; accepting lower
-              // case silently and then rejecting it would be needless friction.
-              onChange={(e) => setKey(e.target.value.toUpperCase())}
-              onKeyDown={(e) => e.key === "Enter" && redeem()}
-            />
-            <Button variant="solid" onClick={redeem} disabled={redeeming || !key.trim()}>
-              {redeeming ? "Redeeming…" : "Redeem"}
-            </Button>
-          </div>
-        </Field>
-
-        <Field
-          label="This device"
-          htmlFor="device-name"
-          hint="Your other machines show this name when an account is running here."
+          Saved
+        </span>
+      }
+    >
+      <div className="flex items-center gap-4 p-5">
+        <span
+          className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-raised text-[18px] font-semibold text-ink"
+          aria-hidden="true"
         >
-          <input
-            id="device-name"
-            className="input"
-            value={device}
-            maxLength={40}
-            spellCheck={false}
-            onChange={(e) => renameDevice(e.target.value)}
-          />
-        </Field>
-
-        {auth?.stale && (
-          <p className="text-[12px] text-ink-3">
-            Working offline — {auth.message || "the server could not be reached"}. Accounts and
-            plan shown from the last successful check.
+          {initials(name || auth?.username || "?")}
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-[17px] font-semibold tracking-[-0.01em] text-ink">
+            {name || auth?.username || "Guest"}
           </p>
-        )}
+          <p className="truncate text-[13px] text-ink-3">
+            {[auth?.username, auth?.email].filter(Boolean).join(", ")}
+          </p>
+        </div>
+        <span
+          className={`shrink-0 rounded-md border px-2 py-[3px] text-[12px] font-medium ${
+            premium ? "border-premium/40 text-premium" : "border-line text-ink-2"
+          }`}
+        >
+          {plan}
+        </span>
+      </div>
 
-        <div className="rule-t flex gap-2 pt-4">
-          <Button size="sm" onClick={syncNow} disabled={syncing}>
-            {syncing ? "Syncing…" : "Sync accounts"}
-          </Button>
-          <Button size="sm" className="ml-auto" onClick={signOut}>
-            Sign out
+      {auth?.stale && (
+        <p className="settings-note">
+          Working offline: {auth.message || "the server could not be reached"}. Your plan is
+          shown from the last successful check.
+        </p>
+      )}
+
+      <SettingRow label="Display name" htmlFor="profile-name">
+        <input
+          id="profile-name"
+          value={name}
+          onChange={(e) => {
+            setName(e.target.value);
+            scheduleSave(e.target.value, tag);
+          }}
+          className="input settings-input"
+          maxLength={40}
+          autoComplete="off"
+          spellCheck={false}
+        />
+      </SettingRow>
+
+      <SettingRow label="Status" htmlFor="profile-tag">
+        <input
+          id="profile-tag"
+          value={tag}
+          onChange={(e) => {
+            setTag(e.target.value);
+            scheduleSave(name, e.target.value);
+          }}
+          className="input settings-input"
+          maxLength={60}
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="Scripting away…"
+        />
+      </SettingRow>
+
+      <SettingRow
+        label="This device"
+        hint="Your other computers show this name when an account is running here."
+        htmlFor="device-name"
+      >
+        <input
+          id="device-name"
+          className="input settings-input"
+          value={device}
+          maxLength={40}
+          spellCheck={false}
+          onChange={(e) => renameDevice(e.target.value)}
+        />
+      </SettingRow>
+
+      <SettingRow
+        label="License key"
+        hint={
+          premium
+            ? "Redeeming again adds the days to what's left, or converts to lifetime."
+            : "Have a key? Redeem it to go premium."
+        }
+        htmlFor="redeem-key"
+      >
+        <div className="flex w-[300px] max-w-full gap-2">
+          <input
+            id="redeem-key"
+            className="input min-w-0 flex-1"
+            placeholder="OMNI-XXXX-XXXX-XXXX"
+            value={key}
+            spellCheck={false}
+            disabled={redeeming}
+            // Keys are printed and dictated in upper case; accepting lower case
+            // silently and then rejecting it would be needless friction.
+            onChange={(e) => setKey(e.target.value.toUpperCase())}
+            onKeyDown={(e) => e.key === "Enter" && redeem()}
+          />
+          <Button onClick={redeem} disabled={redeeming || !key.trim()}>
+            {redeeming ? "Redeeming…" : "Redeem"}
           </Button>
         </div>
+      </SettingRow>
+
+      <div className="settings-row">
+        <Button size="sm" onClick={syncNow} disabled={syncing}>
+          {syncing ? "Syncing…" : "Sync accounts"}
+        </Button>
+        <Button size="sm" onClick={signOut}>
+          Sign out
+        </Button>
       </div>
-    </Panel>
+    </SettingsSection>
   );
 }
-
-function Row({ label, value }) {
-  return (
-    <div className="flex items-baseline justify-between gap-3 border-b border-line-soft pb-2">
-      <dt className="silk text-ink-3">{label}</dt>
-      <dd className="truncate text-ink-2">{value}</dd>
-    </div>
-  );
-}
-
-const fmtFlag = (v) => (v == null ? "—" : v ? "present" : "missing");

@@ -87,6 +87,18 @@ def _read_json(path, default):
         return default
 
 
+def replace_file(tmp, dest):
+    """Move a finished temp file into place. On Windows a virus scanner can hold a
+    file it has just seen for a moment, and the move then fails with "access
+    denied", so give it a few tries before believing it."""
+    for delay in (0.02, 0.05, 0.1, 0.2, 0.4):
+        try:
+            return tmp.replace(dest)
+        except PermissionError:
+            time.sleep(delay)
+    return tmp.replace(dest)
+
+
 def _write_json(path, data):
     """Atomic write, 0600 where the OS has POSIX modes — auth.json holds a
     bearer token."""
@@ -97,7 +109,7 @@ def _write_json(path, data):
         os.chmod(tmp, 0o600)
     except OSError:
         pass  # Windows
-    tmp.replace(path)
+    replace_file(tmp, path)
 
 
 def auth_file() -> Path:

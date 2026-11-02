@@ -8,11 +8,10 @@
      app      a build of this program. Needs a restart, so it never happens
               without being asked. */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, onEngineEvent, saveSettings } from "../api.js";
 import { close as closeWindow } from "../window.js";
-import { Button, Lamp, Panel, PanelHead } from "./ui.jsx";
-import { CpuIcon } from "./icons.jsx";
+import { Button, Lamp, MiniSwitch } from "./ui.jsx";
 
 // What each update channel is, in the words Settings uses for it.
 const CHANNELS = {
@@ -33,15 +32,38 @@ export function useUpdates() {
   const [progress, setProgress] = useState(null);
   const [busy, setBusy] = useState(null); // "runtime" | "app" | null
   const [error, setError] = useState(null);
-  // The app is about to replace itself and relaunch — the launch-time
-  // auto-update. Terminal: nothing follows it in this process.
-  const [applying, setApplying] = useState(false);
+  // The version a launch is installing by itself, or null. An "Updating" screen
+  // covers the app until the window closes.
+  const [applying, setApplying] = useState(null);
+  const closing = useRef(false);
+
+  /* The last step of an update at launch. The backend has handed the swap to a
+     helper that waits for this app to exit, and the window is the shell's to close. */
+  const closeForUpdate = useCallback(() => {
+    if (closing.current) return;
+    closing.current = true;
+    setTimeout(() => {
+      closeWindow().catch(() => {
+        setError("Update is ready. Close Omni Executor to finish installing it.");
+      });
+    }, 600);
+  }, []);
+
+  const followLaunchUpdate = useCallback(
+    (update) => {
+      if (!update) return;
+      setApplying(update.version);
+      if (update.closing) closeForUpdate();
+    },
+    [closeForUpdate]
+  );
 
   const refresh = useCallback(async () => {
     const res = await api("update_check");
     setStatus(res);
+    followLaunchUpdate(res?.launchUpdate);
     return res;
-  }, []);
+  }, [followLaunchUpdate]);
 
   // Ask once as well. The watcher's first report can land before this listens,
   // and Settings needs a status to show the channel at all.
@@ -54,13 +76,14 @@ export function useUpdates() {
       onEngineEvent((event, payload) => {
         if (event === "update-status") {
           setStatus(payload);
+          followLaunchUpdate(payload?.launchUpdate);
         } else if (event === "update-progress") {
           setProgress(payload);
           // A background download the user never asked for still has to look
           // like something is happening rather than like a stall.
           if (payload?.auto) setBusy("app");
         } else if (event === "update-applying") {
-          setApplying(true);
+          followLaunchUpdate(payload);
         } else if (event === "update-done") {
           setProgress(null);
           setBusy(null);
@@ -69,13 +92,14 @@ export function useUpdates() {
         } else if (event === "update-error") {
           setProgress(null);
           setBusy(null);
+          setApplying(null);
           // A failed BACKGROUND download is not the user's problem: nobody
           // asked for it, the next check retries, and an error bar for it
           // would be the app complaining about its own housekeeping.
           if (!payload?.auto) setError(payload?.message || "Update failed");
         }
       }),
-    [refresh]
+    [refresh, followLaunchUpdate]
   );
 
   const startRuntime = useCallback(async () => {
@@ -168,41 +192,28 @@ export function useUpdates() {
 /** One line above the content when something is out of date. Deliberately not
     a modal: an update is never so urgent that it should take the app away.
 
-    The state that matters most is STAGED — a new build is already downloaded
-    and one restart away. With auto-update on, that is the only update state a
-    user normally sees at all: the check, the download and (at launch) the swap
-    all happen without them. While the app is open the restart stays theirs to
-    schedule, because this process holds the presence lease and the editor
-    buffer, so the banner says exactly that and offers exactly one button. */
+    With auto-update on, the only state a user normally sees here is STAGED: a new
+    build is already downloaded and one restart away. Until then there is nothing
+    for them to do, so nothing shows. The restart stays theirs to schedule, because
+    this process holds the presence lease and whatever is in the editor. */
 export function UpdateBanner({ updates, onOpenSettings }) {
-  const { status, progress, busy, error, applying, startApp, restartIntoUpdate } = updates;
+  const { status, progress, busy, error, startApp, restartIntoUpdate } = updates;
   const runtime = status?.runtime?.update;
   const app = status?.app?.update;
   const staged = status?.staged;
 
-  if (!runtime && !app && !staged && !busy && !applying) return null;
+  if (!runtime && !app && !staged && !busy) return null;
 
   const pct = progress?.percent ? Math.round(progress.percent) : null;
   const auto = status?.autoUpdate !== false;
-
-  // Applying is terminal — the window is about to close and reopen on the new
-  // version — so it outranks everything and offers no button to press.
-  if (applying) {
-    return (
-      <Strip tone="busy">
-        <span className="truncate text-[13px] text-ink">
-          Updating to {status?.app?.available}… the app will restart on its own.
-        </span>
-      </Strip>
-    );
-  }
 
   if (staged) {
     return (
       <Strip tone="live">
         <span className="truncate text-[13px] text-ink">
-          <span className="font-medium">Version {staged.version} is ready.</span>{" "}
-          <span className="text-ink-2">Restart to update.</span>
+          {staged.downgrade
+            ? `Version ${staged.version} is ready. Restart to switch.`
+            : "Update is available. Restart to update."}
         </span>
         <Button variant="solid" size="sm" className="ml-auto shrink-0" onClick={restartIntoUpdate}>
           Restart now
@@ -211,20 +222,18 @@ export function UpdateBanner({ updates, onOpenSettings }) {
     );
   }
 
+  // Downloading by itself, so there is nothing to say yet and no button to press.
+  if (auto && app && !runtime && status?.app?.canApply !== false) return null;
+
   const what = busy === "runtime"
-    ? "Updating base images…"
+    ? "Updating the engine…"
     : busy === "app"
       ? `Downloading version ${status?.app?.available ?? ""}…`
       : app && runtime
-        ? `App ${status.app.available} and new base images are available`
+        ? `App ${status.app.available} and an engine update are available`
         : app
           ? `Version ${status.app.available} is available`
-          : `New base images are available (${fmtBytes(status.runtime.bytes)})`;
-
-  // With auto-update on, an app-only update needs no button: it is already
-  // downloading, and a "Download" button that starts a download already in
-  // progress is a button that lies.
-  const selfServing = app && !runtime && auto;
+          : `An engine update is available (${fmtBytes(status.runtime.bytes)})`;
 
   return (
     <Strip tone={busy ? "busy" : "live"} pulse={Boolean(busy)}>
@@ -232,21 +241,16 @@ export function UpdateBanner({ updates, onOpenSettings }) {
         {error || what}
         {pct != null && <span className="ml-2 font-mono text-ink-3">{pct}%</span>}
       </span>
-      {/* The button DOES the thing it is labelled with. It used to call
-          onOpenSettings for every state, so a button reading "Install" only
-          switched tabs — and did nothing visible at all when Settings was
-          already open. Only "Details" navigates, because that is what it
-          means. */}
-      {!selfServing && (
-        <Button
-          size="sm"
-          className="ml-auto shrink-0"
-          disabled={Boolean(busy)}
-          onClick={app && !runtime ? startApp : onOpenSettings}
-        >
-          {busy ? "Details" : app && !runtime ? "Download" : "Update"}
-        </Button>
-      )}
+      {/* The button DOES the thing it is labelled with. Only "Details" and
+          "Update" navigate, because that is what they mean. */}
+      <Button
+        size="sm"
+        className="ml-auto shrink-0"
+        disabled={Boolean(busy)}
+        onClick={app && !runtime ? startApp : onOpenSettings}
+      >
+        {busy ? "Details" : app && !runtime ? "Download" : "Update"}
+      </Button>
     </Strip>
   );
 }
@@ -260,54 +264,33 @@ function Strip({ tone, pulse, children }) {
   );
 }
 
-/** Startup popup: a new build is downloaded and one restart away.
-
-    Shown as a modal (not the passive strip) because the user asked to be TOLD
-    at launch, with the choice in their hands — "Restart now" applies the staged
-    build; "Later" dismisses it for this session and leaves the strip behind so
-    it is still one click away. It only appears once a build is actually STAGED,
-    so its button applies instantly instead of kicking off a download. */
-export function UpdateModal({ updates, onDismiss }) {
-  const { status, applying, restartIntoUpdate, error } = updates;
-  const staged = status?.staged;
-  if (applying) {
-    return (
-      <Backdrop>
-        <Card>
-          <h2 className="text-[16px] font-semibold text-ink">Updating…</h2>
-          <p className="mt-2 text-[13.5px] leading-snug text-ink-2">
-            Installing version {status?.app?.available}. The app will restart on its own.
-          </p>
-        </Card>
-      </Backdrop>
-    );
-  }
-  if (!staged) return null;
+/** Covers the app while a launch installs an update by itself, so nobody starts
+    work in a window that is about to close. It clears if the download fails. */
+export function UpdatingScreen({ updates }) {
+  const { applying, progress, error } = updates;
+  const pct = progress?.percent ? Math.round(progress.percent) : 0;
   return (
     <Backdrop>
       <Card>
-        <div className="flex items-center gap-2.5">
-          <Lamp tone="live" size={7} />
-          <h2 className="text-[16px] font-semibold text-ink">
-            {staged.downgrade ? "Ready to switch" : "Update found"}
-          </h2>
-        </div>
-        <p className="mt-2.5 text-[13.5px] leading-snug text-ink-2">
-          <span className="font-medium text-ink">Version {staged.version}</span> is downloaded
-          and ready. Restarting closes this window and reopens it on the new version — running
-          instances are separate processes and keep going.
+        <h2 className="text-[16px] font-semibold text-ink">Updating Omni Executor</h2>
+        <p className="mt-2 text-[13.5px] leading-snug text-ink-2">
+          Installing version {applying}. The app will close and reopen on its own.
         </p>
+        <div
+          className="mt-4 h-1 overflow-hidden rounded-full bg-raised"
+          role="progressbar"
+          aria-label="Download progress"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={pct}
+        >
+          <div className="h-full rounded-full bg-accent transition-[width] duration-200" style={{ width: `${pct}%` }} />
+        </div>
         {error && (
           <p className="mt-3 rounded-lg border border-danger/35 bg-danger/8 px-3 py-2 text-[13px] text-danger">
             {error}
           </p>
         )}
-        <div className="mt-5 flex justify-end gap-2">
-          <Button size="sm" onClick={onDismiss}>Later</Button>
-          <Button variant="solid" size="sm" onClick={restartIntoUpdate}>
-            Restart &amp; apply
-          </Button>
-        </div>
       </Card>
     </Backdrop>
   );
@@ -324,6 +307,34 @@ function Backdrop({ children }) {
 function Card({ children }) {
   return (
     <div className="animate-rise w-full max-w-[380px] rounded-3xl border border-line bg-surface p-5 shadow-2xl">
+      {children}
+    </div>
+  );
+}
+
+/** A titled sheet of rows, in Settings. */
+export function SettingsSection({ title, right, children }) {
+  return (
+    <section>
+      <div className="mb-2.5 flex items-baseline justify-between gap-3 px-1">
+        <h2 className="text-[14px] font-semibold tracking-[-0.01em] text-ink">{title}</h2>
+        {right}
+      </div>
+      <div className="settings-sheet">{children}</div>
+    </section>
+  );
+}
+
+export function SettingRow({ label, hint, htmlFor, children }) {
+  const Label = htmlFor ? "label" : "span";
+  return (
+    <div className="settings-row">
+      <span className="min-w-0">
+        <Label htmlFor={htmlFor} className="block text-[13.5px] font-medium text-ink">
+          {label}
+        </Label>
+        {hint && <span className="mt-0.5 block text-[12.5px] leading-snug text-ink-3">{hint}</span>}
+      </span>
       {children}
     </div>
   );
@@ -363,8 +374,8 @@ export default function UpdatePanel({ updates, showToast }) {
       showToast(res?.error || "Couldn't reach the update server", "error");
       return;
     }
-    const any = res.runtime?.update || res.app?.update;
-    showToast(any ? "Updates available" : "Everything is up to date", any ? "info" : "success");
+    const any = res.staged || res.runtime?.update || res.app?.update;
+    showToast(any ? "Update available" : "You're up to date", any ? "info" : "success");
   };
 
   const app = status?.app;
@@ -373,183 +384,111 @@ export default function UpdatePanel({ updates, showToast }) {
   const pct = progress?.percent ? Math.round(progress.percent) : 0;
   const channel = status?.channel;
   const activeLabel = CHANNELS[channel?.active]?.label;
+  const pending = staged || runtime?.update || app?.update;
 
   return (
-    <Panel className="overflow-hidden">
-      <PanelHead
-        icon={CpuIcon}
-        title="Updates"
-        right={
-          <span className="flex items-center gap-2 text-[12.5px] text-ink-2">
-            <Lamp
-              tone={status?.ok === false ? "fault" : runtime?.update || app?.update ? "busy" : "live"}
-              size={6}
-            />
-            {status?.ok === false
-              ? "Offline"
-              : runtime?.update || app?.update
-                ? "Update available"
-                : "Up to date"}
-          </span>
+    <SettingsSection title="Updates">
+      <SettingRow
+        label={app?.current ? `Version ${app.current}` : "Version"}
+        hint={
+          status?.ok === false
+            ? "Couldn't reach the update server. Nothing has changed."
+            : staged
+              ? "An update is downloaded and ready."
+              : pending
+                ? "An update is available."
+                : "You're up to date."
         }
-      />
-      <div className="flex flex-col gap-4 p-4">
-        <dl className="grid grid-cols-2 gap-x-4 gap-y-2.5 font-mono text-[12.5px]">
-          <Row label="App version" value={app?.current ?? "—"} />
-          <Row label="Latest" value={app?.available ?? "—"} />
-        </dl>
-
-        {channel && (
-          <div className="flex items-center justify-between gap-4">
-            <span className="min-w-0">
-              <span className="block text-[13.5px] font-medium text-ink">Update channel</span>
-              <span className="block text-[12px] leading-snug text-ink-3">
-                {channel.picked !== channel.active
-                  ? `This account can't use ${CHANNELS[channel.picked]?.label ?? channel.picked}, so this computer follows ${activeLabel}.`
-                  : CHANNELS[channel.active]?.hint}
-              </span>
-            </span>
-            <div
-              role="radiogroup"
-              aria-label="Update channel"
-              className="flex shrink-0 gap-1 rounded-lg border border-line bg-raised p-1"
-            >
-              {channel.allowed.map((id) => (
-                <button
-                  key={id}
-                  type="button"
-                  role="radio"
-                  aria-checked={channel.active === id}
-                  disabled={switching || Boolean(busy)}
-                  onClick={() => pickChannel(id)}
-                  className={`ring-focus flex h-7 items-center rounded-md px-2.5 text-[12.5px] font-semibold
-                              transition-colors duration-150 disabled:cursor-not-allowed ${
-                                channel.active === id
-                                  ? "bg-accent text-accent-ink"
-                                  : "text-ink-2 hover:text-ink"
-                              }`}
-                >
-                  {CHANNELS[id]?.label ?? id}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <label className="flex cursor-pointer items-start gap-3">
-          <input
-            type="checkbox"
-            className="check mt-0.5"
-            checked={status?.autoUpdate !== false}
-            onChange={(e) => setAutoUpdate(e.target.checked)}
-          />
-          <span className="text-[13px] leading-snug text-ink">
-            Update automatically
-            <span className="mt-0.5 block text-[12px] text-ink-3">
-              Installs a new version on launch, when nothing is running yet. While the app is
-              open it only downloads — you choose when to restart.
-            </span>
-          </span>
-        </label>
-
-        {status?.ok === false && (
-          <p className="text-[12px] text-ink-3">
-            Couldn&apos;t reach the update server — {status.error}. Nothing was changed;
-            this is a check, not a failure.
-          </p>
-        )}
-
-        {runtime?.managed === false && (
-          <p className="text-[12px] leading-snug text-ink-3">
-            Base images are not managed here — {runtime.reason}
-          </p>
-        )}
-
-        {runtime?.update && (
-          <div className="rule-t pt-4">
-            <p className="mb-2 text-[13.5px] text-ink">
-              New base images — {fmtBytes(runtime.bytes)}
-            </p>
-            <p className="mb-3 text-[12px] leading-snug text-ink-3">
-              {runtime.artifacts.map((a) => a.name).join(", ")}. Stop every instance first;
-              a running VM has these files open.
-            </p>
-            <Button size="sm" onClick={startRuntime} disabled={Boolean(busy)}>
-              {busy === "runtime" ? `Downloading… ${pct}%` : "Download and install"}
-            </Button>
-          </div>
-        )}
-
-        {app?.update && !staged && (
-          <div className="rule-t pt-4">
-            <p className="mb-2 text-[13.5px] text-ink">
-              Version {app.available}
-              {app.bytes ? ` — ${fmtBytes(app.bytes)}` : ""}
-            </p>
-            {app.canApply ? (
-              <Button size="sm" onClick={startApp} disabled={Boolean(busy)}>
-                {busy === "app" ? `Downloading… ${pct}%` : "Download"}
-              </Button>
-            ) : (
-              <p className="text-[12px] leading-snug text-ink-3">{app.reason}</p>
-            )}
-          </div>
-        )}
-
-        {app?.downgrade && !staged && (
-          <div className="rule-t pt-4">
-            <p className="mb-2 text-[13.5px] text-ink">
-              You&apos;re on {app.current}, which is newer than {activeLabel} ({app.available}).
-            </p>
-            <p className="mb-3 text-[12px] leading-snug text-ink-3">
-              You&apos;ll stay on it until {activeLabel} catches up, or you can switch now.
-            </p>
-            {app.canApply ? (
-              <Button size="sm" onClick={startSwitch} disabled={Boolean(busy)}>
-                {busy === "app" ? `Downloading… ${pct}%` : `Install ${app.available}`}
-              </Button>
-            ) : (
-              <p className="text-[12px] leading-snug text-ink-3">{app.reason}</p>
-            )}
-          </div>
-        )}
-
-        {staged && (
-          <div className="rule-t pt-4">
-            <p className="mb-2 text-[13.5px] text-ink">
-              Version {staged.version} is downloaded and ready.
-            </p>
-            <p className="mb-3 text-[12px] leading-snug text-ink-3">
-              Restarting closes this window and reopens it on the new version. Running
-              instances are unaffected — they are separate processes and keep running.
-            </p>
-            <Button variant="solid" size="sm" onClick={restartIntoUpdate}>
-              Restart now
-            </Button>
-          </div>
-        )}
-
-        {error && (
-          <p className="rounded-lg border border-danger/35 bg-danger/8 px-3 py-2 text-[13px] text-danger">
-            {error}
-          </p>
-        )}
-
-        <div className="rule-t flex gap-2 pt-4">
+      >
+        {staged ? (
+          <Button variant="solid" size="sm" onClick={restartIntoUpdate}>
+            Restart now
+          </Button>
+        ) : (
           <Button size="sm" onClick={checkNow} disabled={checking || Boolean(busy)}>
             {checking ? "Checking…" : "Check for updates"}
           </Button>
-        </div>
-      </div>
-    </Panel>
-  );
-}
+        )}
+      </SettingRow>
 
-function Row({ label, value }) {
-  return (
-    <div className="flex items-baseline justify-between gap-3 border-b border-line-soft pb-2">
-      <dt className="silk text-ink-3">{label}</dt>
-      <dd className="truncate text-ink-2">{value}</dd>
-    </div>
+      {channel && (
+        <SettingRow
+          label="Update channel"
+          hint={
+            channel.picked !== channel.active
+              ? `This account can't use ${CHANNELS[channel.picked]?.label ?? channel.picked}, so this computer follows ${activeLabel}.`
+              : CHANNELS[channel.active]?.hint
+          }
+        >
+          <div role="radiogroup" aria-label="Update channel" className="segmented">
+            {channel.allowed.map((id) => (
+              <button
+                key={id}
+                type="button"
+                role="radio"
+                aria-checked={channel.active === id}
+                disabled={switching || Boolean(busy)}
+                onClick={() => pickChannel(id)}
+                className="segmented-item"
+              >
+                {CHANNELS[id]?.label ?? id}
+              </button>
+            ))}
+          </div>
+        </SettingRow>
+      )}
+
+      <SettingRow
+        label="Update automatically"
+        hint="Installs a new version when the app opens. If one arrives while it's open, it downloads in the background and you choose when to restart."
+      >
+        <MiniSwitch
+          label="Update automatically"
+          checked={status?.autoUpdate !== false}
+          onChange={setAutoUpdate}
+        />
+      </SettingRow>
+
+      {runtime?.managed === false && <p className="settings-note">{runtime.reason}</p>}
+
+      {runtime?.update && (
+        <SettingRow
+          label={`Engine update, ${fmtBytes(runtime.bytes)}`}
+          hint="Stop every instance first, because a running one has these files open."
+        >
+          <Button size="sm" onClick={startRuntime} disabled={Boolean(busy)}>
+            {busy === "runtime" ? `Downloading… ${pct}%` : "Install"}
+          </Button>
+        </SettingRow>
+      )}
+
+      {app?.update && !staged && (
+        <SettingRow
+          label={`Version ${app.available}${app.bytes ? `, ${fmtBytes(app.bytes)}` : ""}`}
+          hint={app.canApply ? null : app.reason}
+        >
+          {app.canApply && (
+            <Button size="sm" onClick={startApp} disabled={Boolean(busy)}>
+              {busy === "app" ? `Downloading… ${pct}%` : "Download"}
+            </Button>
+          )}
+        </SettingRow>
+      )}
+
+      {app?.downgrade && !staged && (
+        <SettingRow
+          label={`You're on ${app.current}, which is newer than ${activeLabel} (${app.available})`}
+          hint={app.canApply ? `You'll stay on it until ${activeLabel} catches up, or you can switch now.` : app.reason}
+        >
+          {app.canApply && (
+            <Button size="sm" onClick={startSwitch} disabled={Boolean(busy)}>
+              {busy === "app" ? `Downloading… ${pct}%` : `Install ${app.available}`}
+            </Button>
+          )}
+        </SettingRow>
+      )}
+
+      {error && <p className="settings-note text-danger">{error}</p>}
+    </SettingsSection>
   );
 }

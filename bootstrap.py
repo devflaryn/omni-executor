@@ -85,6 +85,18 @@ class BootstrapError(Exception):
     pass
 
 
+def _patiently(move):
+    """Run a file move, allowing for a virus scanner. On Windows one can hold a
+    file it has just seen for a moment, and the move fails with "access denied".
+    A file that is really in use still fails, about a second later."""
+    for delay in (0.02, 0.05, 0.1, 0.2, 0.4):
+        try:
+            return move()
+        except PermissionError:
+            time.sleep(delay)
+    return move()
+
+
 def dist_base() -> str:
     """Where the update manifest and every artifact blob come from.
 
@@ -393,7 +405,7 @@ def replace_tree(source: Path, target: Path, log=None) -> dict:
             original, parked = target / rel, trash / rel
             parked.parent.mkdir(parents=True, exist_ok=True)
             try:
-                os.rename(original, parked)
+                _patiently(lambda: os.rename(original, parked))
             except OSError as e:
                 raise BootstrapError(
                     f"{original} is in use and cannot be replaced ({e}). Close "
@@ -407,7 +419,7 @@ def replace_tree(source: Path, target: Path, log=None) -> dict:
         for rel in _tree_files(source):
             dest = target / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source / rel, dest)
+            _patiently(lambda: shutil.copy2(source / rel, dest))
             copied += 1
         say(f"[replace] wrote {copied} file(s) to {target}")
     except BaseException:
@@ -417,7 +429,7 @@ def replace_tree(source: Path, target: Path, log=None) -> dict:
                 original.parent.mkdir(parents=True, exist_ok=True)
                 # replace, not rename: a file we had already copied over the
                 # top of this one has to lose.
-                os.replace(parked, original)
+                _patiently(lambda: os.replace(parked, original))
             except OSError:
                 pass
         shutil.rmtree(trash, ignore_errors=True)
@@ -494,7 +506,7 @@ def place_artifact(artifact: dict, tmp_path: Path, rt: Path) -> None:
         tmp_path.unlink(missing_ok=True)
     else:
         name = artifact.get("dest_name") or artifact["url"].rsplit("/", 1)[-1]
-        shutil.move(str(tmp_path), str(dest_dir / name))
+        _patiently(lambda: shutil.move(str(tmp_path), str(dest_dir / name)))
 
 
 def _unlink_before_rewrite(dest: Path, names) -> None:
@@ -575,7 +587,7 @@ def _write_installed(rt: Path, installed: dict, manifest: dict = None) -> None:
                              manifest.get("app", {}).get("version"))
     tmpf = _installed_file(rt).with_suffix(".tmp")
     tmpf.write_text(json.dumps(installed, indent=2))
-    tmpf.replace(_installed_file(rt))
+    _patiently(lambda: tmpf.replace(_installed_file(rt)))
 
 
 def ensure_runtime(base_url: str = None, progress=None) -> dict:

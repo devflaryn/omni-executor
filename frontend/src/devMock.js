@@ -39,7 +39,8 @@ export function installDevMock() {
     return {
       ok: true,
       autoUpdate: settings.autoUpdate !== false,
-      staged: null,
+      staged: params.has("staged") ? { version: "1.0.1" } : null,
+      launchUpdate: params.has("applying") ? { version: "1.0.1", closing: false } : null,
       channel: { picked, allowed, active },
       app: {
         current: newer ? "1.3.0" : "1.0.0",
@@ -88,6 +89,8 @@ export function installDevMock() {
       signedIn: true,
       apiBase: "mock",
       device: { name: "dev" },
+      username: "devflaryn",
+      email: "dev@example.com",
       subscription: new URLSearchParams(location.search).get("mock") === "free"
         ? { plan: null, tier: "free", active: false, credits: { credits: 0 } }
         : {

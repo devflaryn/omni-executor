@@ -14,7 +14,7 @@ import EarnView from "./components/EarnView.jsx";
 import NetworkView from "./components/NetworkView.jsx";
 import BootstrapView from "./components/BootstrapView.jsx";
 import AuthView from "./components/AuthView.jsx";
-import { UpdateBanner, UpdateModal, useUpdates } from "./components/UpdateBanner.jsx";
+import { UpdateBanner, UpdatingScreen, useUpdates } from "./components/UpdateBanner.jsx";
 import Toast from "./components/Toast.jsx";
 import {
   ChartDuoIcon,
@@ -80,9 +80,9 @@ export default function App() {
   // Launch-time update state. main.py pushes an "update-status" event on every
   // start, so this is populated without the UI asking.
   const updates = useUpdates();
-  // The staged-update version the user said "Later" to this session, so the
-  // startup popup does not reappear on every tick after it is dismissed.
-  const [updateDismissed, setUpdateDismissed] = useState(null);
+  // Drawn on every screen below: an update at launch can arrive while the
+  // sign-in or setup screen is showing.
+  const updatingScreen = updates.applying ? <UpdatingScreen updates={updates} /> : null;
 
   const refreshAuth = useCallback(async () => {
     const status = await api("auth_status");
@@ -200,6 +200,7 @@ export default function App() {
       <WindowShell chrome={chrome}>
         <div className="flex h-full flex-1 flex-col overflow-hidden bg-canvas font-sans text-ink antialiased select-none">
           <ResizeEdges chrome={chrome} />
+          {updatingScreen}
           <TitleBar
             title="Omni Executor"
             subtitle="Starting…"
@@ -228,12 +229,15 @@ export default function App() {
       <WindowShell chrome={chrome}>
         <div className="flex h-full flex-1 flex-col overflow-hidden bg-canvas font-sans text-ink antialiased select-none">
           <ResizeEdges chrome={chrome} />
+          {updatingScreen}
           <TitleBar
             title="Omni Executor"
             subtitle={!auth.signedIn ? "Sign in" : "Setup"}
             chrome={chrome}
             leading={chrome.mac ? <span className="w-[64px]" aria-hidden="true" /> : null}
           />
+          {/* The only update there's anything to do about before sign-in or setup. */}
+          {updates.status?.staged && <UpdateBanner updates={updates} />}
           <div className="flex min-h-0 flex-1 flex-col">{gate}</div>
         </div>
       </WindowShell>
@@ -246,13 +250,7 @@ export default function App() {
         <EditorStoreProvider>
         <div className="flex h-full flex-1 overflow-hidden bg-canvas font-sans text-ink antialiased select-none">
           <ResizeEdges chrome={chrome} />
-          {(updates.applying ||
-            (updates.status?.staged && updates.status.staged.version !== updateDismissed)) && (
-            <UpdateModal
-              updates={updates}
-              onDismiss={() => setUpdateDismissed(updates.status?.staged?.version || true)}
-            />
-          )}
+          {updatingScreen}
           <Sidebar
             nav={NAV}
             tab={tab}

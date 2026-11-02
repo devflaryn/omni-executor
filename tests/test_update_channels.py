@@ -81,6 +81,32 @@ def test_every_report_carries_what_the_ui_reads(api, monkeypatch):
     assert report["channel"]["active"] == "prod"
 
 
+def test_the_channel_never_flickers_while_settings_are_being_saved(api):
+    """The watcher reads settings on its own thread while the UI saves them."""
+    import threading
+    api.save_settings({"updateChannel": "beta"})
+    errors, seen = [], set()
+
+    def saves():
+        try:
+            for i in range(200):
+                api.save_settings({"autoUpdate": bool(i % 2)})
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    def reads():
+        for _ in range(400):
+            seen.add(bootstrap.active_channel())
+
+    threads = [threading.Thread(target=f) for f in (saves, saves, reads, reads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    assert seen == {"beta"}
+
+
 class FakeResponse:
     status = 200
     def __init__(self, body): self.body = body

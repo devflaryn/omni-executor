@@ -127,6 +127,9 @@ def config_dir() -> Path:
 
 
 SETTINGS_FILE = config_dir() / "settings.json"
+# The update watcher reads settings on its own thread. On Windows a read that
+# meets a save can fail the save, or come back empty and look like defaults.
+_SETTINGS_LOCK = threading.RLock()
 # Open editor tabs (name, contents, caret) -- its own file, because script
 # bodies are large and churn on every keystroke while settings barely change.
 EDITOR_FILE = config_dir() / "editor.json"
@@ -262,7 +265,9 @@ class Api:
     # 30 minutes: the manifest is a few hundred bytes, and the thing being
     # detected is a human publishing a release, which does not happen on a
     # scale where a tighter poll would tell anyone anything sooner.
-    UPDATE_POLL_SECONDS = 1800
+    UPDATE_POLL_SECONDS = 600
+    # How long a launch's check may take and still count as "at launch".
+    LAUNCH_APPLY_SECONDS = 20
 
     def __init__(self):
         # The write end of the Tauri bridge, set by rpc.serve(). Only _push
@@ -270,6 +275,9 @@ class Api:
         # case for the brief window between construction and serve().
         self._bridge = None
         self._bootstrapping = False
+        # Set while a launch is installing an update by itself. Reported with
+        # every check, so a page that loaded after the event still finds out.
+        self._launch_update = None
         bootstrap.use_channel_source(self._dist_channel, cloud.token)
         # The omnidroid pool (started on the first launch, not here), and the
         # instance this app started for each account: name -> instance id.
@@ -316,6 +324,10 @@ class Api:
     # ---- settings ----
 
     def get_settings(self):
+        with _SETTINGS_LOCK:
+            return self._read_settings()
+
+    def _read_settings(self):
         try:
             with open(SETTINGS_FILE, encoding="utf-8") as f:
                 saved = json.load(f)
@@ -349,14 +361,15 @@ class Api:
         tmp = SETTINGS_FILE.with_suffix(".tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(settings, f, indent=2)
-        tmp.replace(SETTINGS_FILE)
+        cloud.replace_file(tmp, SETTINGS_FILE)
 
     def save_settings(self, settings):
-        current = self.get_settings()
-        if isinstance(settings, dict):
-            current.update(settings)
-        self._write_settings(current)
-        return current
+        with _SETTINGS_LOCK:
+            current = self.get_settings()
+            if isinstance(settings, dict):
+                current.update(settings)
+            self._write_settings(current)
+            return current
 
     # ---- editor tabs (persisted whole; the frontend owns the shape) ----
 
@@ -1146,6 +1159,7 @@ class Api:
         report["staged"] = updates.staged_info()
         report["autoUpdate"] = self._auto_update_enabled()
         report["channel"] = self._channel_state()
+        report["launchUpdate"] = self._launch_update
         return report
 
     def _channel_state(self):
@@ -1228,16 +1242,20 @@ class Api:
         distinction is about what the user is in the middle of:
 
           at launch    nobody is doing anything yet, so an update applies
-                       ITSELF — download, swap, relaunch — and the user simply
-                       arrives on the new version. That is what "auto-update"
-                       has to mean to be worth having; a prompt at startup is
-                       the thing people click past.
-          while open   they ARE doing something. Downloading is still
-                       automatic (it is invisible and makes the restart
-                       instant), but the restart is theirs to schedule: this
-                       process holds the presence lease and the editor buffer.
-                       The UI gets a banner and a button, never a surprise.
+                       ITSELF: an "Updating" screen covers the app while it
+                       downloads, the window closes, the build is swapped and
+                       the new version opens.
+          while open   they ARE doing something. The download is still
+                       automatic and invisible, but the restart is theirs to
+                       schedule: the UI shows a banner with a button, never a
+                       surprise.
+
+        A launch only counts while the check came back quickly, because a window
+        that closes itself half a minute after someone started using it is a
+        surprise too. may_auto_apply stops a bad build restarting in a loop.
         """
+        import updates
+        started = time.monotonic()
         report = self._update_report()
         self._push("update-status", report)
 
@@ -1247,19 +1265,40 @@ class Api:
             return
 
         version = report["app"].get("available")
+        auto = (launch
+                and time.monotonic() - started <= self.LAUNCH_APPLY_SECONDS
+                and updates.may_auto_apply(version))
+        if auto:
+            self._launch_update = {"version": version, "closing": False}
+            self._push("update-applying", {"version": version})
+
         staged = report.get("staged")
         if not staged or staged.get("version") != version:
             if self._updating:
+                self._launch_update = None
+                self._push("update-error", {"scope": "app", "auto": True,
+                                            "message": "already downloading"})
                 return
             staged = self._stage_app_quietly(version)
             if not staged:
+                # _stage_app_quietly has told the UI, which clears the screen.
+                self._launch_update = None
                 return
-        # The build is downloaded and one restart away. We do NOT swap silently:
-        # the user asked for a popup that says an update is ready and lets THEM
-        # click restart (a window that vanishes on its own at startup is exactly
-        # what people find alarming). The staged state rides update-status /
-        # update-done to the frontend, which shows the modal; this event marks
-        # that it was a launch-time find so the modal opens on its own.
+
+        if auto:
+            updates.note_auto_apply(version)
+            res = self.update_app_restart()
+            if res.get("ok"):
+                # Everything is in place, and only the window has to go. The
+                # window is the shell's, so the page closes it (UpdateBanner).
+                self._launch_update = {"version": version, "closing": True}
+                self._push("update-applying", {"version": version, "closing": True})
+                return
+            self._launch_update = None
+            self._push("update-error", {"scope": "app", "auto": True,
+                                        "message": res.get("message")})
+
+        # The banner is driven by the staged state. This event says it just landed.
         self._push("update-ready", {"version": version, "staged": staged,
                                     "launch": bool(launch)})
 

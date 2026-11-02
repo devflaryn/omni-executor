@@ -396,6 +396,85 @@ html.light {
   display: none;
 }
 
+/* Settings: sheets of rows, on the same surface as the Earn tab. */
+.settings-sheet {
+  overflow: hidden;
+  border: 1px solid var(--color-line);
+  border-radius: 12px;
+  background: var(--color-surface);
+}
+.settings-row {
+  display: flex;
+  min-height: 56px;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 24px;
+  padding: 12px 20px;
+}
+.settings-row > span:first-child {
+  flex: 1 1 220px;
+}
+.settings-row + .settings-row,
+.settings-sheet > .settings-note + .settings-row,
+.settings-sheet > div:first-child + .settings-row {
+  border-top: 1px solid var(--color-line);
+}
+.settings-note {
+  border-top: 1px solid var(--color-line);
+  padding: 12px 20px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--color-ink-3);
+}
+.settings-sheet .settings-input {
+  width: 300px;
+  max-width: 100%;
+  padding-block: 7px;
+  font-size: 13.5px;
+  border-radius: 8px;
+}
+.settings-sheet #redeem-key {
+  padding-block: 7px;
+  font-size: 13.5px;
+  border-radius: 8px;
+}
+.segmented {
+  display: flex;
+  flex-shrink: 0;
+  gap: 4px;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  background: var(--color-raised);
+  padding: 4px;
+}
+.segmented-item {
+  display: flex;
+  height: 28px;
+  align-items: center;
+  gap: 6px;
+  border-radius: 6px;
+  padding-inline: 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-ink-2);
+  transition: color 0.15s, background-color 0.15s;
+}
+.segmented-item:hover {
+  color: var(--color-ink);
+}
+.segmented-item:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+.segmented-item:disabled {
+  cursor: not-allowed;
+}
+.segmented-item[aria-checked="true"] {
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+}
+
 /* The Earn tab: one sheet, balance on one side and the miner on the other. Both
    sides pin their action to the bottom, so the two buttons line up. */
 .earn-sheet {
