@@ -242,7 +242,17 @@ fn resolve(app: &AppHandle) -> Result<(PathBuf, Vec<String>, PathBuf), String> {
 
 /// Dev fallback: `python main.py --rpc` out of the checkout this shell was
 /// built from. Never reached by an installed build, which always finds the
-/// frozen backend beside it.
+/// frozen backend beside it, so a release build leaves it out: it would carry
+/// the folder this was built in.
+#[cfg(not(debug_assertions))]
+fn source_checkout(
+    _app: &AppHandle,
+    _args: Vec<String>,
+) -> Result<(PathBuf, Vec<String>, PathBuf), String> {
+    Err(format!("{BACKEND_EXE} is missing beside the app. Reinstall Omni Executor."))
+}
+
+#[cfg(debug_assertions)]
 fn source_checkout(
     _app: &AppHandle,
     mut args: Vec<String>,
