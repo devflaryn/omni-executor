@@ -45,7 +45,7 @@ import bootstrap
 # numbered afresh, and it is published on its own dist channel
 # (bootstrap.NATIVE_CHANNEL) -- so it never competes with the 1.0.x QEMU line
 # in `stable`, where is_newer() would have it lose to 1.0.44 forever.
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 
 # Where a downloaded app build is unpacked before it replaces the live one.
 STAGING_DIR = "app-update"
