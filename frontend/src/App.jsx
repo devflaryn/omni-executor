@@ -35,7 +35,7 @@ const NAV = [
   { id: "accounts", label: "Accounts", Icon: UsersDuoIcon, hint: "3" },
   // Stat Track sits next to Accounts because it answers the question a fleet
   // of accounts raises -- "is it actually earning anything".
-  { id: "stattrack", label: "Stat Track", Icon: ChartDuoIcon, hint: "4", premium: true },
+  { id: "stattrack", label: "Stat Track", Icon: ChartDuoIcon, hint: "4", premium: true, account: true },
   // Network sits before Settings, not inside it: what it reports is a live
   // condition of the machine — the same kind of thing as "3 running" — and
   // the proxy it owns is a knob you set while watching that reading, not a
@@ -43,7 +43,7 @@ const NAV = [
   { id: "network", label: "Network", Icon: SignalDuoIcon, hint: "5" },
   // Earn sits after Network and before Settings — it's a thing you DO
   // (enroll, mine, spend) rather than a preference you file away.
-  { id: "earn", label: "Earn", Icon: EarnDuoIcon, hint: "6", badge: "Beta" },
+  { id: "earn", label: "Earn", Icon: EarnDuoIcon, hint: "6", badge: "Beta", account: true },
   { id: "settings", label: "Settings", Icon: GearDuoIcon, hint: "7" },
 ];
 
@@ -51,7 +51,7 @@ const NAV = [
 // engine.jsx). A settings.json from an older build may still carry `mode` and
 // `gpu`; main.py drops them, and nothing here reads them.
 const DEFAULT_LAUNCH = { place: "" };
-const DEFAULT_PROFILE = { name: "Guest", tag: "" };
+const DEFAULT_PROFILE = { name: "", tag: "" };
 
 export default function App() {
   const [tab, setTab] = useState("home");
@@ -77,6 +77,7 @@ export default function App() {
   // does not mount until one is signed in.
   const [auth, setAuth] = useState(null);
   const toastTimer = useRef(null);
+  const accountProfile = useRef(false);
   // Launch-time update state. main.py pushes an "update-status" event on every
   // start, so this is populated without the UI asking.
   const updates = useUpdates();
@@ -87,8 +88,33 @@ export default function App() {
   const refreshAuth = useCallback(async () => {
     const status = await api("auth_status");
     setAuth(status?.ok ? status : { ok: true, signedIn: false });
+    // The account's name beats whatever this device read from its own settings.
+    if (status?.profile) {
+      accountProfile.current = true;
+      setProfile({ ...DEFAULT_PROFILE, ...status.profile });
+    } else if (status?.ok && !status.signedIn) {
+      setProfile(DEFAULT_PROFILE);
+    }
     return status;
   }, []);
+
+  // Coming back to the window is when a name changed on another computer should
+  // show up. Not on every focus: it asks the server.
+  useEffect(() => {
+    let last = Date.now();
+    const onFocus = () => {
+      if (Date.now() - last < 30000) return;
+      last = Date.now();
+      refreshAuth();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [refreshAuth]);
+
+  const leaveGuest = useCallback(async () => {
+    await api("guest_exit");
+    await refreshAuth();
+  }, [refreshAuth]);
 
   // The shell creates the window HIDDEN, so the first frame anyone sees is a
   // painted sheet rather than an empty transparent rectangle. Reveal it as
@@ -147,7 +173,7 @@ export default function App() {
       // launches: Home is the overview (accounts, running, autoexec, recent
       // scripts), which is what a fresh launch should land on rather than
       // wherever the last session happened to leave off.
-      if (settings.profile) setProfile({ ...DEFAULT_PROFILE, ...settings.profile });
+      if (settings.profile && !accountProfile.current) setProfile({ ...DEFAULT_PROFILE, ...settings.profile });
       if (settings.launch) setLaunch({ ...DEFAULT_LAUNCH, ...settings.launch });
     });
   }, []);
@@ -163,9 +189,9 @@ export default function App() {
     saveSettings({ theme: next });
   }, []);
 
-  const updateProfile = useCallback((next) => {
+  const updateProfile = useCallback(async (next) => {
     setProfile(next);
-    saveSettings({ profile: next });
+    return api("profile_save", next.name, next.tag);
   }, []);
 
   const updateLaunch = useCallback((next) => {
@@ -219,8 +245,16 @@ export default function App() {
   // license check is the cheap question to ask first. Both gates sit under
   // the same titlebar as the app: the window must be movable and closable
   // before anyone has signed in.
-  const gate = !auth.signedIn ? (
-    <AuthView apiBase={auth.apiBase} deviceName={auth.device?.name} onSignedIn={() => refreshAuth()} />
+  const gate = !auth.signedIn && !auth.guest ? (
+    <AuthView
+      apiBase={auth.apiBase}
+      deviceName={auth.device?.name}
+      onSignedIn={() => refreshAuth()}
+      onGuest={async () => {
+        await api("guest_enter");
+        await refreshAuth();
+      }}
+    />
   ) : ready === false ? (
     <BootstrapView onReady={() => setReady(true)} />
   ) : null;
@@ -232,7 +266,7 @@ export default function App() {
           {updatingScreen}
           <TitleBar
             title="Omni Executor"
-            subtitle={!auth.signedIn ? "Sign in" : "Setup"}
+            subtitle={!auth.signedIn && !auth.guest ? "Sign in" : "Setup"}
             chrome={chrome}
             leading={chrome.mac ? <span className="w-[64px]" aria-hidden="true" /> : null}
           />
@@ -257,6 +291,7 @@ export default function App() {
             onTab={switchTab}
             chrome={chrome}
             premium={auth?.subscription?.tier === "premium"}
+            guest={Boolean(auth?.guest)}
           />
 
           <div className="flex min-w-0 flex-1 flex-col">
@@ -290,6 +325,7 @@ export default function App() {
                 active={tab === "stattrack"}
                 auth={auth}
                 onGo={switchTab}
+                onSignIn={leaveGuest}
                 showToast={showToast}
               />
               <NetworkView active={tab === "network"} onSummary={setNetSummary} />
@@ -299,6 +335,7 @@ export default function App() {
                 chrome={chrome}
                 showToast={showToast}
                 onAuthChange={refreshAuth}
+                onSignIn={leaveGuest}
               />
               <SettingsView
                 active={tab === "settings"}
@@ -309,6 +346,7 @@ export default function App() {
                 showToast={showToast}
                 auth={auth}
                 onAuthChange={refreshAuth}
+                onSignIn={leaveGuest}
                 updates={updates}
               />
             </main>
@@ -351,7 +389,7 @@ function ContextBar({ tab, profile, chrome, netSummary }) {
               ? running.length
                 ? `${running.length} running`
                 : `Engine ${health.label.toLowerCase()}`
-              : profile.name || "Guest";
+              : profile.name || "Settings";
 
   return (
     <TitleBar

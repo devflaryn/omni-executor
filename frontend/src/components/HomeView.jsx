@@ -24,15 +24,13 @@ import {
 
 /* Who to greet.
 
-   The Omni account's username first — that is the identity the whole app hangs
-   off, and it is unique. `profile.name` is the local Settings display name and
-   only wins if the user actually set one, since it defaults to "Guest" and
-   greeting a signed-in account as Guest is worse than saying nothing. An
-   account made before usernames existed has none, so the email's local part is
-   the last stop before the bare greeting. */
+   The display name saved on the account, then its username. An account made
+   before usernames existed has none, so the email's local part is the last stop.
+   A guest has no name to use, so the greeting stands on its own. */
 function displayName(auth, profile) {
+  if (auth?.guest) return "";
   const local = profile?.name?.trim();
-  if (local && local !== "Guest") return local;
+  if (local) return local;
   if (auth?.username) return auth.username;
   const email = auth?.email || "";
   return email.includes("@") ? email.slice(0, email.indexOf("@")) : "";
@@ -98,7 +96,7 @@ export default function HomeView({ active, auth, profile, launch, onGo, onAddAcc
           <div>
             <h2 className="flex flex-wrap items-center gap-3 text-[32px] leading-[1.1] font-bold tracking-[-0.025em] text-ink">
               {greeting(displayName(auth, profile))}
-              <TierBadge subscription={auth?.subscription} onGo={onGo} />
+              <TierBadge subscription={auth?.subscription} guest={auth?.guest} onGo={onGo} />
             </h2>
             <p className="mt-2 text-[13.5px] text-ink-3">
               {accounts.length === 0
@@ -254,7 +252,19 @@ export default function HomeView({ active, auth, profile, launch, onGo, onAddAcc
    be readable at a glance without being read. Premium takes the accent colour
    and its remaining days as a tooltip; Free stays in the quiet chip default and
    is a button through to Settings, where the key that changes it is redeemed. */
-function TierBadge({ subscription, onGo }) {
+function TierBadge({ subscription, guest, onGo }) {
+  if (guest) {
+    return (
+      <button
+        type="button"
+        className="chip ring-focus hover:text-ink"
+        title="Using the app without an account"
+        onClick={() => onGo("settings")}
+      >
+        Guest
+      </button>
+    );
+  }
   const premium = subscription?.tier === "premium";
   const days = subscription?.daysRemaining;
   const title = premium

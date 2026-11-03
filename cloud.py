@@ -322,6 +322,8 @@ def _adopt(res):
         "token": tok,
         "email": user.get("email"),
         "username": user.get("username"),
+        "displayName": user.get("displayName"),
+        "statusTag": user.get("statusTag"),
         "userId": str(user.get("_id") or ""),
         "subscription": data.get("subscription") or {},
         "saved": time.time(),
@@ -343,6 +345,9 @@ def me():
     # usernames existed has none, and overwriting a good cached value with the
     # server's null would make the greeting flicker back to the fallback.
     cur["username"] = user.get("username") or cur.get("username")
+    # No `or` here: "" means cleared on purpose and None means never set.
+    cur["displayName"] = user.get("displayName")
+    cur["statusTag"] = user.get("statusTag")
     cur["subscription"] = data.get("subscription") or {}
     # Kept with the login so the channel still works offline. Goes when they
     # sign out, along with the rest of this file.
@@ -350,7 +355,19 @@ def me():
     if cur.get("token"):
         _save_auth(cur)
     return {"email": cur.get("email"), "username": cur.get("username"),
+            "displayName": cur.get("displayName"), "statusTag": cur.get("statusTag"),
             "subscription": cur.get("subscription")}
+
+
+def update_profile(name, tag):
+    """Save the display name and status on the account, so every device gets them."""
+    res = request("PATCH", "/api/v1/auth/profile", {"displayName": name, "statusTag": tag})
+    user = (res.get("data") or {}).get("user") or {}
+    cur = auth()
+    if cur.get("token"):
+        cur["displayName"] = user.get("displayName", name)
+        cur["statusTag"] = user.get("statusTag", tag)
+        _save_auth(cur)
 
 
 # --------------------------------------------------------------- mining / earn

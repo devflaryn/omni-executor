@@ -20,7 +20,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api.js";
-import { Button, Lamp, Notice, PanelHead, Toggle } from "./ui.jsx";
+import { AccountLocked, Button, Lamp, Notice, PanelHead, Toggle } from "./ui.jsx";
 import {
   ChartIcon,
   GridIcon,
@@ -35,13 +35,18 @@ import {
 // so a faster poll here only spends requests to show the same numbers.
 const POLL_MS = 15000;
 
-export default function StatTrackView({ active, auth, onGo, showToast }) {
+export default function StatTrackView({ active, auth, onGo, onSignIn, showToast }) {
   const premium = auth?.subscription?.tier === "premium";
 
   return (
     <div className={`min-h-0 flex-1 overflow-y-auto px-5 py-5 ${active ? "" : "hidden"}`}>
       <div className="animate-rise mx-auto flex w-full max-w-[1080px] flex-col gap-6">
-        {premium ? (
+        {auth?.guest ? (
+          <AccountLocked title="Stat Track" onSignIn={onSignIn}>
+            See what every account is earning, live. Stat Track needs an Omni account on a
+            Premium plan.
+          </AccountLocked>
+        ) : premium ? (
           <StatConsole active={active} showToast={showToast} />
         ) : (
           <StatTrackLocked subscription={auth?.subscription} onGo={onGo} />

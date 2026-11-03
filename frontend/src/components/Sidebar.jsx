@@ -12,7 +12,7 @@
 
 import { useWindowDrag } from "./TitleBar.jsx";
 
-export default function Sidebar({ nav, tab, onTab, chrome, premium = false }) {
+export default function Sidebar({ nav, tab, onTab, chrome, premium = false, guest = false }) {
   const mac = Boolean(chrome?.mac);
   // The identity block and the empty rail move the window, like a titlebar.
   const drag = useWindowDrag(chrome);
@@ -41,18 +41,19 @@ export default function Sidebar({ nav, tab, onTab, chrome, premium = false }) {
       </div>
 
       <nav aria-label="Sections" className="flex flex-col items-center gap-2 px-2 py-2">
-        {nav.map(({ id, label, Icon, premium: needsPremium }, i) => {
+        {nav.map(({ id, label, Icon, premium: needsPremium, account: needsAccount }, i) => {
           const active = tab === id;
           // A locked section stays clickable — it explains itself when opened.
           // The pip is the only thing the rail says about it.
-          const locked = Boolean(needsPremium) && !premium;
+          const locked = (Boolean(needsPremium) && !premium) || (Boolean(needsAccount) && guest);
+          const why = guest && needsAccount ? "Needs an account" : "Premium";
           return (
             <button
               key={id}
               onClick={() => onTab(id)}
               aria-current={active ? "page" : undefined}
               aria-label={label}
-              title={`${label}${locked ? " — Premium" : ""}  (Ctrl+${i + 1})`}
+              title={`${label}${locked ? ` — ${why}` : ""}  (Ctrl+${i + 1})`}
               className={`ring-focus relative flex h-[54px] w-[54px] items-center justify-center rounded-[16px]
                           border transition-colors duration-150
                           ${

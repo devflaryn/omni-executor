@@ -28,6 +28,7 @@ export default function SettingsView({
   showToast,
   auth,
   onAuthChange,
+  onSignIn,
   updates,
 }) {
   return (
@@ -38,6 +39,7 @@ export default function SettingsView({
           onProfile={onProfile}
           auth={auth}
           onAuthChange={onAuthChange}
+          onSignIn={onSignIn}
           showToast={showToast}
         />
 
@@ -73,7 +75,7 @@ export default function SettingsView({
 
 /* Your Omni account and how you appear in the app. The device name is what your
    other machines SEE: it is the "Mac mini" in "Running on Mac mini". */
-function ProfileSection({ profile, onProfile, auth, onAuthChange, showToast }) {
+function ProfileSection({ profile, onProfile, auth, onAuthChange, onSignIn, showToast }) {
   const [name, setName] = useState(profile.name);
   const [tag, setTag] = useState(profile.tag);
   const [device, setDevice] = useState(auth?.device?.name || "");
@@ -81,6 +83,7 @@ function ProfileSection({ profile, onProfile, auth, onAuthChange, showToast }) {
   const [redeeming, setRedeeming] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [savedText, setSavedText] = useState("Saved");
   const saveTimer = useRef(null);
   const savedTimer = useRef(null);
   const nameTimer = useRef(null);
@@ -94,17 +97,19 @@ function ProfileSection({ profile, onProfile, auth, onAuthChange, showToast }) {
     setDevice(auth?.device?.name || "");
   }, [auth?.device?.name]);
 
-  const flashSaved = () => {
+  const flashSaved = (text = "Saved", ms = 1500) => {
+    setSavedText(text);
     setSaved(true);
     clearTimeout(savedTimer.current);
-    savedTimer.current = setTimeout(() => setSaved(false), 1500);
+    savedTimer.current = setTimeout(() => setSaved(false), ms);
   };
 
   const scheduleSave = (nextName, nextTag) => {
     clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      onProfile({ name: nextName.trim(), tag: nextTag.trim() });
-      flashSaved();
+    saveTimer.current = setTimeout(async () => {
+      const res = await onProfile({ name: nextName.trim(), tag: nextTag.trim() });
+      if (res?.synced === false) flashSaved("Saved on this device. It will sync when the server can be reached.", 4000);
+      else flashSaved();
     }, 500);
   };
 
@@ -182,6 +187,30 @@ function ProfileSection({ profile, onProfile, auth, onAuthChange, showToast }) {
     onAuthChange?.();
   };
 
+  if (auth?.guest) {
+    return (
+      <SettingsSection title="Profile">
+        <div className="flex items-center gap-4 p-5">
+          <span
+            className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-raised text-[18px] font-semibold text-ink"
+            aria-hidden="true"
+          >
+            G
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[17px] font-semibold tracking-[-0.01em] text-ink">Guest</p>
+            <p className="text-[13px] text-ink-3">
+              Your accounts stay on this computer. Signing in syncs them to your Omni account.
+            </p>
+          </div>
+          <Button variant="solid" size="sm" onClick={onSignIn}>
+            Sign in
+          </Button>
+        </div>
+      </SettingsSection>
+    );
+  }
+
   return (
     <SettingsSection
       title="Profile"
@@ -189,7 +218,7 @@ function ProfileSection({ profile, onProfile, auth, onAuthChange, showToast }) {
         <span
           className={`text-[12.5px] text-live transition-opacity duration-300 ${saved ? "opacity-100" : "opacity-0"}`}
         >
-          Saved
+          {savedText}
         </span>
       }
     >
@@ -202,7 +231,7 @@ function ProfileSection({ profile, onProfile, auth, onAuthChange, showToast }) {
         </span>
         <div className="min-w-0 flex-1">
           <p className="truncate text-[17px] font-semibold tracking-[-0.01em] text-ink">
-            {name || auth?.username || "Guest"}
+            {name || auth?.username || auth?.email || "Your account"}
           </p>
           <p className="truncate text-[13px] text-ink-3">
             {[auth?.username, auth?.email].filter(Boolean).join(", ")}

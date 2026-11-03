@@ -84,7 +84,17 @@ export function installDevMock() {
     // to show, and two of the sections (Farming, Stat Track) render only
     // their locked state without a plan — which is the one view that needs
     // no mock data at all. `?mock=free` still exercises the locked side.
-    auth_status: async () => ({
+    guest_enter: async () => ((settings.guest = true), { ok: true }),
+    guest_exit: async () => ((settings.guest = false), (settings.signedOut = true), { ok: true }),
+    profile_save: async (name, tag) => {
+      settings.profile = { name, tag };
+      return { ok: true, synced: !new URLSearchParams(location.search).has("offline"), profile: settings.profile };
+    },
+    auth_status: async () => settings.guest || new URLSearchParams(location.search).has("guest") && !settings.signedOut
+      ? { ok: true, signedIn: false, guest: true, apiBase: "mock", device: { name: "dev" } }
+      : new URLSearchParams(location.search).has("signin") || settings.signedOut
+      ? { ok: true, signedIn: false, guest: false, apiBase: "mock", device: { name: "dev" } }
+      : ({
       ok: true,
       signedIn: true,
       apiBase: "mock",

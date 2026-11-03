@@ -62,6 +62,22 @@ const BTN_SIZES = {
   lg: "h-11 px-5 text-[15px]",
 };
 
+/* A section a guest can see but not use. It says what the section does and what
+   opens it, the same way the Premium lock does. */
+export function AccountLocked({ title, children, onSignIn }) {
+  return (
+    <div className="flex flex-col items-center gap-5 px-4 py-20 text-center">
+      <div>
+        <p className="text-[16px] font-semibold text-ink">{title}</p>
+        <p className="mx-auto mt-2 max-w-[46ch] text-[13.5px] leading-relaxed text-ink-3">{children}</p>
+      </div>
+      <Button variant="solid" onClick={onSignIn}>
+        Sign in or create an account
+      </Button>
+    </div>
+  );
+}
+
 export function Button({ variant = "quiet", size = "md", className = "", children, ...rest }) {
   return (
     <button

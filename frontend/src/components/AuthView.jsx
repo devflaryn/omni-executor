@@ -1,6 +1,5 @@
-/* The gate. Nothing in the app is reachable until an Omni account is signed in:
-   the accounts, the cookies and the ability to run a script all belong to a
-   user now, not to a machine.
+/* The gate: sign in, or carry on as a guest on this computer. An account is what
+   syncs between devices and what Earn, Stat Track and running scripts need.
 
    Signing up is FREE and asks for no license key — a key is redeemed later, in
    Settings, to put the account on a plan. So the one field registering adds is
@@ -20,7 +19,7 @@ const INPUT =
 // here only saves a round trip, it is never what enforces it.
 const USERNAME_OK = /^[A-Za-z0-9_]{3,24}$/;
 
-export default function AuthView({ onSignedIn, apiBase, deviceName }) {
+export default function AuthView({ onSignedIn, onGuest, apiBase, deviceName }) {
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [username, setUsername] = useState("");
@@ -149,6 +148,17 @@ export default function AuthView({ onSignedIn, apiBase, deviceName }) {
             {isRegister ? "Sign in" : "Create one, free"}
           </button>
         </p>
+
+        {onGuest && (
+          <div className="mt-5 text-center">
+            <Button className="w-full justify-center" onClick={onGuest}>
+              Continue as guest
+            </Button>
+            <p className="mt-2 text-[12px] leading-snug text-ink-3">
+              Try the app on this computer. Earn, Stat Track and running scripts need an account.
+            </p>
+          </div>
+        )}
 
         <p className="mt-7 text-center text-[11.5px] text-ink-3">
           {deviceName ? `This device: ${deviceName}` : null}

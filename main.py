@@ -69,7 +69,13 @@ DEFAULT_SETTINGS = {
     "activeTab": "home",
     "sidebar": "expanded",
     "launch": {"place": "", "minimizeOnLaunch": False},
-    "profile": {"name": "Guest", "tag": ""},
+    "profile": {"name": "", "tag": ""},
+    # Using the app on this computer with no Omni account. Earn and Stat Track
+    # stay locked, because the server is what they need.
+    "guest": False,
+    # A profile edit the server has not got yet: it goes up on the next good
+    # check, and until then it beats what the server says.
+    "profilePending": False,
     # Keep the app current without being asked. ON by default: a stale client
     # is how a machine keeps a bug that was fixed weeks ago, and the two
     # behaviours behind this flag are both deliberately unobtrusive — apply at
@@ -1007,20 +1013,90 @@ class Api:
         base = {"ok": True, "device": {"id": dev["deviceId"], "name": dev["deviceName"]},
                 "apiBase": self._api_base()}
         if not saved.get("token"):
-            return {**base, "signedIn": False}
-        out = {**base, "signedIn": True, "email": saved.get("email"),
+            return {**base, "signedIn": False, "guest": bool(self.get_settings().get("guest"))}
+        out = {**base, "signedIn": True, "guest": False, "email": saved.get("email"),
                "username": saved.get("username"),
                "subscription": saved.get("subscription") or {}, "stale": True}
         try:
             fresh = cloud.me()
             out.update(email=fresh.get("email"), username=fresh.get("username"),
                        subscription=fresh.get("subscription") or {}, stale=False)
+            saved = {**saved, "displayName": fresh.get("displayName"),
+                     "statusTag": fresh.get("statusTag")}
+            out["profile"] = self._merge_profile(saved)
         except cloud.CloudError as exc:
             if exc.status == 401:
                 cloud.sign_out()
                 return {**base, "signedIn": False, "message": "Your session expired — sign in again."}
             out["message"] = exc.message      # offline: keep working with what we have
+            out["profile"] = self._local_profile()
         return out
+
+    @staticmethod
+    def _clean_profile(profile):
+        """The name and status from settings. "Guest" was the default name once,
+        and it was never anybody's choice."""
+        profile = profile if isinstance(profile, dict) else {}
+        name = str(profile.get("name") or "").strip()
+        return {"name": "" if name == "Guest" else name,
+                "tag": str(profile.get("tag") or "").strip()}
+
+    def _local_profile(self):
+        return self._clean_profile(self.get_settings().get("profile"))
+
+    def _store_profile(self, profile, pending):
+        with _SETTINGS_LOCK:
+            settings = self._read_settings()
+            settings["profile"] = profile
+            settings["profilePending"] = pending
+            self._write_settings(settings)
+
+    def _merge_profile(self, account):
+        """Settle this device's name with the account's and return the result.
+
+        The account wins, unless this device holds an edit the server missed or
+        the account has never had a name, which is every account until now. That
+        name goes up once, so nobody loses what they had set."""
+        settings = self.get_settings()
+        local = self._clean_profile(settings.get("profile"))
+        never_set = account.get("displayName") is None and account.get("statusTag") is None
+        if settings.get("profilePending") or (never_set and (local["name"] or local["tag"])):
+            try:
+                cloud.update_profile(local["name"], local["tag"])
+                self._store_profile(local, False)
+            except cloud.CloudError:
+                pass    # an older server, or offline: try again next time
+            return local
+        merged = {"name": (account.get("displayName") or "").strip(),
+                  "tag": (account.get("statusTag") or "").strip()}
+        if merged != local:
+            self._store_profile(merged, False)
+        return merged
+
+    def profile_save(self, name, tag):
+        """Save the name and status: here first, so they survive being offline,
+        then on the account. A guest's stay on this computer."""
+        profile = self._clean_profile({"name": name, "tag": tag})
+        signed_in = cloud.signed_in()
+        self._store_profile(profile, signed_in)
+        if not signed_in:
+            return {"ok": True, "synced": False, "profile": profile}
+        try:
+            cloud.update_profile(profile["name"], profile["tag"])
+        except cloud.CloudError as exc:
+            return {"ok": True, "synced": False, "profile": profile, "message": exc.message}
+        self._store_profile(profile, False)
+        return {"ok": True, "synced": True, "profile": profile}
+
+    def guest_enter(self):
+        """Use the app without an account."""
+        self.save_settings({"guest": True})
+        return {"ok": True}
+
+    def guest_exit(self):
+        """Back to the sign-in screen. What a guest added stays on this computer."""
+        self.save_settings({"guest": False})
+        return {"ok": True}
 
     def _api_base(self):
         try:
@@ -1087,12 +1163,18 @@ class Api:
                 print(f"[omni-exec] could not purge local accounts: {exc}",
                       file=sys.stderr)
         cloud.sign_out()
+        # The name belongs to the account that just left, not to this computer.
+        self._store_profile({"name": "", "tag": ""}, False)
         self._known_running = set()
         self._push("auth-changed", {"signedIn": False})
         self._push("accounts-changed", {})
         return {"ok": True, "removed": removed}
 
     def _after_sign_in(self):
+        self.save_settings({"guest": False})
+        self._sync_after_sign_in()
+
+    def _sync_after_sign_in(self):
         """Pull this user's accounts down (and push anything only on this
         machine) as soon as they sign in, in the background so the window can
         render immediately."""

@@ -30,7 +30,7 @@ import {
   buyDayWithCredits,
   onEngineEvent,
 } from "../api.js";
-import { Button, Lamp, Toggle } from "./ui.jsx";
+import { AccountLocked, Button, Lamp, Toggle } from "./ui.jsx";
 import { EarnDuoIcon } from "./icons.jsx";
 
 // The engine reports hashrate/earnings on its own cadence; this just catches
@@ -74,7 +74,21 @@ const MODE_LABEL = { gpu: "Graphics card", cpu: "Processor", both: "Both" };
 // mode -> the coin it mines, for pulling the right rate/hashrate out of status.
 const MODE_COIN = { gpu: "rvn", cpu: "xmr" };
 
-export default function EarnView({ active, auth, chrome, showToast, onAuthChange }) {
+export default function EarnView({ onSignIn, ...props }) {
+  if (props.auth?.guest) {
+    return (
+      <div className={`min-h-0 flex-1 overflow-y-auto px-5 py-5 ${props.active ? "" : "hidden"}`}>
+        <AccountLocked title="Earn" onSignIn={onSignIn}>
+          Turn idle CPU and GPU time into credits you can spend on Premium. Your balance lives on
+          your Omni account, so Earn needs one.
+        </AccountLocked>
+      </div>
+    );
+  }
+  return <EarnConsole {...props} />;
+}
+
+function EarnConsole({ active, auth, chrome, showToast, onAuthChange }) {
   const [status, setStatus] = useState(null);
   const [progress, setProgress] = useState(null);
   const [lines, setLines] = useState([]);
