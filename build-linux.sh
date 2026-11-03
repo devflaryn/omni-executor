@@ -55,6 +55,13 @@ $PYTHON -c "import PyInstaller" 2>/dev/null || {
     exit 1
 }
 
+# Python records its own install folder, and PyInstaller copies that record in.
+# Use one outside the home folder, for example UV_PYTHON_INSTALL_DIR=/tmp/omni-py.
+if $PYTHON -c 'import os, sys, sysconfig; sys.exit(os.path.expanduser("~") in str(sysconfig.get_config_var("BINDIR")))'; then :; else
+    echo "this Python lives under the home folder, and that path would ship. Install one elsewhere." >&2
+    exit 1
+fi
+
 # The Tauri shell EMBEDS frontend/dist at compile time, so this has to happen
 # before cargo runs -- not merely before the app starts.
 if [ "$SKIP_FRONTEND" -eq 0 ]; then
