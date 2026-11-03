@@ -19,7 +19,7 @@ const INPUT =
 // here only saves a round trip, it is never what enforces it.
 const USERNAME_OK = /^[A-Za-z0-9_]{3,24}$/;
 
-export default function AuthView({ onSignedIn, onGuest, apiBase, deviceName }) {
+export default function AuthView({ onSignedIn, onGuest }) {
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [username, setUsername] = useState("");
@@ -56,9 +56,35 @@ export default function AuthView({ onSignedIn, onGuest, apiBase, deviceName }) {
       mode === "register"
         ? await api("auth_register", email.trim(), username.trim(), password)
         : await api("auth_login", email.trim(), password);
-    setBusy(false);
-    if (res?.ok) onSignedIn?.(res);
-    else setError(res?.message || "Sign-in failed.");
+    if (!res?.ok) {
+      setBusy(false);
+      setError(res?.message || "Sign-in failed.");
+      return;
+    }
+    // Stay on "Working…" until the app replaces this screen. It only comes back
+    // if signing in didn't actually take.
+    try {
+      const status = await onSignedIn?.(res);
+      if (status && !status.signedIn) {
+        setBusy(false);
+        setError(status.message || "Sign-in failed.");
+      }
+    } catch (err) {
+      setBusy(false);
+      setError(err?.message || "Sign-in failed.");
+    }
+  };
+
+  const continueWithout = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onGuest?.();
+    } catch (err) {
+      setBusy(false);
+      setError(err?.message || "Could not continue.");
+    }
   };
 
   const isRegister = mode === "register";
@@ -151,20 +177,12 @@ export default function AuthView({ onSignedIn, onGuest, apiBase, deviceName }) {
 
         {onGuest && (
           <div className="mt-5 text-center">
-            <Button className="w-full justify-center" onClick={onGuest}>
-              Continue as guest
+            <Button className="w-full justify-center" disabled={busy} onClick={continueWithout}>
+              Continue without account
             </Button>
-            <p className="mt-2 text-[12px] leading-snug text-ink-3">
-              Try the app on this computer. Earn, Stat Track and running scripts need an account.
-            </p>
+            <p className="mt-2 text-[12px] leading-snug text-ink-3">Several features will be missing.</p>
           </div>
         )}
-
-        <p className="mt-7 text-center text-[11.5px] text-ink-3">
-          {deviceName ? `This device: ${deviceName}` : null}
-          {deviceName && apiBase ? " · " : null}
-          {apiBase ? apiBase.replace(/^https?:\/\//, "") : null}
-        </p>
       </div>
     </div>
   );

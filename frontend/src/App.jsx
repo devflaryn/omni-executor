@@ -247,8 +247,6 @@ export default function App() {
   // before anyone has signed in.
   const gate = !auth.signedIn && !auth.guest ? (
     <AuthView
-      apiBase={auth.apiBase}
-      deviceName={auth.device?.name}
       onSignedIn={() => refreshAuth()}
       onGuest={async () => {
         await api("guest_enter");
