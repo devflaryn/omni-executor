@@ -87,6 +87,8 @@ BACKEND_DIR="$DIST/omni-exec-py"
 # The window. Cargo rather than `tauri build`: this repo distributes a zip of
 # the folder, so the .deb/.AppImage bundles the Tauri CLI would also produce
 # are not wanted here.
+# Compiled code records where it was built, home folder and all. Strip that.
+export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$HOME=/build"
 echo "==> building shell (cargo, release)"
 cargo build --release --features custom-protocol --manifest-path src-tauri/Cargo.toml
 SHELL_BIN="src-tauri/target/release/omni-exec"
@@ -118,6 +120,13 @@ mkdir -p "$APPDIR"
 cp -a "$BACKEND_DIR/." "$APPDIR/"
 cp -a "$SHELL_BIN" "$APPDIR/"
 rm -rf "$BACKEND_DIR"
+
+# Nothing that ships may name this machine's home folder.
+if grep -rlaF "$HOME" "$APPDIR" >/dev/null 2>&1; then
+  echo "the build contains $HOME:" >&2
+  grep -rlaF "$HOME" "$APPDIR" | head >&2
+  exit 1
+fi
 
 APP="$APPDIR/omni-exec"
 BACKEND="$APPDIR/omni-exec-py"

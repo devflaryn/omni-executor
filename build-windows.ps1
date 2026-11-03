@@ -152,6 +152,9 @@ if (-not (Test-Path $backend)) { throw "expected $backend to exist after the bui
 # The window. Cargo, not `tauri build`: the installer (Inno Setup, below) has
 # to carry the backend's whole PyInstaller tree beside the shell, which the
 # NSIS/MSI bundles the Tauri CLI produces do not lay out -- only the exe.
+# Compiled code records where it was built, home folder and all. Strip that,
+# and keep only the file name of the debug-symbols path.
+$env:RUSTFLAGS = "--remap-path-prefix=$env:USERPROFILE=C:\build -C link-arg=/PDBALTPATH:%_PDB%"
 Write-Host "==> building shell (cargo, release) -> src-tauri\target\release"
 Invoke-Native -What "cargo build" -Command {
     cargo build --release --features custom-protocol `
@@ -196,6 +199,14 @@ $exe = Join-Path $appDir "omni-exec.exe"              # what the user launches
 $backendExe = Join-Path $appDir "omni-exec-py.exe"   # what it spawns
 if (-not (Test-Path $exe)) { throw "expected $exe to exist after assembly" }
 if (-not (Test-Path $backendExe)) { throw "expected $backendExe to exist after assembly" }
+
+# --- nothing that ships may name this machine's home folder ---------------
+foreach ($file in Get-ChildItem $appDir -Recurse -File -Include *.exe,*.dll,*.pyd) {
+    $text = [System.Text.Encoding]::GetEncoding(28591).GetString([System.IO.File]::ReadAllBytes($file.FullName))
+    if ($text.IndexOf($env:USERPROFILE, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+        throw "$($file.FullName) contains $env:USERPROFILE"
+    }
+}
 
 # --- smoke test ----------------------------------------------------------
 # The frozen backend starts, imports everything it ships, and reports the

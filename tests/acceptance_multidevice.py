@@ -7,11 +7,11 @@ same file on each machine.
 
     # machine 1, as the owner
     python tests/acceptance_multidevice.py owner   --email a@b.c --password ... \
-        --mine admn1b12farm2 --theirs admn1b12farm4
+        --mine farm2 --theirs farm4
 
     # machine 2, as a different user who owns `theirs`
     python tests/acceptance_multidevice.py other   --email d@e.f --password ... \
-        --mine admn1b12farm4
+        --mine farm4
 
 What it proves, in the order it matters:
 

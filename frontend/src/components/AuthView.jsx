@@ -99,7 +99,7 @@ export default function AuthView({ onSignedIn, onGuest, apiBase, deviceName }) {
                 autoComplete="off"
                 spellCheck={false}
                 maxLength={24}
-                placeholder="berat"
+                placeholder="player_one"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
               />

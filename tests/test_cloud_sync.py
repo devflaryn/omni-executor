@@ -94,7 +94,7 @@ def _record_requests(monkeypatch, response):
 FREE_SIGNUP_RESPONSE = {
     "data": {
         "token": "tok-free",
-        "user": {"_id": "u1", "email": "a@b.c", "username": "berat"},
+        "user": {"_id": "u1", "email": "a@b.c", "username": "player_one"},
         "subscription": {"plan": None, "planLabel": None, "expiresAt": None,
                          "active": False, "tier": "free", "daysRemaining": None},
     }
@@ -104,27 +104,27 @@ FREE_SIGNUP_RESPONSE = {
 def test_register_sends_a_username_and_no_license_key(config_home, monkeypatch):
     calls = _record_requests(monkeypatch, FREE_SIGNUP_RESPONSE)
 
-    out = cloud.register("A@B.c ", "berat", "hunter22")
+    out = cloud.register("A@B.c ", "player_one", "hunter22")
 
     assert calls[0]["method"] == "POST"
     assert calls[0]["path"] == "/api/v1/auth/sign-up"
     # The key field is gone entirely, not sent empty: the server would reject a
     # payload it does not expect far less clearly than one it does.
-    assert calls[0]["payload"] == {"email": "A@B.c ", "username": "berat",
+    assert calls[0]["payload"] == {"email": "A@B.c ", "username": "player_one",
                                    "password": "hunter22"}
     assert "key" not in calls[0]["payload"]
     # Sign-up is unauthenticated — there is no token yet to send.
     assert calls[0]["with_auth"] is False
-    assert out["username"] == "berat"
+    assert out["username"] == "player_one"
     assert out["subscription"]["tier"] == "free"
     # The token is saved but never handed back to the UI layer.
     assert "token" not in out
     assert cloud.auth()["token"] == "tok-free"
-    assert cloud.auth()["username"] == "berat"
+    assert cloud.auth()["username"] == "player_one"
 
 
 def test_redeem_upgrades_the_saved_subscription_in_place(config_home, monkeypatch):
-    cloud._save_auth({"token": "tok-free", "email": "a@b.c", "username": "berat",
+    cloud._save_auth({"token": "tok-free", "email": "a@b.c", "username": "player_one",
                       "subscription": {"tier": "free", "plan": None}})
     premium = {"plan": "30_day", "planLabel": "30 days", "active": True,
                "tier": "premium", "daysRemaining": 30}
@@ -139,19 +139,19 @@ def test_redeem_upgrades_the_saved_subscription_in_place(config_home, monkeypatc
     # Written through to auth.json, so a launch that cannot reach the server
     # still shows Premium rather than dropping back to Free.
     assert cloud.auth()["subscription"]["tier"] == "premium"
-    assert cloud.auth()["username"] == "berat"
+    assert cloud.auth()["username"] == "player_one"
 
 
 def test_me_keeps_a_cached_username_when_the_account_predates_usernames(
         config_home, monkeypatch):
-    cloud._save_auth({"token": "t", "email": "a@b.c", "username": "berat"})
+    cloud._save_auth({"token": "t", "email": "a@b.c", "username": "player_one"})
     _record_requests(monkeypatch, {"data": {"user": {"email": "a@b.c"},
                                             "subscription": {"tier": "free"}}})
 
     out = cloud.me()
 
-    assert out["username"] == "berat"
-    assert cloud.auth()["username"] == "berat"
+    assert out["username"] == "player_one"
+    assert cloud.auth()["username"] == "player_one"
 
 
 # ---------------------------------------------------------------- the merge

@@ -247,7 +247,7 @@ export default function HomeView({ active, auth, profile, launch, onGo, onAddAcc
 
 /* The tier, next to the name it applies to.
 
-   A chip rather than another word in the sentence: "Good night, berat Premium"
+   A chip rather than another word in the sentence: "Good night, player_one Premium"
    parses as a two-word name for a beat, and the whole point of the badge is to
    be readable at a glance without being read. Premium takes the accent colour
    and its remaining days as a tooltip; Free stays in the quiet chip default and

@@ -97,11 +97,11 @@ def test_a_name_changed_on_one_computer_shows_on_another(server, computers):
     a.login()
     b.login()
     a.use()
-    assert a.api.profile_save(" Berat ", "Farming")["synced"] is True
+    assert a.api.profile_save(" Player ", "Farming")["synced"] is True
     b.use()
     status = b.api.auth_status()
-    assert status["profile"] == {"name": "Berat", "tag": "Farming"}
-    assert b.api.get_settings()["profile"]["name"] == "Berat"
+    assert status["profile"] == {"name": "Player", "tag": "Farming"}
+    assert b.api.get_settings()["profile"]["name"] == "Player"
 
 
 def test_a_computer_already_signed_in_picks_up_the_change(server, computers):
@@ -119,9 +119,9 @@ def test_a_computer_already_signed_in_picks_up_the_change(server, computers):
 def test_a_name_set_before_this_fix_goes_up_once(server, computers):
     a = computers("a")
     a.login()
-    a.api.save_settings({"profile": {"name": "devflaryn", "tag": "Hi"}})
-    assert a.api.auth_status()["profile"] == {"name": "devflaryn", "tag": "Hi"}
-    assert server.user["displayName"] == "devflaryn"
+    a.api.save_settings({"profile": {"name": "player_one", "tag": "Hi"}})
+    assert a.api.auth_status()["profile"] == {"name": "player_one", "tag": "Hi"}
+    assert server.user["displayName"] == "player_one"
     assert server.saves == 1
     a.api.auth_status()
     assert server.saves == 1

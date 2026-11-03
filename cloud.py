@@ -235,7 +235,7 @@ def _headers(with_auth=True):
         "User-Agent": "OmniExecutor/1.0",
         "X-Omni-Device-Id": dev["deviceId"],
         # PERCENT-ENCODED, because HTTP header values are latin-1 and a device
-        # name is whatever the machine is called. The Mac's is "Berat’ın Mac
+        # name is whatever the machine is called. The Mac's is "Işıl’ın Mac
         # mini" — a U+2019 apostrophe and a dotless i — and sending it raw made
         # http.client raise UnicodeEncodeError before the request left the box,
         # i.e. sign-in failed outright on that machine. The server decodes it.

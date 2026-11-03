@@ -23,6 +23,9 @@ BACKEND_DIR="$APP/Contents/Resources/backend"
 command -v cargo >/dev/null 2>&1 || {
   echo "cargo not found. Install Rust: https://rustup.rs" >&2; exit 1; }
 
+# Compiled code records where it was built, home folder and all. Strip that.
+export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$HOME=/build"
+
 echo "==> building frontend"
 ( cd frontend && npm install && npm run build )
 
@@ -57,6 +60,13 @@ fi
 
 # AFTER the backend is inside: signing a bundle and then adding files to it
 # invalidates the signature.
+# Nothing that ships may name this machine's home folder.
+if grep -rlaF "$HOME" "$APP" >/dev/null 2>&1; then
+  echo "the bundle contains $HOME:" >&2
+  grep -rlaF "$HOME" "$APP" | head >&2
+  exit 1
+fi
+
 echo "==> ad-hoc signing"
 codesign --force --deep --sign - "$APP"
 
@@ -67,7 +77,11 @@ if ! command -v create-dmg >/dev/null 2>&1; then
   exit 0
 fi
 rm -f "dist/Omni Executor.dmg"
-create-dmg --volname "Omni Executor" --app-drop-link 480 200 \
-  --icon "Omni Executor.app" 160 200 \
+# 640 wide, so 160 and 480 sit either side of the middle. Without a window size
+# Finder opens at about 500 and cuts the Applications icon off. The AppleScript
+# that sets this needs a logged-in desktop session, so run it there and not over SSH.
+create-dmg --volname "Omni Executor" --window-pos 200 120 --window-size 640 400 \
+  --icon-size 128 --text-size 14 --hide-extension "Omni Executor.app" \
+  --app-drop-link 480 180 --icon "Omni Executor.app" 160 180 \
   "dist/Omni Executor.dmg" "$APP"
 echo "==> done: dist/Omni Executor.dmg"

@@ -33,7 +33,7 @@ import {
 import CreateAccountModal from "./CreateAccountModal.jsx";
 
 /** Two characters, always: one per word, or the first two letters of a single
-    run-together name like "admn1b12farm2". */
+    run-together name like "farm2". */
 function initials(name) {
   const parts = String(name).trim().split(/[\s_-]+/).filter(Boolean);
   if (!parts.length) return "?";

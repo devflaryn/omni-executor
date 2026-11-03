@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-12
 **Status:** approved (architecture); slices A + B specced for build now, C sketched
-**Author:** berat + Claude
+**Author:** player_one + Claude
 
 ## Goal
 

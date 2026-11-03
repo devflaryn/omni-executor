@@ -10,8 +10,8 @@ export function installDevMock() {
   const settings = JSON.parse(localStorage.getItem("omni-settings") || "{}");
   let editorState = JSON.parse(localStorage.getItem("omni-editor") || "null");
   const accounts = [
-    { name: "admn1b12farm2", running: true, state: "running", instance_id: 1 },
-    { name: "admn1b12farm4", running: true, state: "installing", instance_id: 2 },
+    { name: "farm2", running: true, state: "running", instance_id: 1 },
+    { name: "farm4", running: true, state: "installing", instance_id: 2 },
     { name: "farm_alpha", running: false, state: "stopped" },
     { name: "farm_beta", running: false, state: "stopped" },
     { name: "scout-01", running: false, state: "stopped" },
@@ -99,7 +99,7 @@ export function installDevMock() {
       signedIn: true,
       apiBase: "mock",
       device: { name: "dev" },
-      username: "devflaryn",
+      username: "player_one",
       email: "dev@example.com",
       subscription: new URLSearchParams(location.search).get("mock") === "free"
         ? { plan: null, tier: "free", active: false, credits: { credits: 0 } }

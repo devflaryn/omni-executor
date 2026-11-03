@@ -37,7 +37,7 @@ problem, not a code problem — see "The remaining blocker".
 
 **Deploy the latest build to the app the user launches.** This is NOT done:
 the user asked for the build to stay in `dist\` and for their Desktop copy to
-be left alone, so `C:\Users\berat\Desktop\Omni Executor\` is still the
+be left alone, so `C:\Users\you\Desktop\Omni Executor\` is still the
 **21:04 build and does NOT have the 6.5x boot speed-up** — it still
 autoscales to 8 vCPU / 8 GB and boots in ~6 min instead of ~0.9 min.
 
@@ -45,10 +45,10 @@ Deploy only when the user asks. Close Omni Executor first (a running app
 locks its own files), then:
 
 ```powershell
-Remove-Item "C:\Users\berat\Desktop\Omni Executor\_internal" -Recurse -Force
-Remove-Item "C:\Users\berat\Desktop\Omni Executor\omni-exec.exe" -Force
-Copy-Item "C:\Users\berat\Desktop\Omni Apps\omni-executor\dist\omni-exec\*" `
-          "C:\Users\berat\Desktop\Omni Executor" -Recurse -Force
+Remove-Item "C:\Users\you\Desktop\Omni Executor\_internal" -Recurse -Force
+Remove-Item "C:\Users\you\Desktop\Omni Executor\omni-exec.exe" -Force
+Copy-Item "C:\Users\you\Desktop\Omni Apps\omni-executor\dist\omni-exec\*" `
+          "C:\Users\you\Desktop\Omni Executor" -Recurse -Force
 ```
 
 Stale build dirs (`out`, `out2`, `out3`, `dist-new`) are already cleaned up —
@@ -60,8 +60,8 @@ Stale build dirs (`out`, `out2`, `out3`, `dist-new`) are already cleaned up —
 
 | What | Where |
 |---|---|
-| Repos (must be siblings) | `C:\Users\berat\Desktop\Omni Apps\{omnidroid, omni-executor, omni-backend}` |
-| The app the user runs | `C:\Users\berat\Desktop\Omni Executor\` |
+| Repos (must be siblings) | `C:\Users\you\Desktop\Omni Apps\{omnidroid, omni-executor, omni-backend}` |
+| The app the user runs | `C:\Users\you\Desktop\Omni Executor\` |
 | Latest build (73 MB, verified `ready: true`) | `omni-executor\dist\omni-exec\` |
 | Product runtime (images, accounts, paths.json) | `%LOCALAPPDATA%\OmniExec\` |
 | Scratch configs for CLI work | `Omni Apps\_work\*.json` |
@@ -73,12 +73,12 @@ omnidroid has no venv — run its tests with the executor's interpreter.
 ### Running the engine by hand
 
 ```bash
-export OMNIDROID_CONFIG_PATH="C:/Users/berat/AppData/Local/OmniExec/paths.json"
-export OMNI_DATA_DIR="C:/Users/berat/AppData/Local/OmniExec"
-export OMNI_IMAGES_DIR="C:/Users/berat/AppData/Local/OmniExec/images"
+export OMNIDROID_CONFIG_PATH="C:/Users/you/AppData/Local/OmniExec/paths.json"
+export OMNI_DATA_DIR="C:/Users/you/AppData/Local/OmniExec"
+export OMNI_IMAGES_DIR="C:/Users/you/AppData/Local/OmniExec/images"
 export OMNIDROID_SELF_ARGV="--omnidroid"          # REQUIRED, see gotchas
 omni-executor/dist/omni-exec/omni-exec.exe --omnidroid doctor --json
-omni-executor/dist/omni-exec/omni-exec.exe --omnidroid start admn1b12farm3
+omni-executor/dist/omni-exec/omni-exec.exe --omnidroid start farm3
 ```
 
 Build: `.\build-windows.ps1 -SkipFrontend` (writes to `dist\`). If it fails
@@ -184,7 +184,7 @@ blocker, just the documented unrooted behaviour.
 12. **adb reports an offline endpoint on STDERR with empty stdout.** Checking
     stdout alone made the offline-recovery dead code and launches burned their
     full timeout against guests that were already up. Use `adb_state()`.
-13. A stale flat-layout image set in `C:\Users\berat\OmniImages` used to create
+13. A stale flat-layout image set in `C:\Users\you\OmniImages` used to create
     a phantom `arm` base that hijacked base selection. **That folder was
     deleted** (with the user's approval). Syncthing still lists it, unpaused,
     against `Adils-Mac-mini.local` — launching Syncthing could pull 8.1 GB back.
@@ -239,7 +239,7 @@ needs **10 GiB free** (`FREE_RESERVE_BYTES`) or it silently never engages.
 Run omnidroid's tests with a valid config or collection sys.exits:
 
 ```bash
-export OMNIDROID_CONFIG_PATH="C:/Users/berat/Desktop/Omni Apps/_work/bake-paths.json"
+export OMNIDROID_CONFIG_PATH="C:/Users/you/Desktop/Omni Apps/_work/bake-paths.json"
 omni-executor/.venv/Scripts/python.exe -m pytest tests/ -q \
     --ignore=tests/test_keyframe_thresholds.py
 ```

@@ -219,10 +219,10 @@ mode's memory so there is less guest RAM to allocate and touch at boot.
   output. Fixed (bind test + bounded loop) — see the `runtime.py` commit. Any
   Windows box with a similar endpoint-security filter would have hit it.
 - **A stale flat-layout image set breaks base selection.**
-  `C:\Users\berat\OmniImages` still holds root-level `base_arm*.qcow2` files,
+  `C:\Users\you\OmniImages` still holds root-level `base_arm*.qcow2` files,
   which `autoregister_bases()` turns into a phantom `arm` base that then wins
   selection and fails every start. The bake used a dedicated
-  `C:\Users\berat\OmniExecImages` holding only `x86/`. Those files are
+  `C:\Users\you\OmniExecImages` holding only `x86/`. Those files are
   STATIC leftovers — Syncthing is installed (portable, on the Desktop) and
   has `OmniImages` configured unpaused against `Adils-Mac-mini.local`, but it
   does not run: no process, no service, no scheduled task, no autostart

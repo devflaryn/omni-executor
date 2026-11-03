@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- **Two repos.** Task 1 is in **omnidroid** (`/Users/berat/Desktop/Omni Apps/omnidroid`, separate git repo, omnidroid tests git-tracked, `unittest`, `python3 tests/test_x.py`). Tasks 2+ are in **omni-executor** (`/Users/berat/Desktop/Omni Apps/omni-executor`). Commit in the repo you're editing.
+- **Two repos.** Task 1 is in **omnidroid** (`/Users/you/Desktop/Omni Apps/omnidroid`, separate git repo, omnidroid tests git-tracked, `unittest`, `python3 tests/test_x.py`). Tasks 2+ are in **omni-executor** (`/Users/you/Desktop/Omni Apps/omni-executor`). Commit in the repo you're editing.
 - **Executor has NO test suite today.** Establish one under `omni-executor/tests/` using **pytest** (9.1.1 available). Mock the engine: `run_engine` is the single subprocess entry — patch it, never spawn a real engine in a unit test.
 - **`run_engine(args, progress=None, timeout=None)`** (main.py) hardcodes `stdin=subprocess.DEVNULL`. Do NOT change its threading model. Token login therefore uses **`--token-file`** (write the pasted token to a private temp file, pass the path, delete after) — NOT `--token-stdin`. Keeps the token out of argv/`ps` and off the shared function.
 - **Scope = omni-executor only, EXCEPT the one omnidroid `modes` line** (Task 1). No other omnidroid change. The instance-communication protocol is OUT of scope.

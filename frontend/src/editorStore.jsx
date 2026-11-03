@@ -11,7 +11,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { api, hasBackend } from "./api.js";
-import { SAMPLE_SCRIPT } from "./lua.js";
+import { OLD_SAMPLE_SCRIPT, SAMPLE_SCRIPT } from "./lua.js";
 
 const STORAGE_KEY = "omni-editor";
 const SAVE_DELAY_MS = 250;
@@ -44,7 +44,7 @@ function sanitize(raw) {
     .map((t) => ({
       id: t.id,
       name: typeof t.name === "string" && t.name.trim() ? t.name : "untitled.lua",
-      content: t.content,
+      content: t.content === OLD_SAMPLE_SCRIPT ? SAMPLE_SCRIPT : t.content,
       kind: t.kind === "autoexec" ? "autoexec" : undefined,
       createdAt: Number(t.createdAt) || Date.now(),
       updatedAt: Number(t.updatedAt) || Date.now(),

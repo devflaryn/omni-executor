@@ -120,6 +120,13 @@ export function highlightLua(source) {
 }
 
 export const SAMPLE_SCRIPT = [
+  'print("Hello, world!")',
+  "",
+].join("\n");
+
+// What new installs used to open with. A tab still holding exactly this was
+// never touched by anyone, so it can become the new one.
+export const OLD_SAMPLE_SCRIPT = [
   "-- Omni Executor · sample script",
   "local Greeter = {}",
   "Greeter.__index = Greeter",
