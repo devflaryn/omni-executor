@@ -59,7 +59,7 @@ $PYTHON -c "import PyInstaller" 2>/dev/null || {
 # before cargo runs -- not merely before the app starts.
 if [ "$SKIP_FRONTEND" -eq 0 ]; then
     echo "==> building frontend"
-    ( cd frontend && npm install --silent && npm run build )
+    ( cd frontend && npm install --silent && NODE_ENV=production npm run build )
 else
     echo "==> skipping frontend build (--skip-frontend)"
 fi
@@ -67,6 +67,12 @@ fi
     echo "frontend/dist/index.html is missing — the shell would embed nothing." >&2
     exit 1
 }
+
+# A development build of the page writes every source path into it, so refuse one.
+if grep -rlaE "jsxDEV|$HOME" frontend/dist/assets >/dev/null 2>&1; then
+  echo "frontend/dist is a development build or names $HOME. Rebuild it with NODE_ENV=production." >&2
+  exit 1
+fi
 
 # A published build must NOT carry dev mode. Same guard as build-windows.ps1:
 # loud, because the cost of getting it wrong is a customer bundle that can be

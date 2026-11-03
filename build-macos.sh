@@ -27,7 +27,12 @@ command -v cargo >/dev/null 2>&1 || {
 export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$HOME=/build"
 
 echo "==> building frontend"
-( cd frontend && npm install && npm run build )
+( cd frontend && npm install && NODE_ENV=production npm run build )
+# A development build of the page writes every source path into it, so refuse one.
+if grep -rlaE "jsxDEV|$HOME" frontend/dist/assets >/dev/null 2>&1; then
+  echo "frontend/dist is a development build or names $HOME. Rebuild it with NODE_ENV=production." >&2
+  exit 1
+fi
 
 echo "==> building shell (Tauri) -> $APP"
 # --no-bundle would skip the .app itself, which is the one thing we need, so

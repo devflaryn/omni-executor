@@ -130,9 +130,19 @@ if ($SkipFrontend) {
     Push-Location frontend
     try {
         Invoke-Native -What "npm install" -Command { npm install }
+        $env:NODE_ENV = "production"
         Invoke-Native -What "npm run build" -Command { npm run build }
+        Remove-Item Env:NODE_ENV
     } finally {
         Pop-Location
+    }
+}
+
+# A development build of the page writes every source path into it, so refuse one.
+foreach ($file in Get-ChildItem ".\frontend\dist\assets" -File -Include *.js -Recurse) {
+    $page = [System.IO.File]::ReadAllText($file.FullName)
+    if ($page.Contains("jsxDEV") -or $page.Contains($env:USERPROFILE.Replace("\", "/"))) {
+        throw "$($file.Name) is a development build or names this machine. Rebuild it with NODE_ENV=production."
     }
 }
 
