@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bootstrapStatus, bootstrapStart, onEngineEvent } from "../api.js";
 import { Button } from "./ui.jsx";
-import { CpuIcon } from "./icons.jsx";
+import OmniLogo from "./OmniLogo.jsx";
 
 /* What the user sees for each phase the backend reports. */
 const PHASE_LABEL = {
@@ -127,7 +127,7 @@ function Shell({ children }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-6 overflow-y-auto bg-canvas p-10 text-ink">
       <div className="flex items-center gap-2">
-        <CpuIcon className="h-4 w-4 text-ink-3" />
+        <OmniLogo size={18} className="text-ink-2" />
         <h1 className="silk text-ink-2">Setting up Omni Executor</h1>
       </div>
       {children}

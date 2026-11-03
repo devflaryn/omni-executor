@@ -12,6 +12,8 @@
 
 import { useWindowDrag } from "./TitleBar.jsx";
 
+import OmniLogo from "./OmniLogo.jsx";
+
 export default function Sidebar({ nav, tab, onTab, chrome, premium = false, guest = false }) {
   const mac = Boolean(chrome?.mac);
   // The identity block and the empty rail move the window, like a titlebar.
@@ -32,11 +34,10 @@ export default function Sidebar({ nav, tab, onTab, chrome, premium = false, gues
             box keeps the same footprint so the drag surface and the nav
             column's rhythm don't move. */}
         <span
-          className="flex h-11 w-11 shrink-0 items-center justify-center
-                     font-mono text-[26px] leading-none font-bold text-ink"
+          className="flex h-11 w-11 shrink-0 items-center justify-center text-ink"
           aria-hidden="true"
         >
-          Ω
+          <OmniLogo size={30} />
         </span>
       </div>
 

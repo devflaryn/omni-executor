@@ -9,7 +9,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
 import { Button, Field } from "./ui.jsx";
-import { CpuIcon } from "./icons.jsx";
+import OmniLogo from "./OmniLogo.jsx";
 
 const INPUT =
   "h-9 w-full rounded-lg border border-line bg-raised px-3 text-[14px] text-ink " +
@@ -67,7 +67,7 @@ export default function AuthView({ onSignedIn, onGuest, apiBase, deviceName }) {
     <div className="flex min-h-0 flex-1 items-center justify-center bg-canvas p-8 text-ink">
       <div className="w-full max-w-[340px]">
         <div className="mb-7 flex flex-col items-center gap-2">
-          <CpuIcon className="h-5 w-5 text-accent" />
+          <OmniLogo size={36} className="text-ink" />
           <h1 className="text-[16px] font-semibold tracking-tight">Omni Executor</h1>
           <p className="text-[12.5px] text-ink-3">
             {isRegister ? "Create your free account" : "Sign in to continue"}
